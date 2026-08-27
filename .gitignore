@@ -1,0 +1,10 @@
+build/
+install/
+log/
+__pycache__/
+*.pyc
+dashboard/build/
+server/storage/
+*.bag
+*.db3
+*.pt
