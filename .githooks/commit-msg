@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Enforces COMMIT_RULES.md §2 commit message format:
+#   <type>(<scope>): <subject>
+# type   : feat | fix | docs | test | refactor | chore
+# scope  : optional; one of bringup|msgs|nav|mission|perception|hmi|health|hw|
+#          agent|server|dashboard|db|contract|deploy|docs
+#          required and must be a test id (T-NN) when type == test
+# subject: Korean, no trailing period
+
+set -euo pipefail
+
+msg_file="$1"
+subject_line="$(head -n 1 "$msg_file")"
+
+# Ignore merge commits and fixup/squash commits produced by git itself.
+if [[ "$subject_line" =~ ^Merge\  ]] || [[ "$subject_line" =~ ^(fixup|squash)\! ]]; then
+  exit 0
+fi
+
+fail() {
+  echo "commit-msg 훅: 커밋 메시지가 규칙을 어겼습니다." >&2
+  echo "  받은 메시지: $subject_line" >&2
+  echo "  $1" >&2
+  echo "" >&2
+  echo "형식: <type>(<scope>): <subject>  (COMMIT_RULES.md 참고)" >&2
+  echo "  type  : feat | fix | docs | test | refactor | chore" >&2
+  echo "  scope : 선택. bringup|msgs|nav|mission|perception|hmi|health|hw|agent|server|dashboard|db|contract|deploy|docs 중 하나 (test는 T-NN 필수)" >&2
+  echo "  subject: 한글로, 마침표 없이" >&2
+  echo "" >&2
+  echo "예시: feat(mission): 복약 미션 상태머신 추가" >&2
+  echo "예시: test(T-07): 복약 배달 왕복 정확도 결과 기록" >&2
+  exit 1
+}
+
+type_re='feat|fix|docs|test|refactor|chore'
+
+if [[ ! "$subject_line" =~ ^(${type_re})(\(([a-zA-Z0-9_-]+)\))?:\ (.+)$ ]]; then
+  fail "'<type>(<scope>): <subject>' 형식이 아닙니다 (type 뒤 콜론과 공백 하나를 확인하세요)."
+fi
+
+type="${BASH_REMATCH[1]}"
+scope="${BASH_REMATCH[3]:-}"
+subject="${BASH_REMATCH[4]}"
+
+scope_re='bringup|msgs|nav|mission|perception|hmi|health|hw|agent|server|dashboard|db|contract|deploy|docs'
+
+if [[ "$type" == "test" ]]; then
+  if [[ -z "$scope" ]]; then
+    fail "type이 test인 커밋은 scope에 시험 ID(T-NN)를 반드시 적어야 합니다."
+  fi
+  if [[ ! "$scope" =~ ^T-[0-9]{2}$ ]]; then
+    fail "test 커밋의 scope '$scope'는 T- + 두 자리 형식(T-07 등)이어야 합니다."
+  fi
+elif [[ -n "$scope" ]]; then
+  if [[ ! "$scope" =~ ^(${scope_re})$ ]]; then
+    fail "scope '$scope'는 COMMIT_RULES.md §2 scope 목록 중 하나여야 합니다."
+  fi
+fi
+
+if [[ "$subject" =~ \.$ ]]; then
+  fail "subject 끝에 마침표를 붙이지 않습니다."
+fi
+
+if ! printf '%s' "$subject" | grep -qP '[\x{AC00}-\x{D7A3}]'; then
+  fail "subject는 한글로 작성합니다."
+fi
+
+exit 0
