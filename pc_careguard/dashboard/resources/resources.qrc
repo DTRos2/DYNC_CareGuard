@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file>careguard.qss</file>
+        <file>icons/careguard_mark.svg</file>
+    </qresource>
+</RCC>
