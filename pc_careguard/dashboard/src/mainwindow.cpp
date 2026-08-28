@@ -1,0 +1,180 @@
+#include "mainwindow.h"
+
+#include <QApplication>
+#include <QButtonGroup>
+#include <QDateTime>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QMessageBox>
+#include <QPushButton>
+#include <QStackedWidget>
+#include <QTimer>
+#include <QVBoxLayout>
+
+#include "pages/p1_overview_page.h"
+#include "pages/p2_event_page.h"
+#include "pages/p3_recipient_page.h"
+#include "pages/p4_video_page.h"
+#include "pages/p5_map_page.h"
+#include "pages/p6_patrol_page.h"
+#include "pages/p7_settings_page.h"
+#include "theme/tokens.h"
+
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    setMinimumSize(Tokens::Layout::MIN_W, Tokens::Layout::MIN_H);
+    setWindowTitle(QStringLiteral("CareGuard"));
+
+    auto* central = new QWidget(this);
+    central->setObjectName("centralWidget");
+    setCentralWidget(central);
+
+    auto* rootLayout = new QVBoxLayout(central);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
+
+    rootLayout->addWidget(buildTopBar());
+
+    auto* body = new QHBoxLayout();
+    body->setContentsMargins(0, 0, 0, 0);
+    body->setSpacing(0);
+
+    body->addWidget(buildSidebar());
+
+    pageStack_ = new QStackedWidget(central);
+    pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
+    pageStack_->addWidget(new P2EventPage(pageStack_));      // idx 1
+    pageStack_->addWidget(new P3RecipientPage(pageStack_));  // idx 2
+    pageStack_->addWidget(new P4VideoPage(pageStack_));      // idx 3
+    pageStack_->addWidget(new P5MapPage(pageStack_));        // idx 4
+    pageStack_->addWidget(new P6PatrolPage(pageStack_));     // idx 5
+    pageStack_->addWidget(new P7SettingsPage(pageStack_));   // idx 6
+    body->addWidget(pageStack_, /*stretch=*/1);
+
+    rootLayout->addLayout(body, /*stretch=*/1);
+}
+
+QWidget* MainWindow::buildTopBar() {
+    auto* topBar = new QFrame(this);
+    topBar->setObjectName("topBar");
+
+    auto* layout = new QHBoxLayout(topBar);
+    layout->setContentsMargins(16, 0, 16, 0);
+    layout->setSpacing(10);
+
+    auto* brand = new QLabel(QStringLiteral("CareGuard"), topBar);
+    brand->setObjectName("brand");
+    layout->addWidget(brand);
+
+    emergencyBadge_ = new QLabel(topBar);
+    emergencyBadge_->setObjectName("badge");
+    emergencyBadge_->setProperty("level", "emergencyFill");
+    emergencyBadge_->setVisible(false);
+    layout->addWidget(emergencyBadge_);
+
+    attentionBadge_ = new QLabel(topBar);
+    attentionBadge_->setObjectName("badge");
+    attentionBadge_->setProperty("level", "attention");
+    attentionBadge_->setVisible(false);
+    layout->addWidget(attentionBadge_);
+
+    layout->addStretch();
+
+    clockLabel_ = new QLabel(topBar);
+    clockLabel_->setProperty("role", "mono");
+    layout->addWidget(clockLabel_);
+
+    userLabel_ = new QLabel(topBar);
+    userLabel_->setProperty("role", "secondary");
+    layout->addWidget(userLabel_);
+
+    auto* clockTimer = new QTimer(this);
+    connect(clockTimer, &QTimer::timeout, this, [this] {
+        clockLabel_->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
+    });
+    clockTimer->start(1000);
+    clockLabel_->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
+
+    return topBar;
+}
+
+void MainWindow::addNavButton(QVBoxLayout* sidebarLayout, const QString& text, int pageIndex,
+                               QButtonGroup* group) {
+    auto* btn = new QPushButton(text, this);
+    btn->setObjectName("navBtn");
+    btn->setCheckable(true);
+    sidebarLayout->addWidget(btn);
+    group->addButton(btn, pageIndex);
+    if (pageIndex == 0) btn->setChecked(true);
+}
+
+QWidget* MainWindow::buildSidebar() {
+    auto* sidebar = new QFrame(this);
+    sidebar->setObjectName("sidebar");
+
+    auto* layout = new QVBoxLayout(sidebar);
+    layout->setContentsMargins(0, 12, 0, 12);
+    layout->setSpacing(2);
+
+    auto* navGroup = new QButtonGroup(this);
+    navGroup->setExclusive(true);
+    connect(navGroup, &QButtonGroup::idClicked, this,
+            [this](int id) { pageStack_->setCurrentIndex(id); });
+
+    auto addGroupLabel = [&](const QString& text) {
+        auto* label = new QLabel(text, sidebar);
+        label->setObjectName("navGroup");
+        layout->addWidget(label);
+    };
+
+    addGroupLabel(QStringLiteral("관제"));
+    addNavButton(layout, QStringLiteral("통합 관제"), 0, navGroup);
+    addNavButton(layout, QStringLiteral("이벤트"), 1, navGroup);
+    addNavButton(layout, QStringLiteral("대상자"), 2, navGroup);
+
+    addGroupLabel(QStringLiteral("기록"));
+    addNavButton(layout, QStringLiteral("영상"), 3, navGroup);
+
+    addGroupLabel(QStringLiteral("설정"));
+    addNavButton(layout, QStringLiteral("맵·로봇"), 4, navGroup);
+    addNavButton(layout, QStringLiteral("순찰·경로"), 5, navGroup);
+    addNavButton(layout, QStringLiteral("시스템"), 6, navGroup);
+
+    layout->addStretch();
+
+    auto* divider = new QFrame(sidebar);
+    divider->setObjectName("sidebarDivider");
+    // qss #sidebarDivider는 max-height:1px + margin:6px만 정의하고 min-height가 없어서
+    // 레이아웃이 0 높이로 찌그러뜨린다. margin(6+6) + 선(1px)만큼 명시적으로 확보한다.
+    divider->setFixedHeight(13);
+    layout->addWidget(divider);
+
+    auto* logoutBtn = new QPushButton(QStringLiteral("로그아웃"), sidebar);
+    logoutBtn->setObjectName("navBtn");
+    layout->addWidget(logoutBtn);
+    connect(logoutBtn, &QPushButton::clicked, this, &MainWindow::logoutRequested);
+
+    auto* quitBtn = new QPushButton(QStringLiteral("종료"), sidebar);
+    quitBtn->setObjectName("navBtnDanger");
+    layout->addWidget(quitBtn);
+    connect(quitBtn, &QPushButton::clicked, this, [this] {
+        const auto reply = QMessageBox::question(
+            this, QStringLiteral("종료 확인"), QStringLiteral("CareGuard를 종료하시겠습니까?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply == QMessageBox::Yes) qApp->quit();
+    });
+
+    return sidebar;
+}
+
+void MainWindow::setUserName(const QString& name) { userLabel_->setText(name); }
+
+void MainWindow::setEmergencyCount(int count) {
+    emergencyBadge_->setVisible(count > 0);
+    emergencyBadge_->setText(QStringLiteral("미처리 긴급 %1").arg(count));
+}
+
+void MainWindow::setAttentionCount(int count) {
+    attentionBadge_->setVisible(count > 0);
+    attentionBadge_->setText(QStringLiteral("주의 %1").arg(count));
+}
