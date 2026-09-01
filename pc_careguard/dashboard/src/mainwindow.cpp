@@ -20,6 +20,7 @@
 #include "pages/p6_patrol_page.h"
 #include "pages/p7_settings_page.h"
 #include "theme/tokens.h"
+#include "widgets/simple_icons.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setMinimumSize(Tokens::Layout::MIN_W, Tokens::Layout::MIN_H);
@@ -98,10 +99,11 @@ QWidget* MainWindow::buildTopBar() {
     return topBar;
 }
 
-void MainWindow::addNavButton(QVBoxLayout* sidebarLayout, const QString& text, int pageIndex,
-                               QButtonGroup* group) {
-    auto* btn = new QPushButton(text, this);
+void MainWindow::addNavButton(QVBoxLayout* sidebarLayout, const QIcon& icon, const QString& text,
+                               int pageIndex, QButtonGroup* group) {
+    auto* btn = new QPushButton(icon, text, this);
     btn->setObjectName("navBtn");
+    btn->setIconSize(QSize(14, 14));
     btn->setCheckable(true);
     sidebarLayout->addWidget(btn);
     group->addButton(btn, pageIndex);
@@ -128,17 +130,24 @@ QWidget* MainWindow::buildSidebar() {
     };
 
     addGroupLabel(QStringLiteral("관제"));
-    addNavButton(layout, QStringLiteral("통합 관제"), 0, navGroup);
-    addNavButton(layout, QStringLiteral("이벤트"), 1, navGroup);
-    addNavButton(layout, QStringLiteral("대상자"), 2, navGroup);
+    addNavButton(layout, SimpleIcons::dashboard(Tokens::TEXT_SECONDARY, 14), QStringLiteral("통합 관제"),
+                 0, navGroup);
+    addNavButton(layout, SimpleIcons::bell(Tokens::TEXT_SECONDARY, 14), QStringLiteral("이벤트"), 1,
+                 navGroup);
+    addNavButton(layout, SimpleIcons::heart(Tokens::TEXT_SECONDARY, 14), QStringLiteral("대상자"), 2,
+                 navGroup);
 
     addGroupLabel(QStringLiteral("기록"));
-    addNavButton(layout, QStringLiteral("영상"), 3, navGroup);
+    addNavButton(layout, SimpleIcons::video(Tokens::TEXT_SECONDARY, 14), QStringLiteral("영상"), 3,
+                 navGroup);
 
     addGroupLabel(QStringLiteral("설정"));
-    addNavButton(layout, QStringLiteral("맵·로봇"), 4, navGroup);
-    addNavButton(layout, QStringLiteral("순찰·경로"), 5, navGroup);
-    addNavButton(layout, QStringLiteral("시스템"), 6, navGroup);
+    addNavButton(layout, SimpleIcons::mapPin(Tokens::TEXT_SECONDARY, 14), QStringLiteral("맵·로봇"), 4,
+                 navGroup);
+    addNavButton(layout, SimpleIcons::route(Tokens::TEXT_SECONDARY, 14), QStringLiteral("순찰·경로"), 5,
+                 navGroup);
+    addNavButton(layout, SimpleIcons::settings(Tokens::TEXT_SECONDARY, 14), QStringLiteral("시스템"), 6,
+                 navGroup);
 
     layout->addStretch();
 
@@ -149,13 +158,17 @@ QWidget* MainWindow::buildSidebar() {
     divider->setFixedHeight(13);
     layout->addWidget(divider);
 
-    auto* logoutBtn = new QPushButton(QStringLiteral("로그아웃"), sidebar);
+    auto* logoutBtn =
+        new QPushButton(SimpleIcons::logout(Tokens::TEXT_SECONDARY, 14), QStringLiteral("로그아웃"), sidebar);
     logoutBtn->setObjectName("navBtn");
+    logoutBtn->setIconSize(QSize(14, 14));
     layout->addWidget(logoutBtn);
     connect(logoutBtn, &QPushButton::clicked, this, &MainWindow::logoutRequested);
 
-    auto* quitBtn = new QPushButton(QStringLiteral("종료"), sidebar);
+    auto* quitBtn =
+        new QPushButton(SimpleIcons::power(Tokens::EMERGENCY.main, 14), QStringLiteral("종료"), sidebar);
     quitBtn->setObjectName("navBtnDanger");
+    quitBtn->setIconSize(QSize(14, 14));
     layout->addWidget(quitBtn);
     connect(quitBtn, &QPushButton::clicked, this, [this] {
         const auto reply = QMessageBox::question(

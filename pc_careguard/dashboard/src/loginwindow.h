@@ -1,12 +1,11 @@
 #pragma once
 #include <QWidget>
 
-class QLineEdit;
+class IconLineEdit;
 class QLabel;
 class QCheckBox;
 class QPushButton;
 class QFrame;
-class QAction;
 class QTimer;
 class QIcon;
 
@@ -39,9 +38,8 @@ private:
     void hideBanner();
     void clearPasswordError();
 
-    QLineEdit* idInput_;
-    QLineEdit* passwordInput_;
-    QAction* eyeAction_;
+    IconLineEdit* idInput_;
+    IconLineEdit* passwordInput_;
     bool passwordVisible_ = false;
     QCheckBox* rememberCheckbox_;
 

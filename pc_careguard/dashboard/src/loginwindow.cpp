@@ -1,6 +1,5 @@
 #include "loginwindow.h"
 
-#include <QAction>
 #include <QCheckBox>
 #include <QFont>
 #include <QFrame>
@@ -8,7 +7,6 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
-#include <QLineEdit>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
@@ -20,6 +18,7 @@
 #include <QVariant>
 
 #include "theme/tokens.h"
+#include "widgets/icon_line_edit.h"
 #include "widgets/simple_icons.h"
 
 namespace {
@@ -127,10 +126,10 @@ LoginWindow::LoginWindow(QWidget* parent) : QWidget(parent) {
     cardLayout->addWidget(idLabel);
     cardLayout->addSpacing(4);
 
-    idInput_ = new QLineEdit(card);
+    idInput_ = new IconLineEdit(card);
     idInput_->setPlaceholderText(QStringLiteral("아이디 입력"));
     idInput_->setFixedHeight(36);
-    idInput_->addAction(SimpleIcons::user(Tokens::TEXT_MUTED, 14), QLineEdit::LeadingPosition);
+    idInput_->setLeadingIcon(SimpleIcons::user(Tokens::TEXT_MUTED, 14));
     cardLayout->addWidget(idInput_);
     cardLayout->addSpacing(12);
 
@@ -139,14 +138,14 @@ LoginWindow::LoginWindow(QWidget* parent) : QWidget(parent) {
     cardLayout->addWidget(pwLabel);
     cardLayout->addSpacing(4);
 
-    passwordInput_ = new QLineEdit(card);
+    passwordInput_ = new IconLineEdit(card);
     passwordInput_->setPlaceholderText(QStringLiteral("비밀번호 입력"));
     passwordInput_->setEchoMode(QLineEdit::Password);
     passwordInput_->setFixedHeight(36);
-    passwordInput_->addAction(SimpleIcons::lock(Tokens::TEXT_MUTED, 14), QLineEdit::LeadingPosition);
-    eyeAction_ = passwordInput_->addAction(SimpleIcons::eye(Tokens::TEXT_MUTED, 14),
-                                            QLineEdit::TrailingPosition);
-    connect(eyeAction_, &QAction::triggered, this, &LoginWindow::togglePasswordVisibility);
+    passwordInput_->setLeadingIcon(SimpleIcons::lock(Tokens::TEXT_MUTED, 14));
+    passwordInput_->setTrailingIcon(SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
+    connect(passwordInput_, &IconLineEdit::trailingIconClicked, this,
+            &LoginWindow::togglePasswordVisibility);
     cardLayout->addWidget(passwordInput_);
     cardLayout->addSpacing(8);
 
@@ -384,6 +383,6 @@ void LoginWindow::clearPasswordError() {
 void LoginWindow::togglePasswordVisibility() {
     passwordVisible_ = !passwordVisible_;
     passwordInput_->setEchoMode(passwordVisible_ ? QLineEdit::Normal : QLineEdit::Password);
-    eyeAction_->setIcon(passwordVisible_ ? SimpleIcons::eyeOff(Tokens::TEXT_MUTED, 14)
-                                          : SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
+    passwordInput_->setTrailingIcon(passwordVisible_ ? SimpleIcons::eyeOff(Tokens::TEXT_MUTED, 14)
+                                                       : SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
 }

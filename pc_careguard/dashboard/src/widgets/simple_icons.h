@@ -16,4 +16,15 @@ QIcon lockExclamation(const QColor& color, int px = 16);
 QIcon plugOff(const QColor& color, int px = 16);
 QIcon refresh(const QColor& color, int px = 16);
 
+// 사이드바 메뉴 아이콘 (p1_fleet_overview_wireframe_v3 ti-* 아이콘 대응).
+QIcon dashboard(const QColor& color, int px = 16);   // 통합 관제 (ti-layout-dashboard)
+QIcon bell(const QColor& color, int px = 16);        // 이벤트 (ti-bell)
+QIcon heart(const QColor& color, int px = 16);       // 대상자 (ti-user-heart)
+QIcon video(const QColor& color, int px = 16);       // 영상 (ti-video)
+QIcon mapPin(const QColor& color, int px = 16);      // 맵·로봇 (ti-map)
+QIcon route(const QColor& color, int px = 16);       // 순찰·경로 (ti-route)
+QIcon settings(const QColor& color, int px = 16);    // 시스템 (ti-settings)
+QIcon logout(const QColor& color, int px = 16);      // 로그아웃 (ti-logout)
+QIcon power(const QColor& color, int px = 16);       // 종료 (ti-power)
+
 }  // namespace SimpleIcons

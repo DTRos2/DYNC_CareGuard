@@ -5,6 +5,7 @@ class QLabel;
 class QStackedWidget;
 class QButtonGroup;
 class QTimer;
+class QIcon;
 
 // 공통 셸: TopBar + Sidebar + QStackedWidget.
 // CareGuard_DESIGN_SYSTEM.md §3(공통 셸 구조), §4-2(objectName), §6(페이지 인벤토리) 참고.
@@ -24,8 +25,8 @@ signals:
 private:
     QWidget* buildTopBar();
     QWidget* buildSidebar();
-    void addNavButton(class QVBoxLayout* sidebarLayout, const QString& text, int pageIndex,
-                       QButtonGroup* group);
+    void addNavButton(class QVBoxLayout* sidebarLayout, const QIcon& icon, const QString& text,
+                       int pageIndex, QButtonGroup* group);
 
     QStackedWidget* pageStack_;
     QLabel* clockLabel_;

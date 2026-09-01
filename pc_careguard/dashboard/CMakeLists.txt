@@ -19,6 +19,8 @@ add_executable(careguard_dashboard
     src/theme/tokens.h
     src/widgets/simple_icons.h
     src/widgets/simple_icons.cpp
+    src/widgets/icon_line_edit.h
+    src/widgets/icon_line_edit.cpp
     src/widgets/splashscreenwidget.h
     src/widgets/splashscreenwidget.cpp
     src/widgets/splashscreencontentwidget.h
