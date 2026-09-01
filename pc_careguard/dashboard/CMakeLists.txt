@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets Multimedia MultimediaWidgets)
 
 add_executable(careguard_dashboard
     src/main.cpp
@@ -19,6 +19,12 @@ add_executable(careguard_dashboard
     src/theme/tokens.h
     src/widgets/simple_icons.h
     src/widgets/simple_icons.cpp
+    src/widgets/splashscreenwidget.h
+    src/widgets/splashscreenwidget.cpp
+    src/widgets/splashscreencontentwidget.h
+    src/widgets/splashscreencontentwidget.cpp
+    src/widgets/splashassetresolver.h
+    src/widgets/splashassetresolver.cpp
     src/pages/p1_overview_page.h
     src/pages/p1_overview_page.cpp
     src/pages/p2_event_page.h
@@ -37,4 +43,4 @@ add_executable(careguard_dashboard
 )
 
 target_include_directories(careguard_dashboard PRIVATE src)
-target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets)
+target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Qt6::Multimedia Qt6::MultimediaWidgets)
