@@ -3,4 +3,7 @@
         <file>careguard.qss</file>
         <file>icons/careguard_mark.svg</file>
     </qresource>
+    <qresource prefix="/assets">
+        <file alias="careguard_splash.mp4">assets/careguard_splash.mp4</file>
+    </qresource>
 </RCC>
