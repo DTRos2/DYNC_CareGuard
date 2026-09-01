@@ -27,4 +27,23 @@ QIcon settings(const QColor& color, int px = 16);    // 시스템 (ti-settings)
 QIcon logout(const QColor& color, int px = 16);      // 로그아웃 (ti-logout)
 QIcon power(const QColor& color, int px = 16);       // 종료 (ti-power)
 
+// P5(맵·로봇 매핑) / P6(순찰·경로) 와이어프레임 대응 아이콘.
+QIcon robot(const QColor& color, int px = 16);           // ti-robot
+QIcon chevronDown(const QColor& color, int px = 16);     // ti-chevron-down
+QIcon chevronRight(const QColor& color, int px = 16);    // ti-chevron-right
+QIcon upload(const QColor& color, int px = 16);          // ti-upload
+QIcon radar(const QColor& color, int px = 16);           // ti-radar-2
+QIcon arrowUp(const QColor& color, int px = 16);         // ti-arrow-up
+QIcon arrowDown(const QColor& color, int px = 16);       // ti-arrow-down
+QIcon arrowLeft(const QColor& color, int px = 16);       // ti-arrow-left
+QIcon arrowRight(const QColor& color, int px = 16);      // ti-arrow-right
+QIcon deviceFloppy(const QColor& color, int px = 16);    // ti-device-floppy
+QIcon x(const QColor& color, int px = 16);               // ti-x
+QIcon fileCheck(const QColor& color, int px = 16);       // ti-file-check
+QIcon fileUpload(const QColor& color, int px = 16);      // ti-file-upload
+QIcon alertTriangle(const QColor& color, int px = 16);   // ti-alert-triangle
+QIcon infoCircle(const QColor& color, int px = 16);      // ti-info-circle
+QIcon play(const QColor& color, int px = 16);            // ti-player-play
+QIcon trash(const QColor& color, int px = 16);           // ti-trash
+
 }  // namespace SimpleIcons
