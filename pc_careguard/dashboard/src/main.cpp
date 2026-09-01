@@ -5,6 +5,9 @@
 #include "loginwindow.h"
 #include "mainwindow.h"
 #include "theme/tokens.h"
+#include "widgets/splashscreenwidget.h"
+
+#include <QTimer>
 
 // 초기화 순서: CareGuard_DESIGN_SYSTEM.md §13 main.cpp 규약 참고.
 // 번들 폰트(Pretendard/JetBrains Mono ttf)는 아직 resources/fonts/에 없음 — 추가되면
@@ -35,6 +38,15 @@ int main(int argc, char* argv[]) {
         login->hide();
     });
 
-    login->show();
+    auto* splash = new SplashScreenWidget();
+    QObject::connect(splash, &SplashScreenWidget::finished, [&]() {
+        login->show();
+        splash->deleteLater();
+    });
+    QTimer::singleShot(SplashScreenWidget::kVisibleDurationMs, splash, [splash]() {
+        splash->notifyReady();
+    });
+    splash->show();
+
     return app.exec();
 }
