@@ -278,4 +278,258 @@ QIcon power(const QColor& color, int px) {
     });
 }
 
+QIcon robot(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(12, 3), QPointF(12, 6));
+        p.setBrush(color);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(12, 2.4), 1.1, 1.1);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawRoundedRect(QRectF(4, 6, 16, 12), 3, 3);
+        p.setBrush(color);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(9, 12), 1.4, 1.4);
+        p.drawEllipse(QPointF(15, 12), 1.4, 1.4);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(QPointF(1.5, 11), QPointF(4, 11));
+        p.drawLine(QPointF(20, 11), QPointF(22.5, 11));
+        p.drawLine(QPointF(9, 21), QPointF(9, 18));
+        p.drawLine(QPointF(15, 21), QPointF(15, 18));
+    });
+}
+
+QIcon chevronDown(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath v;
+        v.moveTo(5, 9);
+        v.lineTo(12, 16);
+        v.lineTo(19, 9);
+        p.drawPath(v);
+    });
+}
+
+QIcon chevronRight(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath v;
+        v.moveTo(9, 5);
+        v.lineTo(16, 12);
+        v.lineTo(9, 19);
+        p.drawPath(v);
+    });
+}
+
+QIcon upload(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(12, 3.5), QPointF(12, 14));
+        QPainterPath head;
+        head.moveTo(7.5, 8);
+        head.lineTo(12, 3.5);
+        head.lineTo(16.5, 8);
+        p.drawPath(head);
+        p.drawLine(QPointF(4, 17), QPointF(4, 20.5));
+        p.drawLine(QPointF(4, 20.5), QPointF(20, 20.5));
+        p.drawLine(QPointF(20, 20.5), QPointF(20, 17));
+    });
+}
+
+QIcon radar(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QPointF(12, 12), 9, 9);
+        p.drawEllipse(QPointF(12, 12), 4.5, 4.5);
+        p.setBrush(color);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(12, 12), 1.3, 1.3);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(QPointF(12, 12), QPointF(19, 6.5));
+    });
+}
+
+namespace {
+void drawArrow(QPainter& p, const QColor& color, qreal w, qreal fromX, qreal fromY, qreal toX, qreal toY,
+               qreal headDx1, qreal headDy1, qreal headDx2, qreal headDy2) {
+    p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(Qt::NoBrush);
+    p.drawLine(QPointF(fromX, fromY), QPointF(toX, toY));
+    QPainterPath head;
+    head.moveTo(toX + headDx1, toY + headDy1);
+    head.lineTo(toX, toY);
+    head.lineTo(toX + headDx2, toY + headDy2);
+    p.drawPath(head);
+}
+}  // namespace
+
+QIcon arrowUp(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        drawArrow(p, color, w, 12, 20, 12, 4, -4.5, 4.5, 4.5, 4.5);
+    });
+}
+
+QIcon arrowDown(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        drawArrow(p, color, w, 12, 4, 12, 20, -4.5, -4.5, 4.5, -4.5);
+    });
+}
+
+QIcon arrowLeft(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        drawArrow(p, color, w, 20, 12, 4, 12, 4.5, -4.5, 4.5, 4.5);
+    });
+}
+
+QIcon arrowRight(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        drawArrow(p, color, w, 4, 12, 20, 12, -4.5, -4.5, -4.5, 4.5);
+    });
+}
+
+QIcon deviceFloppy(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath body;
+        body.moveTo(4.5, 3.5);
+        body.lineTo(16.5, 3.5);
+        body.lineTo(20.5, 7.5);
+        body.lineTo(20.5, 20.5);
+        body.lineTo(4.5, 20.5);
+        body.closeSubpath();
+        p.drawPath(body);
+        p.drawRoundedRect(QRectF(8, 3.5, 8, 6), 0.8, 0.8);
+        p.drawRoundedRect(QRectF(7, 13, 10, 7.5), 1, 1);
+    });
+}
+
+QIcon x(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(QPointF(6, 6), QPointF(18, 18));
+        p.drawLine(QPointF(18, 6), QPointF(6, 18));
+    });
+}
+
+QIcon fileCheck(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath body;
+        body.moveTo(6, 2.5);
+        body.lineTo(14, 2.5);
+        body.lineTo(18, 6.5);
+        body.lineTo(18, 21.5);
+        body.lineTo(6, 21.5);
+        body.closeSubpath();
+        p.drawPath(body);
+        QPainterPath fold;
+        fold.moveTo(14, 2.5);
+        fold.lineTo(14, 6.5);
+        fold.lineTo(18, 6.5);
+        p.drawPath(fold);
+        QPainterPath check;
+        check.moveTo(8.5, 14.5);
+        check.lineTo(11, 17);
+        check.lineTo(15.5, 11.5);
+        p.drawPath(check);
+    });
+}
+
+QIcon fileUpload(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath body;
+        body.moveTo(6, 2.5);
+        body.lineTo(14, 2.5);
+        body.lineTo(18, 6.5);
+        body.lineTo(18, 21.5);
+        body.lineTo(6, 21.5);
+        body.closeSubpath();
+        p.drawPath(body);
+        QPainterPath fold;
+        fold.moveTo(14, 2.5);
+        fold.lineTo(14, 6.5);
+        fold.lineTo(18, 6.5);
+        p.drawPath(fold);
+        p.drawLine(QPointF(12, 18.5), QPointF(12, 11.5));
+        QPainterPath head;
+        head.moveTo(9, 14.5);
+        head.lineTo(12, 11.5);
+        head.lineTo(15, 14.5);
+        p.drawPath(head);
+    });
+}
+
+QIcon alertTriangle(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath tri;
+        tri.moveTo(12, 3.5);
+        tri.lineTo(21.5, 20.2);
+        tri.lineTo(2.5, 20.2);
+        tri.closeSubpath();
+        p.drawPath(tri);
+        p.drawLine(QPointF(12, 9.5), QPointF(12, 14.5));
+        p.setBrush(color);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(12, 17.3), 1.1, 1.1);
+    });
+}
+
+QIcon infoCircle(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QRectF(2.5, 2.5, 19, 19));
+        p.drawLine(QPointF(12, 11), QPointF(12, 16.5));
+        p.setBrush(color);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(12, 7.6), 1.1, 1.1);
+    });
+}
+
+QIcon play(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal) {
+        QPainterPath tri;
+        tri.moveTo(6.5, 4);
+        tri.lineTo(19.5, 12);
+        tri.lineTo(6.5, 20);
+        tri.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawPath(tri);
+    });
+}
+
+QIcon trash(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(4, 7), QPointF(20, 7));
+        p.drawLine(QPointF(9, 7), QPointF(9.5, 3.5));
+        p.drawLine(QPointF(9.5, 3.5), QPointF(14.5, 3.5));
+        p.drawLine(QPointF(14.5, 3.5), QPointF(15, 7));
+        QPainterPath body;
+        body.moveTo(6, 7);
+        body.lineTo(7, 20.5);
+        body.lineTo(17, 20.5);
+        body.lineTo(18, 7);
+        p.drawPath(body);
+        p.drawLine(QPointF(10, 10.5), QPointF(10.4, 17.5));
+        p.drawLine(QPointF(14, 10.5), QPointF(13.6, 17.5));
+    });
+}
+
 }  // namespace SimpleIcons
