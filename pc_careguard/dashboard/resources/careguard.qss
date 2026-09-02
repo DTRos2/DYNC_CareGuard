@@ -117,6 +117,7 @@ QLabel#badge[level="ok"]        { background: #E8F6EF; color: #16875A; border: 1
 QLabel#badge[level="info"]      { background: #E9F2FB; color: #2563A8; border: 1px solid #C2D9F0; }
 QLabel#badge[level="offline"]   { background: #F1F4F6; color: #5A6774; border: 1px solid #DFE5EA; }
 QLabel#badge[level="emergencyFill"] { background: #D93B47; color: #FFFFFF; border: none; } /* 상단바·썸네일용 */
+QLabel#badge[size="xs"] { font-size: 10px; padding: 1px 6px; min-height: 14px; }
 
 /* ---------- 카드 ---------- */
 QFrame#card {
@@ -258,6 +259,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 /* ---------- 리스트 (알림 피드 등) ---------- */
 QListWidget { background: #FFFFFF; border: 1px solid #E3E8ED; border-radius: 12px; outline: none; }
 QListWidget::item { border-bottom: 1px solid #E3E8ED; padding: 7px 12px; }
+QListWidget#alertList::item { padding: 3px 12px; }
 QListWidget::item:hover { background: #F0F4F7; }
 QListWidget::item:selected { background: #E0F5F2; color: #16202B; }
 
@@ -350,11 +352,17 @@ QFrame#dropzoneCard { background: #F5F7F9; border: 1px dashed #CDD5DD; border-ra
 QFrame#dropzoneCard[filled="true"] { background: #E8F6EF; border: 1px solid #BCE3D0; }
 QFrame#previewBox { background: #F5F7F9; border: 1px solid #E3E8ED; border-radius: 8px; }
 
-/* ---------- P1 행별 비상정지 (§6) ---------- */
+/* ---------- P1 행별 액션·비상정지 (§6) ---------- */
+/* QPushButton[size="s"]는 QWidget의 내장 size 프로퍼티(QSize)와 이름이 겹쳐
+   setProperty("size", "s")가 항상 실패한다 — 그래서 objectName으로 직접 지정. */
+QPushButton#detailBtn {
+    border-radius: 6px; font-size: 12px; font-weight: 500;
+    min-height: 28px; max-height: 28px; padding: 0 10px;
+}
 QPushButton#rowEstopBtn {
     background: #FFFFFF; color: #D93B47; border: 1px solid #D93B47;
-    border-radius: 6px; font-size: 11px; font-weight: 500;
-    min-height: 26px; max-height: 26px; padding: 0 8px;
+    border-radius: 6px; font-size: 12px; font-weight: 500;
+    min-height: 28px; max-height: 28px; padding: 0 10px;
 }
 QPushButton#rowEstopBtn:hover   { background: #FDECEE; }
 QPushButton#rowEstopBtn:disabled{ background: #EDF1F4; color: #93A0AC; border: 1px solid #E3E8ED; }
