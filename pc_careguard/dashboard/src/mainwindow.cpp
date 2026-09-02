@@ -46,7 +46,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
     pageStack_->addWidget(new P2EventPage(pageStack_));      // idx 1
     pageStack_->addWidget(new P3RecipientPage(pageStack_));  // idx 2
-    pageStack_->addWidget(new P4VideoPage(pageStack_));      // idx 3
+    videoPage_ = new P4VideoPage(pageStack_);
+    pageStack_->addWidget(videoPage_);                       // idx 3
     pageStack_->addWidget(new P5MapPage(pageStack_));        // idx 4
     pageStack_->addWidget(new P6PatrolPage(pageStack_));     // idx 5
     pageStack_->addWidget(new P7SettingsPage(pageStack_));   // idx 6
@@ -180,7 +181,10 @@ QWidget* MainWindow::buildSidebar() {
     return sidebar;
 }
 
-void MainWindow::setUserName(const QString& name) { userLabel_->setText(name); }
+void MainWindow::setUserName(const QString& name) {
+    userLabel_->setText(name);
+    videoPage_->setUserName(name);  // §7 열람 이력에 로그인 사용자 이름을 기록하기 위해 전달
+}
 
 void MainWindow::setEmergencyCount(int count) {
     emergencyBadge_->setVisible(count > 0);

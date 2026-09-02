@@ -32,8 +32,9 @@ QLabel[role="caption"]   { color: #5A6774; font-size: 11px; }
 QLabel[role="label"]     { color: #5A6774; font-size: 12px; font-weight: 500; }
 QLabel[role="mono"] {
     font-family: "JetBrains Mono", "D2Coding", "Consolas", monospace;
-    font-size: 13px;
+    font-size: 13px; color: #5A6774;
 }
+QLabel[role="warning"] { color: #C27500; }
 QLabel#pageTitle { font-size: 24px; font-weight: 600; }
 QLabel[role="h2"] { font-size: 18px; font-weight: 600; }
 QLabel[role="h3"] { font-size: 15px; font-weight: 600; }
@@ -309,3 +310,42 @@ QPushButton#rowEstopBtn[state="release"] {   /* 정지 상태 → 해제 버튼 
     color: #16202B; border: 1px solid #CDD5DD;
 }
 QPushButton#rowEstopBtn[state="release"]:hover { background: #F0F4F7; }
+
+/* ---------- P4 영상 관리 (§6 idx 3) ---------- */
+QFrame#videoThumb {   /* 카드 상단 썸네일 영역 */
+    background: #16202B; border-top-left-radius: 12px; border-top-right-radius: 12px;
+}
+QLabel#videoDuration {   /* 썸네일 우하단 재생 길이 */
+    background: rgba(0, 0, 0, 0.5); color: #FFFFFF;
+    font-family: "JetBrains Mono", "D2Coding", monospace; font-size: 11px;
+    border-radius: 3px; padding: 1px 5px;
+}
+QFrame#videoEmptySlot {   /* "이벤트 발생 시 자동으로 추가됩니다" 빈 슬롯 */
+    background: #F5F7F9; border: 1px dashed #CDD5DD; border-radius: 12px;
+}
+QLabel#videoLockLabel {   /* 재생 모달 — 잠금 안내 (다크 영상 배경 위 흰 텍스트) */
+    color: #FFFFFF; font-size: 11px;
+}
+QFrame#videoPlayerArea {   /* 재생 모달 본문 영상 자리 (썸네일과 달리 사방 라운드) */
+    background: #16202B; border-radius: 8px;
+}
+QWidget#videoFullscreenHost {   /* 영상 영역을 전체화면으로 띄울 때의 배경 */
+    background: #000000;
+}
+QFrame#videoLockCard {   /* 잠금 안내 카드 — Tokens::VIDEO_LOCK_BG(0.6) */
+    background: rgba(22, 32, 43, 153); border-radius: 8px;
+}
+QLabel#videoCountdown {   /* 잠금 카드 우상단 열람 가능 시간 카운트다운 */
+    color: #C27500; font-family: "JetBrains Mono", "D2Coding", monospace; font-size: 11px;
+    background: rgba(0, 0, 0, 0.5); padding: 2px 6px; border-radius: 4px;
+}
+QFrame#videoTimelineBox {   /* 타임라인·심박 동기화 박스 */
+    background: transparent; border: 1px solid #E3E8ED; border-radius: 8px;
+}
+QFrame#eventSummaryCard {   /* 재생 모달 — 연결 이벤트 카드. 배경/테두리만 강조하고
+                                내부 텍스트는 각자 자기 role 색을 그대로 쓴다(banner처럼
+                                전체를 강제로 물들이지 않음 — 제목 검정/부제 회색/링크 초록). */
+    background: #FDECEE; border: 1px solid #F5C2C7; border-radius: 8px;
+}
+QPushButton[align="left"] { text-align: left; }
+QPushButton[variant="secondary"][tone="danger"] { color: #D93B47; }
