@@ -3,19 +3,27 @@
 #include <QDateTime>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <cmath>
 
 #include "theme/tokens.h"
+#include "widgets/camera_live_view.h"
+#include "widgets/canvas_geometry.h"
 
 namespace {
 constexpr qreal kTickMs = 50.0;
 constexpr qreal kPxPerMps = 90.0;  // 캔버스 논리 px per (m/s * s) — 실측 없는 목업 스케일
+constexpr qreal kMinZoom = 0.5;
+constexpr qreal kMaxZoom = 4.0;
+constexpr qreal kZoomStepFactor = 1.15;
 }
 
 // ============================================================
@@ -27,6 +35,12 @@ SlamMapView::SlamMapView(QWidget* parent)
     setMinimumHeight(320);
     robotPos_ = QPointF(90, 260);
     trajectory_.append(robotPos_);
+
+    // 우측 상단에 카메라 라이브 화면 자리를 띄운다 — 자식 위젯이라 아래 paintEvent의
+    // 확대/패닝과 무관하게 항상 같은 화면 위치에 고정된다.
+    cameraView_ = new CameraLiveView(this);
+    cameraView_->move(static_cast<int>(exploredBounds().right()) - cameraView_->width() - 8,
+                       static_cast<int>(exploredBounds().top()) + 8);
 
     connect(simTimer_, &QTimer::timeout, this, &SlamMapView::tick);
     simTimer_->start(static_cast<int>(kTickMs));
@@ -54,6 +68,70 @@ QRectF SlamMapView::exploredBounds() const {
     const QRectF r = rect();
     const qreal margin = 28;
     return r.adjusted(margin, margin, -margin, -margin);
+}
+
+void SlamMapView::resizeEvent(QResizeEvent* event) {
+    QFrame::resizeEvent(event);
+
+    cameraView_->move(static_cast<int>(exploredBounds().right()) - cameraView_->width() - 8,
+                       static_cast<int>(exploredBounds().top()) + 8);
+
+    const QSize oldSize = event->oldSize();
+    if (oldSize.width() <= 0 || oldSize.height() <= 0 || oldSize == event->size()) return;
+
+    // WaypointCanvas::resizeEvent와 같은 이유 — 로봇 위치·주행 궤적이 캔버스 절대
+    // 픽셀 좌표라서, 리사이즈 전/후 바닥 영역 비율을 보존해 옮기지 않으면 창을
+    // 최대화했을 때 궤적이 지도에서 벗어나 보인다.
+    const qreal margin = 28;
+    const QRectF oldBounds = QRectF(QPointF(0, 0), oldSize).adjusted(margin, margin, -margin, -margin);
+    const QRectF newBounds = exploredBounds();
+
+    robotPos_ = CanvasGeometry::remapOnResize(robotPos_, oldBounds, newBounds, backgroundImage_);
+    for (QPointF& p : trajectory_) {
+        p = CanvasGeometry::remapOnResize(p, oldBounds, newBounds, backgroundImage_);
+    }
+
+    // 확대/패닝 상태는 리사이즈 전 배치 기준이라 그대로 두면 새 배치와 어긋난다.
+    zoomScale_ = 1.0;
+    panOffset_ = QPointF(0.0, 0.0);
+}
+
+void SlamMapView::wheelEvent(QWheelEvent* event) {
+    const QPointF screenPt = event->position();
+    const QPointF worldBefore = (screenPt - panOffset_) / zoomScale_;
+
+    const qreal steps = event->angleDelta().y() / 120.0;
+    zoomScale_ = qBound(kMinZoom, zoomScale_ * std::pow(kZoomStepFactor, steps), kMaxZoom);
+
+    // 커서 아래의 지도 지점이 화면상 같은 자리에 남도록 팬 오프셋을 재계산한다.
+    panOffset_ = screenPt - worldBefore * zoomScale_;
+    update();
+    event->accept();
+}
+
+void SlamMapView::mousePressEvent(QMouseEvent* event) {
+    if (event->button() != Qt::LeftButton) return;
+    panning_ = true;
+    panStartMouse_ = event->position();
+    panStartOffset_ = panOffset_;
+}
+
+void SlamMapView::mouseMoveEvent(QMouseEvent* event) {
+    if (!panning_) return;
+    panOffset_ = panStartOffset_ + (event->position() - panStartMouse_);
+    update();
+}
+
+void SlamMapView::mouseReleaseEvent(QMouseEvent* event) {
+    Q_UNUSED(event);
+    panning_ = false;
+}
+
+void SlamMapView::mouseDoubleClickEvent(QMouseEvent* event) {
+    Q_UNUSED(event);
+    zoomScale_ = 1.0;
+    panOffset_ = QPointF(0.0, 0.0);
+    update();
 }
 
 void SlamMapView::tick() {
@@ -89,33 +167,27 @@ void SlamMapView::paintEvent(QPaintEvent* event) {
 
     const QRectF bounds = exploredBounds();
 
+    // 테두리(흰 바닥)는 항상 고정 크기로 그린다 — 확대/패닝 대상은 그 안쪽 내용물뿐이다.
+    p.setPen(QPen(Tokens::TEXT_SECONDARY, 1.5));
+    p.setBrush(Tokens::BG_SURFACE);
+    p.drawRoundedRect(bounds, 6, 6);
+
+    p.save();
+    p.setClipRect(bounds);
+    p.translate(panOffset_);
+    p.scale(zoomScale_, zoomScale_);
+
     if (!backgroundImage_.isNull()) {
         // 파일로 등록된 실제 맵 — pgm 픽셀을 그대로 렌더링한다.
-        p.setPen(QPen(Tokens::TEXT_SECONDARY, 1.5));
-        p.setBrush(Tokens::BG_SURFACE);
-        p.drawRoundedRect(bounds, 6, 6);
         const QImage scaled = backgroundImage_.scaled(bounds.size().toSize(), Qt::KeepAspectRatio,
                                                         Qt::SmoothTransformation);
         const QPointF topLeft(bounds.center().x() - scaled.width() / 2.0,
                                bounds.center().y() - scaled.height() / 2.0);
         p.drawImage(topLeft, scaled);
-    } else {
-        // 탐색된 영역 (흰 바닥) — 파일 등록 전 SLAM 매핑 진행 중 목업.
-        p.setPen(QPen(Tokens::TEXT_SECONDARY, 1.5));
-        p.setBrush(Tokens::BG_SURFACE);
-        p.drawRoundedRect(bounds, 6, 6);
-
-        // 미탐색 영역 표시 (우상단 구석)
-        const QRectF unexplored(bounds.right() - bounds.width() * 0.32, bounds.top(), bounds.width() * 0.32,
-                                 bounds.height() * 0.3);
-        p.setPen(Qt::NoPen);
-        QColor unexploredFill = Tokens::BORDER_STRONG;
-        unexploredFill.setAlphaF(0.55);
-        p.setBrush(unexploredFill);
-        p.drawRect(unexplored);
-        p.setPen(Tokens::TEXT_SECONDARY);
-        p.drawText(unexplored, Qt::AlignCenter, QStringLiteral("미탐색"));
     }
+    // 배경 이미지가 없을 때(파일 등록 전 SLAM 매핑 진행 중 목업)는 위 흰 바닥만 남는다.
+    // 우상단의 "미탐색" 회색 박스 자리는 실은 카메라 라이브 화면 자리였다 —
+    // cameraView_(실제 자식 위젯)로 대체했다.
 
     // 주행 궤적 (점선)
     if (trajectory_.size() > 1) {
@@ -128,42 +200,15 @@ void SlamMapView::paintEvent(QPaintEvent* event) {
         p.drawPath(traj);
     }
 
-    // 시작 지점
-    const QPointF startPt = trajectory_.first();
-    p.setPen(QPen(Tokens::TEXT_MUTED, 1.2));
-    p.setBrush(Tokens::BG_SUNKEN);
-    p.drawEllipse(startPt, 5, 5);
-    p.setPen(Tokens::TEXT_SECONDARY);
-    p.drawText(QRectF(startPt.x() + 8, startPt.y() - 8, 90, 16), Qt::AlignLeft | Qt::AlignVCenter,
-               QStringLiteral("시작 지점"));
+    p.restore();  // 확대/패닝 종료 — 이 아래는 항상 고정 크기로 그린다.
 
-    // 라이다 스캔 (로봇 주변 부채꼴 라인)
-    p.setPen(QPen(Tokens::ACCENT, 0.8));
-    for (int i = -3; i <= 3; ++i) {
-        const qreal a = heading_ + i * 0.22;
-        const QPointF ray(robotPos_.x() + std::cos(a) * 26, robotPos_.y() + std::sin(a) * 26);
-        p.drawLine(robotPos_, ray);
-    }
-
-    // 로봇 위치 (헤일로 + 본체 + 헤딩)
-    QColor halo = Tokens::ACCENT;
-    halo.setAlphaF(0.18);
-    p.setPen(Qt::NoPen);
-    p.setBrush(halo);
-    p.drawEllipse(robotPos_, 12, 12);
-    p.setBrush(Tokens::ACCENT);
-    p.drawEllipse(robotPos_, 7, 7);
-    p.setPen(QPen(Tokens::BG_SURFACE, 1.6));
-    const QPointF heading(robotPos_.x() + std::cos(heading_) * 9, robotPos_.y() + std::sin(heading_) * 9);
-    p.drawLine(robotPos_, heading);
-
-    // 캡션
+    // 캡션 — 로봇 마커(라이다 스캔 부채꼴 포함)는 요청에 따라 제거했다.
     p.setPen(Tokens::TEXT_MUTED);
     QFont captionFont = p.font();
     captionFont.setPixelSize(9);
     p.setFont(captionFont);
     p.drawText(QRectF(bounds.left() + 4, bounds.bottom() - 14, bounds.width() - 8, 14),
-               Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("격자 0.05 m/px · 라이다 스캔 표시"));
+               Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("격자 0.05 m/px · 휠 확대/축소 · 드래그 이동"));
 }
 
 // ============================================================

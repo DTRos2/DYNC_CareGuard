@@ -8,6 +8,10 @@
 class QLabel;
 class QTimer;
 class QPaintEvent;
+class QResizeEvent;
+class QWheelEvent;
+class QMouseEvent;
+class CameraLiveView;
 
 // P5 SLAM 실시간 맵 캔버스 — 탐색 영역, 로봇 위치, 궤적을 직접 그린다.
 // p5_slam_mapping_wireframe_standalone.html의 <svg> 영역에 대응.
@@ -30,6 +34,12 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+    void mouseDoubleClickEvent(QMouseEvent* event) override;
 
 private:
     void tick();
@@ -42,6 +52,14 @@ private:
     qreal angularRadps_;
     QVector<QPointF> trajectory_;
     QImage backgroundImage_;
+    CameraLiveView* cameraView_;
+
+    // WaypointCanvas와 같은 방식의 휠 확대/축소 + 드래그 패닝. 더블클릭으로 초기화.
+    qreal zoomScale_ = 1.0;
+    QPointF panOffset_{0.0, 0.0};
+    bool panning_ = false;
+    QPointF panStartMouse_;
+    QPointF panStartOffset_;
 };
 
 // SLAM 매핑 카드 전체 — 상태 배지 헤더 + SlamMapView + 하단 액션 버튼.

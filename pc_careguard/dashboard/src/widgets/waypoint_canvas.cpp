@@ -3,11 +3,15 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QResizeEvent>
+#include <QShowEvent>
 #include <QTimer>
 #include <QWheelEvent>
 #include <cmath>
 
 #include "theme/tokens.h"
+#include "widgets/camera_live_view.h"
+#include "widgets/canvas_geometry.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -41,6 +45,13 @@ WaypointCanvas::WaypointCanvas(QWidget* parent)
     setObjectName("slamCanvas");
     setMinimumHeight(320);
     setMouseTracking(false);
+
+    // 우측 상단에 카메라 라이브 화면 자리를 띄운다 — 실제 자식 위젯이라 지도 확대/패닝과
+    // 무관하게 화면에 고정되고, 그 영역의 클릭도 자연스럽게 캔버스가 아닌 이 위젯이
+    // 받아서 그 밑에 웨이포인트가 실수로 찍히지 않는다.
+    cameraView_ = new CameraLiveView(this);
+    cameraView_->move(static_cast<int>(floorBounds().right()) - cameraView_->width() - 8,
+                       static_cast<int>(floorBounds().top()) + 8);
 
     connect(testRunTimer_, &QTimer::timeout, this, [this] {
         testRunT_ += kTestRunSpeed * kTestRunTickMs;
@@ -108,20 +119,78 @@ void WaypointCanvas::resetView() {
     update();
 }
 
+void WaypointCanvas::resizeEvent(QResizeEvent* event) {
+    QFrame::resizeEvent(event);
+
+    cameraView_->move(static_cast<int>(floorBounds().right()) - cameraView_->width() - 8,
+                       static_cast<int>(floorBounds().top()) + 8);
+
+    // showEvent에서 설계 기준 맞춤(hasFitInitialView_)이 끝나기 전의 리사이즈는 무시한다
+    // — 그 전에 "이전 크기 비율 보존" 로직을 적용하면 화면에 보이기도 전의 의미 없는
+    // 임시 크기를 기준으로 좌표가 어긋난다.
+    if (!hasFitInitialView_) return;
+
+    const QSize oldSize = event->oldSize();
+    if (oldSize.width() <= 0 || oldSize.height() <= 0 || oldSize == event->size()) return;
+
+    // 창 크기 변경 전/후 그리기 영역을 각각 계산해, 웨이포인트·로봇 위치·테스트 주행
+    // 경로를 지도(또는 목업 바닥) 위 상대 위치를 보존한 채로 옮긴다. 안 하면 캔버스
+    // 절대 픽셀 좌표라서 창을 최대화했을 때 배경 지도만 다시 배치되고 마커는 옛 자리에
+    // 남아 지도에서 어긋나 보인다.
+    const QRectF oldBounds = QRectF(QPointF(0, 0), oldSize).adjusted(22, 16, -22, -16);
+    const QRectF newBounds = floorBounds();
+
+    for (Waypoint& w : waypoints_) {
+        w.pos = CanvasGeometry::remapOnResize(w.pos, oldBounds, newBounds, backgroundImage_);
+    }
+    if (hasRobotPos_) {
+        currentRobotPos_ = CanvasGeometry::remapOnResize(currentRobotPos_, oldBounds, newBounds, backgroundImage_);
+    }
+    for (QPointF& p : testRunPath_) {
+        p = CanvasGeometry::remapOnResize(p, oldBounds, newBounds, backgroundImage_);
+    }
+
+    // 확대/패닝 상태는 리사이즈 전 배치 기준이라 그대로 두면 새 배치와 어긋난다.
+    zoomScale_ = 1.0;
+    panOffset_ = QPointF(0.0, 0.0);
+
+    emit viewRescaled();
+}
+
+void WaypointCanvas::showEvent(QShowEvent* event) {
+    QFrame::showEvent(event);
+    if (hasFitInitialView_) return;
+    hasFitInitialView_ = true;
+
+    const QRectF newBounds = floorBounds();
+    if (newBounds.width() <= 0 || newBounds.height() <= 0) return;
+
+    // 웨이포인트 좌표는 와이어프레임 설계 캔버스(380x330, floorBounds()와 같은 22,16
+    // 여백) 기준으로 정의돼 있다. 오른쪽 패널이 고정폭이라 실제 지도 캔버스는 그보다
+    // 훨씬 크게 남는데, 그대로 두면 맵·경로가 화면 왼쪽 위 구석에 작게 몰려 보인다.
+    // 이 페이지가 처음 화면에 보이는 시점(= 첫 실제 크기가 확정된 시점)에 설계 기준에서
+    // 지금 크기로 한 번 리매핑해, 손대기 전부터 경로 전체가 화면을 채우도록 확대해 둔다.
+    const QRectF designBounds = QRectF(0, 0, 380, 330).adjusted(22, 16, -22, -16);
+    for (Waypoint& w : waypoints_) {
+        w.pos = CanvasGeometry::remapOnResize(w.pos, designBounds, newBounds, backgroundImage_);
+    }
+    if (hasRobotPos_) {
+        currentRobotPos_ = CanvasGeometry::remapOnResize(currentRobotPos_, designBounds, newBounds, backgroundImage_);
+    }
+    for (QPointF& p : testRunPath_) {
+        p = CanvasGeometry::remapOnResize(p, designBounds, newBounds, backgroundImage_);
+    }
+
+    emit viewRescaled();
+    update();
+}
+
 QPointF WaypointCanvas::toWorld(QPointF screenPt) const {
     return (screenPt - panOffset_) / zoomScale_;
 }
 
 bool WaypointCanvas::computeImagePlacement(QPointF* outTopLeft, QSize* outScaledSize) const {
-    if (backgroundImage_.isNull()) return false;
-    const QRectF bounds = floorBounds();
-    const QSize scaled =
-        backgroundImage_.size().scaled(bounds.size().toSize(), Qt::KeepAspectRatio);
-    if (scaled.isEmpty()) return false;
-    *outScaledSize = scaled;
-    *outTopLeft = QPointF(bounds.center().x() - scaled.width() / 2.0,
-                           bounds.center().y() - scaled.height() / 2.0);
-    return true;
+    return CanvasGeometry::imagePlacement(floorBounds(), backgroundImage_, outTopLeft, outScaledSize);
 }
 
 namespace {
@@ -236,10 +305,10 @@ void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
     }
 
     if (idx >= 0) {
-        // 마커를 누른 경우: "WP 추가" 모드에서만 드래그 이동을 허용한다(드래그 없이
-        // 클릭만 하면 편집 팝오버). "이동" 모드에서는 드래그가 무시되고, 뗄 때 항상
-        // 그 웨이포인트로 주행한다.
-        dragging_ = (mode_ == InteractionMode::AddWaypoint);
+        // 마커를 누른 경우 — 모드와 무관하게 뗄 때까지 추적한다. 실제로 옮기는 동작은
+        // mouseMoveEvent에서 "WP 추가" 모드일 때만 허용한다("이동" 모드에서는 드래그를
+        // 무시하고, 뗄 때 항상 그 웨이포인트로 주행 요청을 보낸다 — mouseReleaseEvent).
+        dragging_ = true;
         dragMoved_ = false;
         dragIndex_ = idx;
         return;
@@ -257,9 +326,13 @@ void WaypointCanvas::mouseMoveEvent(QMouseEvent* event) {
     const QPointF screenPt = event->position();
 
     if (dragging_ && dragIndex_ >= 0) {
-        dragMoved_ = true;
-        waypoints_[dragIndex_].pos = toWorld(screenPt);
-        update();
+        // "이동" 모드에서는 드래그 자체를 무시한다 — dragMoved_가 계속 false로 남아야
+        // mouseReleaseEvent에서 "그냥 클릭"으로 처리되어 주행 요청으로 이어진다.
+        if (mode_ == InteractionMode::AddWaypoint) {
+            dragMoved_ = true;
+            waypoints_[dragIndex_].pos = toWorld(screenPt);
+            update();
+        }
         return;
     }
 
@@ -332,7 +405,9 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
 
     const QRectF bounds = floorBounds();
 
-    p.setPen(QPen(routeEditMode_ ? Tokens::INFO.main : Tokens::BORDER_STRONG, routeEditMode_ ? 1.5 : 1.0));
+    // 편집 중임을 알리는 것은 캔버스 위 배너(P6PatrolPage)의 몫이다 — 캔버스 테두리는
+    // p6_route_edit_schedule_wireframe.html처럼 항상 같은 회색을 유지한다.
+    p.setPen(QPen(Tokens::BORDER_STRONG, 1.0));
     p.setBrush(Tokens::BG_SURFACE);
     p.drawRoundedRect(bounds, 8, 8);
 
@@ -351,30 +426,24 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         const QImage scaled =
             backgroundImage_.scaled(imageScaledSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
         p.drawImage(imageTopLeft, scaled);
-    } else {
-        // 목업 벽 라인 (L자형 방 구조) — 실제 맵이 없을 때만 그린다.
-        p.setPen(QPen(Tokens::TEXT_MUTED, 1.0));
-        p.drawLine(QPointF(bounds.left() + bounds.width() * 0.42, bounds.top()),
-                   QPointF(bounds.left() + bounds.width() * 0.42, bounds.top() + bounds.height() * 0.34));
-        p.drawLine(QPointF(bounds.left() + bounds.width() * 0.68, bounds.bottom()),
-                   QPointF(bounds.left() + bounds.width() * 0.68, bounds.top() + bounds.height() * 0.58));
     }
+    // 실제 맵 이미지가 없을 때 목업 벽 라인(회색 두 줄)을 그리던 자리 — 요청에 따라 제거.
+    // 흰 바닥(위 drawRoundedRect)만 남는다.
 
-    // 경로 미리보기 (점선 + 화살표)
-    QVector<QPointF> previewPts;
-    for (const QString& id : std::as_const(routePreview_)) {
-        if (const Waypoint* w = findWaypoint(id)) previewPts.append(w->pos);
-    }
-    if (previewPts.size() > 1) {
+    // 경로 선 — 평소엔 저장된 경로 미리보기(민트 점선), 경로 편집 모드에선 지금까지
+    // 순서대로 클릭한 웨이포인트를 잇는 선(파랑 점선)을 그린다.
+    // p6_route_edit_schedule_wireframe.html의 파란 실시간 경로선에 대응.
+    auto drawRoutePath = [&p](const QVector<QPointF>& pts, const QColor& color) {
+        if (pts.size() < 2) return;
         QPainterPath path;
-        path.moveTo(previewPts.first());
-        for (int i = 1; i < previewPts.size(); ++i) path.lineTo(previewPts.at(i));
-        p.setPen(QPen(Tokens::ACCENT, 1.5, Qt::DashLine, Qt::RoundCap));
+        path.moveTo(pts.first());
+        for (int i = 1; i < pts.size(); ++i) path.lineTo(pts.at(i));
+        p.setPen(QPen(color, 1.5, Qt::DashLine, Qt::RoundCap));
         p.setBrush(Qt::NoBrush);
         p.drawPath(path);
 
-        for (int i = 0; i + 1 < previewPts.size(); ++i) {
-            const QPointF a = previewPts[i], b = previewPts[i + 1];
+        for (int i = 0; i + 1 < pts.size(); ++i) {
+            const QPointF a = pts[i], b = pts[i + 1];
             const QPointF mid = (a + b) / 2.0;
             const qreal ang = std::atan2(b.y() - a.y(), b.x() - a.x());
             QPainterPath arrow;
@@ -383,9 +452,23 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
             arrow.lineTo(mid + QPointF(std::cos(ang - 2.4) * 5, std::sin(ang - 2.4) * 5));
             arrow.closeSubpath();
             p.setPen(Qt::NoPen);
-            p.setBrush(Tokens::ACCENT);
+            p.setBrush(color);
             p.drawPath(arrow);
         }
+    };
+
+    if (routeEditMode_) {
+        QVector<QPointF> editPts;
+        for (const QString& id : std::as_const(routeEditSelection_)) {
+            if (const Waypoint* w = findWaypoint(id)) editPts.append(w->pos);
+        }
+        drawRoutePath(editPts, Tokens::INFO.main);
+    } else {
+        QVector<QPointF> previewPts;
+        for (const QString& id : std::as_const(routePreview_)) {
+            if (const Waypoint* w = findWaypoint(id)) previewPts.append(w->pos);
+        }
+        drawRoutePath(previewPts, Tokens::ACCENT);
     }
 
     // 웨이포인트 마커
@@ -404,9 +487,17 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         QColor textColor = Tokens::TEXT_PRIMARY;
 
         if (w.charging) {
-            ring = Tokens::ACCENT;
-            fill = Tokens::ACCENT_SOFT;
-            textColor = Tokens::ACCENT_HOVER;
+            if (routeEditMode_) {
+                // 편집 중엔 경로 순서에 포함할 수 없다는 것(자동 출발·복귀)을 색으로도
+                // 드러낸다 — p6_route_edit_schedule_wireframe.html의 회색 C 마커.
+                ring = Tokens::BORDER_STRONG;
+                fill = Tokens::BG_SUNKEN;
+                textColor = Tokens::TEXT_MUTED;
+            } else {
+                ring = Tokens::ACCENT;
+                fill = Tokens::ACCENT_SOFT;
+                textColor = Tokens::ACCENT_HOVER;
+            }
         } else if (routeEditMode_) {
             if (selected) {
                 ring = Tokens::INFO.main;
@@ -438,7 +529,8 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         p.setFont(captionFont);
         p.setPen(routeEditMode_ && !selected && !w.charging ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
         const QString caption = w.charging
-            ? QStringLiteral("%1 (초기 위치)").arg(w.name)
+            ? (routeEditMode_ ? QStringLiteral("%1 — 클릭 불가 (자동 출발·복귀)").arg(w.name)
+                               : QStringLiteral("%1 (초기 위치)").arg(w.name))
             : (routeEditMode_ && !selected ? QStringLiteral("%1 — 미선택").arg(w.name) : w.name);
         // 원 바로 아래, 가운데 정렬로 딱 붙여서 그린다 (AlignVCenter+큰 박스 조합은
         // 여백이 생겨 원과 이름이 멀어 보였다).
@@ -468,13 +560,9 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
 
     p.restore();  // 확대/패닝 종료 — 이 아래는 항상 고정 크기로 그린다.
 
-    if (routeEditMode_) {
-        p.setFont(captionFont);
-        p.setPen(Tokens::INFO.main);
-        p.drawText(QRectF(bounds.left() + 4, bounds.bottom() - 16, bounds.width() - 8, 16),
-                   Qt::AlignLeft | Qt::AlignVCenter,
-                   QStringLiteral("경로 편집 중 — 웨이포인트를 순서대로 클릭하세요 (재클릭 = 제거)"));
-    } else {
+    // 편집 모드 안내는 캔버스 위 배너(P6PatrolPage::routeEditBanner_)가 맡는다 — 여기서는
+    // 일반 모드(WP 추가/이동)일 때만 캔버스 하단에 조작 힌트를 그린다.
+    if (!routeEditMode_) {
         p.setFont(captionFont);
         p.setPen(Tokens::TEXT_MUTED);
         p.drawText(QRectF(bounds.left() + 4, bounds.bottom() - 16, bounds.width() - 8, 16),

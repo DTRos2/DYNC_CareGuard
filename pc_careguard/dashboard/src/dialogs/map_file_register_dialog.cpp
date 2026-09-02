@@ -254,6 +254,11 @@ QFrame* MapFileRegisterDialog::buildFooter() {
 
     registerBtn_ = new QPushButton(QStringLiteral("등록 · 배포 (.pgm + .yaml 업로드 후 활성화)"), footer);
     registerBtn_->setProperty("variant", "primary");
+    // 비활성 상태 문구("... 업로드 후 활성화")가 길어 기본 13px/좌우 14px 패딩으로는
+    // 버튼 폭(다이얼로그가 560px 고정이라 상태 문구·취소 버튼과 자리를 나눠 써야 한다)에
+    // 안 들어가고 잘린다 — size="s"로 좌우 패딩도 10px로 줄이고, 글자도 더 줄인다.
+    registerBtn_->setProperty("size", "s");
+    registerBtn_->setStyleSheet(QStringLiteral("font-size:10px;"));
     connect(registerBtn_, &QPushButton::clicked, this, &MapFileRegisterDialog::handleRegisterClicked);
     layout->addWidget(registerBtn_);
 

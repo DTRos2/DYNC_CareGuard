@@ -8,8 +8,11 @@
 class QMouseEvent;
 class QWheelEvent;
 class QPaintEvent;
+class QResizeEvent;
+class QShowEvent;
 class QContextMenuEvent;
 class QTimer;
+class CameraLiveView;
 
 // P6 웨이포인트 편집 캔버스 — p6_patrol_route_wireframe.html의 <svg> 영역.
 // 맵 클릭으로 웨이포인트 추가, 드래그로 이동, 우클릭으로 삭제. 경로 편집 모드에서는
@@ -43,6 +46,7 @@ public:
 
     // "WP 추가"/"이동" 툴바 토글 — 배타적으로 하나만 적용된다.
     void setInteractionMode(InteractionMode mode);
+    InteractionMode interactionMode() const { return mode_; }
 
     // 로봇의 현재 위치를 지도 위에 표시한다 (초기값: 충전 스테이션).
     void setCurrentRobotPosition(QPointF canvasPos, qreal headingDeg);
@@ -76,9 +80,14 @@ signals:
     void waypointDriveRequested(const QString& id);
     void routeWaypointClicked(const QString& id);
     void chargingClickBlocked();
+    // 창 크기 변경으로 웨이포인트/로봇 위치를 지도에 맞춰 다시 배치했다 — 호출자가
+    // 들고 있는 사본(P6PatrolPage::waypoints_)도 waypoints()로 다시 읽어 동기화해야 한다.
+    void viewRescaled();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void showEvent(QShowEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -122,4 +131,10 @@ private:
     QTimer* testRunTimer_;
     QVector<QPointF> testRunPath_;
     qreal testRunT_;
+
+    // 이 페이지가 처음 화면에 보일 때(showEvent) 딱 한 번, 웨이포인트를 설계 기준
+    // 캔버스(380x330)에서 지금 실제 크기로 리매핑해 화면 전체를 채우도록 확대해 둔다.
+    bool hasFitInitialView_ = false;
+
+    CameraLiveView* cameraView_;
 };

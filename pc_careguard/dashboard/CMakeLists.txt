@@ -27,6 +27,8 @@ add_executable(careguard_dashboard
     src/widgets/splashscreencontentwidget.cpp
     src/widgets/splashassetresolver.h
     src/widgets/splashassetresolver.cpp
+    src/widgets/canvas_geometry.h
+    src/widgets/canvas_geometry.cpp
     src/widgets/slam_mapping_card.h
     src/widgets/slam_mapping_card.cpp
     src/widgets/teleop_panel.h
@@ -39,12 +41,18 @@ add_executable(careguard_dashboard
     src/widgets/toggle_switch.cpp
     src/widgets/yaw_dial.h
     src/widgets/yaw_dial.cpp
+    src/widgets/camera_live_view.h
+    src/widgets/camera_live_view.cpp
+    src/widgets/image_zoom_view.h
+    src/widgets/image_zoom_view.cpp
     src/widgets/waypoint_canvas.h
     src/widgets/waypoint_canvas.cpp
     src/widgets/waypoint_popover.h
     src/widgets/waypoint_popover.cpp
     src/dialogs/map_file_register_dialog.h
     src/dialogs/map_file_register_dialog.cpp
+    src/dialogs/map_preview_dialog.h
+    src/dialogs/map_preview_dialog.cpp
     src/pages/p1_overview_page.h
     src/pages/p1_overview_page.cpp
     src/pages/p2_event_page.h

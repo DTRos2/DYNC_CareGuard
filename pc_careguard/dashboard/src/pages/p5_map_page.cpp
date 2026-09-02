@@ -12,6 +12,7 @@
 #include <QVBoxLayout>
 
 #include "dialogs/map_file_register_dialog.h"
+#include "dialogs/map_preview_dialog.h"
 #include "theme/tokens.h"
 #include "widgets/mapping_status_overlay.h"
 #include "widgets/simple_icons.h"
@@ -29,6 +30,8 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
     layout->addWidget(buildHeaderRow());
 
     statusOverlay_ = new MappingStatusOverlay(this);
+    connect(statusOverlay_, &MappingStatusOverlay::mapPreviewRequested, this,
+            &P5MapPage::openMapPreviewDialog);
     layout->addWidget(statusOverlay_);
 
     auto* content = new QHBoxLayout();
@@ -115,6 +118,8 @@ QWidget* P5MapPage::buildSaveInfoCard() {
                                      QStringLiteral("SLAM 맵 저장 · 배포"), card);
     saveBtn->setProperty("variant", "primary");
     saveBtn->setIconSize(QSize(12, 12));
+    // 좁은 우측 패널(196px) 폭에 기본 13px 글자로는 문구가 버튼 밖으로 잘려 보인다.
+    saveBtn->setStyleSheet(QStringLiteral("font-size:11px;"));
     connect(saveBtn, &QPushButton::clicked, this, [this] {
         QMessageBox::information(this, QStringLiteral("저장 완료"),
                                   QStringLiteral("SLAM 맵이 저장되고 R-04에 배포되었습니다."));
@@ -146,8 +151,25 @@ void P5MapPage::openFileRegisterDialog() {
                    const QString& recipientName) {
                 slamCard_->applyRegisteredMap(image, mapName, robotId);
                 statusOverlay_->markMapDeployed(robotId, mapName, recipientName);
+                registeredMaps_[robotId] = RegisteredMapInfo{image, mapName, recipientName};
                 emit mapRegistered(image, mapName, robotId, recipientName);
             });
+    dialog.exec();
+
+    overlay->deleteLater();
+}
+
+void P5MapPage::openMapPreviewDialog(const QString& robotId) {
+    QWidget* host = window();
+    auto* overlay = new QWidget(host);
+    overlay->setObjectName("modalOverlay");
+    overlay->setGeometry(host->rect());
+    overlay->show();
+    overlay->raise();
+
+    MapPreviewDialog dialog(this);
+    const RegisteredMapInfo info = registeredMaps_.value(robotId);
+    dialog.setMapInfo(info.image, info.mapName, info.recipientName, robotId);
     dialog.exec();
 
     overlay->deleteLater();

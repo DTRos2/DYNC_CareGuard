@@ -45,5 +45,6 @@ QIcon alertTriangle(const QColor& color, int px = 16);   // ti-alert-triangle
 QIcon infoCircle(const QColor& color, int px = 16);      // ti-info-circle
 QIcon play(const QColor& color, int px = 16);            // ti-player-play
 QIcon trash(const QColor& color, int px = 16);           // ti-trash
+QIcon bolt(const QColor& color, int px = 16);            // ti-bolt — 충전 스테이션 유형 표시
 
 }  // namespace SimpleIcons
