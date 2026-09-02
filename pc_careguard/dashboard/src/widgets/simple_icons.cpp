@@ -629,4 +629,20 @@ QIcon collapse(const QColor& color, int px) {
     });
 }
 
+QIcon bolt(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal) {
+        QPainterPath z;
+        z.moveTo(13, 2);
+        z.lineTo(3, 14);
+        z.lineTo(12, 14);
+        z.lineTo(11, 22);
+        z.lineTo(21, 10);
+        z.lineTo(12, 10);
+        z.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawPath(z);
+    });
+}
+
 }  // namespace SimpleIcons

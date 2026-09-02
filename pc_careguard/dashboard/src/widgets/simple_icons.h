@@ -58,5 +58,7 @@ QIcon fileCheck(const QColor& color, int px = 16);       // ti-file-check
 QIcon fileUpload(const QColor& color, int px = 16);      // ti-file-upload
 QIcon alertTriangle(const QColor& color, int px = 16);   // ti-alert-triangle
 QIcon infoCircle(const QColor& color, int px = 16);      // ti-info-circle
+// play/trash는 위 P4 선언(30~40행)과 이름이 겹쳐서 여기서는 빼고 그 선언을 그대로 쓴다.
+QIcon bolt(const QColor& color, int px = 16);            // ti-bolt — 충전 스테이션 유형 표시
 
 }  // namespace SimpleIcons

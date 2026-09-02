@@ -55,23 +55,30 @@ void TeleopPanel::buildKeypad(QVBoxLayout* root) {
     auto* grid = new QGridLayout();
     grid->setSpacing(4);
 
-    auto makeArrow = [this](const QIcon& icon, int gridRow, int gridCol) {
+    // p5_slam_mapping_wireframe_standalone.html: grid-template-columns:repeat(3,1fr) —
+    // 3칸이 패널 폭을 균등하게 나눠 끝까지 채운다. 고정 폭 버튼은 옆에 여백이 남아
+    // 와이어프레임보다 좁아 보이므로, 높이만 고정하고 가로는 칸을 채우게 한다.
+    auto makeArrow = [this](const QIcon& icon) {
         auto* btn = new QPushButton(icon, QString(), this);
         btn->setObjectName("keypadBtn");
         btn->setIconSize(QSize(15, 15));
-        btn->setFixedSize(48, 32);
+        btn->setFixedHeight(32);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         return btn;
     };
 
-    upBtn_ = makeArrow(SimpleIcons::arrowUp(Tokens::TEXT_SECONDARY, 15), 0, 1);
-    leftBtn_ = makeArrow(SimpleIcons::arrowLeft(Tokens::TEXT_SECONDARY, 15), 1, 0);
-    downBtn_ = makeArrow(SimpleIcons::arrowDown(Tokens::TEXT_SECONDARY, 15), 1, 1);
-    rightBtn_ = makeArrow(SimpleIcons::arrowRight(Tokens::TEXT_SECONDARY, 15), 1, 2);
+    upBtn_ = makeArrow(SimpleIcons::arrowUp(Tokens::TEXT_SECONDARY, 15));
+    leftBtn_ = makeArrow(SimpleIcons::arrowLeft(Tokens::TEXT_SECONDARY, 15));
+    downBtn_ = makeArrow(SimpleIcons::arrowDown(Tokens::TEXT_SECONDARY, 15));
+    rightBtn_ = makeArrow(SimpleIcons::arrowRight(Tokens::TEXT_SECONDARY, 15));
 
     grid->addWidget(upBtn_, 0, 1);
     grid->addWidget(leftBtn_, 1, 0);
     grid->addWidget(downBtn_, 1, 1);
     grid->addWidget(rightBtn_, 1, 2);
+    grid->setColumnStretch(0, 1);
+    grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(2, 1);
     root->addLayout(grid);
     root->addSpacing(2);
 
@@ -110,7 +117,8 @@ void TeleopPanel::buildPresets(QVBoxLayout* root) {
     for (auto* btn : {presetFine_, presetNormal_, presetFast_}) {
         btn->setObjectName("segBtn");
         btn->setCheckable(true);
-        row->addWidget(btn);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        row->addWidget(btn, /*stretch=*/1);  // 와이어프레임의 flex:1 — 3칸 균등폭
     }
     presetFine_->setProperty("pos", "first");
     presetFast_->setProperty("pos", "last");
@@ -141,13 +149,15 @@ void TeleopPanel::buildSpeedRow(QVBoxLayout* root, const QString& label, const Q
     outSpin->setRange(0.0, max);
     outSpin->setSingleStep(step);
     outSpin->setDecimals(2);
-    outSpin->setFixedWidth(60);
+    outSpin->setFixedWidth(52);  // "rad/s" 단위 라벨에 폭을 더 내주기 위해 살짝 줄임.
     outSpin->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     row->addWidget(outSpin);
 
     auto* unitLabel = new QLabel(unit, this);
     unitLabel->setProperty("role", "muted");
-    unitLabel->setFixedWidth(30);
+    // "rad/s"(5자)가 14px 기본 폰트에서 30px 폭에 다 안 들어가 잘려 보이던 문제 —
+    // 라벨 폭을 넓히고 그만큼 스핀박스 폭을 줄여, 값 입력칸을 왼쪽으로 당겨 자리를 낸다.
+    unitLabel->setFixedWidth(38);
     row->addWidget(unitLabel);
     root->addLayout(row);
 
