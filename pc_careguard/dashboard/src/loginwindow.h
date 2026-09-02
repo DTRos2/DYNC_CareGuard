@@ -8,12 +8,13 @@ class QPushButton;
 class QFrame;
 class QTimer;
 class QIcon;
+class QNetworkAccessManager;
+class QNetworkReply;
 
 // 로그인 화면. gui/wireframe/v1/p0_login_final_wireframe.html 기준.
-// 인증은 아직 서버 연동 전이므로 매직 비밀번호로 각 상태를 시연하는 스텁이다.
-// 실제 인증 API 연동은 pc_careguard/server 작업 후 resolveLogin()에서 교체한다
-// (shared/api_contract 참고). 매직 값: "wrong" → 인증 실패(5회 누적 시 잠금),
-// "offline" → 서버 연결 실패, 그 외 비어있지 않은 값 → 성공.
+// POST {서버주소}/auth/login (shared/api_contract/auth.yaml 참고)로 인증한다.
+// 서버 주소는 환경변수 CAREGUARD_SERVER_URL, 없으면 http://127.0.0.1:8000.
+// 실패 잠금(5회)은 서버가 아닌 클라이언트 로컬 상태로만 관리한다.
 class LoginWindow : public QWidget {
     Q_OBJECT
 public:
@@ -31,12 +32,14 @@ private:
     enum class State { Idle, Authenticating, AuthFailed, Locked, ServerError };
 
     void resolveLogin(const QString& id, const QString& password);
+    void handleLoginReply(QNetworkReply* reply, const QString& id);
     void setState(State state);
     void enterLocked();
     void applyBanner(const QString& title, const QString& subtitleHtml, const QString& level,
                       const QIcon& icon);
     void hideBanner();
     void clearPasswordError();
+    void setInlineErrorText(const QString& text);
 
     IconLineEdit* idInput_;
     IconLineEdit* passwordInput_;
@@ -59,4 +62,7 @@ private:
     int lockRemainingSec_ = 0;
     QTimer* lockTimer_;
     bool submitting_ = false;
+
+    QNetworkAccessManager* netManager_;
+    QString serverUrl_;
 };

@@ -27,7 +27,22 @@ QIcon settings(const QColor& color, int px = 16);    // 시스템 (ti-settings)
 QIcon logout(const QColor& color, int px = 16);      // 로그아웃 (ti-logout)
 QIcon power(const QColor& color, int px = 16);       // 종료 (ti-power)
 
+// P4 영상 관리 (p4_video_management_wireframe 대응).
+QIcon play(const QColor& color, int px = 16);         // 썸네일 재생 (ti-player-play)
+QIcon list(const QColor& color, int px = 16);         // 테이블 뷰 토글 (ti-list)
+
+// P4 재생 모달 (p4_video_playback_modal_wireframe 대응).
+QIcon close(const QColor& color, int px = 16);        // 모달 닫기 (ti-x)
+QIcon trackPrev(const QColor& color, int px = 16);    // 이전 구간 (ti-player-track-prev)
+QIcon trackNext(const QColor& color, int px = 16);    // 다음 구간 (ti-player-track-next)
+QIcon download(const QColor& color, int px = 16);     // 다운로드 (ti-download)
+QIcon share(const QColor& color, int px = 16);        // 공유 링크 (ti-share)
+QIcon trash(const QColor& color, int px = 16);        // 즉시 삭제 (ti-trash)
+QIcon expand(const QColor& color, int px = 16);       // 전체화면 진입 (ti-maximize)
+QIcon collapse(const QColor& color, int px = 16);     // 전체화면 종료 (ti-minimize)
+
 // P5(맵·로봇 매핑) / P6(순찰·경로) 와이어프레임 대응 아이콘.
+// play/trash는 위 P4 선언과 같은 이름으로 겹쳐서(§merge) 여기서는 뺐다 — 위 선언을 그대로 쓴다.
 QIcon robot(const QColor& color, int px = 16);           // ti-robot
 QIcon chevronDown(const QColor& color, int px = 16);     // ti-chevron-down
 QIcon chevronRight(const QColor& color, int px = 16);    // ti-chevron-right
@@ -43,8 +58,7 @@ QIcon fileCheck(const QColor& color, int px = 16);       // ti-file-check
 QIcon fileUpload(const QColor& color, int px = 16);      // ti-file-upload
 QIcon alertTriangle(const QColor& color, int px = 16);   // ti-alert-triangle
 QIcon infoCircle(const QColor& color, int px = 16);      // ti-info-circle
-QIcon play(const QColor& color, int px = 16);            // ti-player-play
-QIcon trash(const QColor& color, int px = 16);           // ti-trash
+// play/trash는 위 P4 선언(30~40행)과 이름이 겹쳐서 여기서는 빼고 그 선언을 그대로 쓴다.
 QIcon bolt(const QColor& color, int px = 16);            // ti-bolt — 충전 스테이션 유형 표시
 
 }  // namespace SimpleIcons

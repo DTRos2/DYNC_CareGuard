@@ -3,6 +3,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPolygonF>
 #include <cmath>
 #include <functional>
 
@@ -278,6 +279,36 @@ QIcon power(const QColor& color, int px) {
     });
 }
 
+QIcon play(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal /*w*/) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        QPolygonF triangle;
+        triangle << QPointF(7, 4) << QPointF(20, 12) << QPointF(7, 20);
+        p.drawPolygon(triangle);
+    });
+}
+
+QIcon list(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        for (int row = 0; row < 3; ++row) {
+            const qreal y = 6 + row * 6;
+            p.drawLine(QPointF(4, y), QPointF(6, y));
+            p.drawLine(QPointF(9, y), QPointF(20, y));
+        }
+    });
+}
+
+QIcon close(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(QPointF(6, 6), QPointF(18, 18));
+        p.drawLine(QPointF(18, 6), QPointF(6, 18));
+    });
+}
+
 QIcon robot(const QColor& color, int px) {
     return makeIcon(color, px, [color](QPainter& p, qreal w) {
         p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -420,6 +451,54 @@ QIcon x(const QColor& color, int px) {
     });
 }
 
+QIcon trackPrev(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal /*w*/) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawRect(QRectF(3, 5, 2, 14));
+        QPolygonF triangle;
+        triangle << QPointF(19, 5) << QPointF(19, 19) << QPointF(7, 12);
+        p.drawPolygon(triangle);
+    });
+}
+
+QIcon trackNext(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal /*w*/) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawRect(QRectF(19, 5, 2, 14));
+        QPolygonF triangle;
+        triangle << QPointF(5, 5) << QPointF(5, 19) << QPointF(17, 12);
+        p.drawPolygon(triangle);
+    });
+}
+
+QIcon download(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(12, 3), QPointF(12, 14));
+        QPainterPath arrow;
+        arrow.moveTo(7, 10);
+        arrow.lineTo(12, 15);
+        arrow.lineTo(17, 10);
+        p.drawPath(arrow);
+        p.drawLine(QPointF(4, 19), QPointF(20, 19));
+    });
+}
+
+QIcon share(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QPointF(6, 12), 3, 3);
+        p.drawEllipse(QPointF(18, 5.5), 3, 3);
+        p.drawEllipse(QPointF(18, 18.5), 3, 3);
+        p.drawLine(QPointF(8.6, 10.6), QPointF(15.4, 7));
+        p.drawLine(QPointF(8.6, 13.4), QPointF(15.4, 17));
+    });
+}
+
 QIcon fileCheck(const QColor& color, int px) {
     return makeIcon(color, px, [color](QPainter& p, qreal w) {
         p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -500,35 +579,53 @@ QIcon infoCircle(const QColor& color, int px) {
     });
 }
 
-QIcon play(const QColor& color, int px) {
-    return makeIcon(color, px, [color](QPainter& p, qreal) {
-        QPainterPath tri;
-        tri.moveTo(6.5, 4);
-        tri.lineTo(19.5, 12);
-        tri.lineTo(6.5, 20);
-        tri.closeSubpath();
-        p.setPen(Qt::NoPen);
-        p.setBrush(color);
-        p.drawPath(tri);
-    });
-}
-
 QIcon trash(const QColor& color, int px) {
     return makeIcon(color, px, [color](QPainter& p, qreal w) {
         p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         p.setBrush(Qt::NoBrush);
         p.drawLine(QPointF(4, 7), QPointF(20, 7));
-        p.drawLine(QPointF(9, 7), QPointF(9.5, 3.5));
-        p.drawLine(QPointF(9.5, 3.5), QPointF(14.5, 3.5));
-        p.drawLine(QPointF(14.5, 3.5), QPointF(15, 7));
-        QPainterPath body;
-        body.moveTo(6, 7);
-        body.lineTo(7, 20.5);
-        body.lineTo(17, 20.5);
-        body.lineTo(18, 7);
-        p.drawPath(body);
-        p.drawLine(QPointF(10, 10.5), QPointF(10.4, 17.5));
-        p.drawLine(QPointF(14, 10.5), QPointF(13.6, 17.5));
+        p.drawLine(QPointF(9, 7), QPointF(9, 4.5));
+        p.drawLine(QPointF(15, 7), QPointF(15, 4.5));
+        p.drawLine(QPointF(9, 4.5), QPointF(15, 4.5));
+        p.drawRoundedRect(QRectF(6, 7, 12, 13), 1.5, 1.5);
+        p.drawLine(QPointF(10, 10.5), QPointF(10, 17));
+        p.drawLine(QPointF(14, 10.5), QPointF(14, 17));
+    });
+}
+
+QIcon expand(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        QPen pen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        QPainterPath tl;
+        tl.moveTo(3, 9);
+        tl.lineTo(3, 3);
+        tl.lineTo(9, 3);
+        p.drawPath(tl);
+        QPainterPath br;
+        br.moveTo(15, 21);
+        br.lineTo(21, 21);
+        br.lineTo(21, 15);
+        p.drawPath(br);
+    });
+}
+
+QIcon collapse(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        QPen pen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        QPainterPath tl;
+        tl.moveTo(3, 9);
+        tl.lineTo(9, 9);
+        tl.lineTo(9, 3);
+        p.drawPath(tl);
+        QPainterPath br;
+        br.moveTo(15, 21);
+        br.lineTo(15, 15);
+        br.lineTo(21, 15);
+        p.drawPath(br);
     });
 }
 

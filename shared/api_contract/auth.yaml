@@ -1,0 +1,66 @@
+openapi: 3.0.3
+info:
+  title: CareGuard Auth API
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      summary: DB 연결 상태 확인
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /auth/login:
+    post:
+      summary: 대시보드 로그인
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: 로그인 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          description: 아이디 또는 비밀번호 불일치 (계정 미존재/비활성 포함, 동일 메시지)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: 아이디 또는 비밀번호가 올바르지 않습니다
+components:
+  schemas:
+    LoginRequest:
+      type: object
+      required: [login_id, password]
+      properties:
+        login_id:
+          type: string
+        password:
+          type: string
+    LoginResponse:
+      type: object
+      required: [id, login_id, role]
+      properties:
+        id:
+          type: integer
+        login_id:
+          type: string
+        role:
+          type: string
+          description: role.code (admin / operator / guardian)
