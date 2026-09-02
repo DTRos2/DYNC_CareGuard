@@ -47,10 +47,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     pageStack_->addWidget(new P2EventPage(pageStack_));      // idx 1
     pageStack_->addWidget(new P3RecipientPage(pageStack_));  // idx 2
     pageStack_->addWidget(new P4VideoPage(pageStack_));      // idx 3
-    pageStack_->addWidget(new P5MapPage(pageStack_));        // idx 4
-    pageStack_->addWidget(new P6PatrolPage(pageStack_));     // idx 5
+    auto* mapPage = new P5MapPage(pageStack_);
+    pageStack_->addWidget(mapPage);                          // idx 4
+    auto* patrolPage = new P6PatrolPage(pageStack_);
+    pageStack_->addWidget(patrolPage);                       // idx 5
     pageStack_->addWidget(new P7SettingsPage(pageStack_));   // idx 6
     body->addWidget(pageStack_, /*stretch=*/1);
+
+    // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 같은 이름·대상자·이미지로 반영한다.
+    connect(mapPage, &P5MapPage::mapRegistered, patrolPage, &P6PatrolPage::upsertMap);
 
     rootLayout->addLayout(body, /*stretch=*/1);
 }

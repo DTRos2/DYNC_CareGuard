@@ -297,6 +297,58 @@ QPushButton#loginBtn:disabled { background: #EDF1F4; color: #93A0AC; border: 1px
 QPushButton#loginBtn[state="loading"] { background: #0B7A6E; }
 QLabel#loginError { color: #D93B47; font-size: 11px; }
 
+/* ---------- P5 로봇 셀렉터 칩 ---------- */
+QPushButton#robotChip {
+    background: #FFFFFF; color: #16202B; border: 1px solid #CDD5DD; border-radius: 6px;
+    font-size: 11px; padding: 0 10px; min-height: 28px; max-height: 28px; text-align: left;
+}
+QPushButton#robotChip:hover { background: #F0F4F7; }
+
+/* ---------- P5 매핑 현황 오버레이 (§6 — 레이아웃 밀지 않는 자식 오버레이) ---------- */
+QFrame#mappingStatusHeader { background: #FFFFFF; border: 1px solid #E3E8ED; border-radius: 12px; }
+QFrame#mappingStatusHeader[open="true"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+QFrame#mappingStatusPanel { background: #FFFFFF; border: 1px solid #CDD5DD; border-radius: 12px; }
+QFrame#mappingStatusRowHeader { background: #EDF1F4; border-bottom: 1px solid #CDD5DD; }
+QFrame#mappingStatusRow { border-bottom: 1px solid #E3E8ED; }
+QFrame#mappingStatusRow[warn="true"] { background: #FFF6E5; }
+
+/* ---------- P5 SLAM 매핑 카드 ---------- */
+QFrame#slamCanvas { background: #F5F7F9; border: 1px solid #E3E8ED; border-radius: 8px; }
+
+/* ---------- P5 텔레옵 키패드 ---------- */
+QPushButton#keypadBtn {
+    background: #FFFFFF; border: 1px solid #CDD5DD; border-radius: 6px;
+    color: #5A6774; min-width: 0; min-height: 0; padding: 0;
+}
+QPushButton#keypadBtn:hover { background: #F0F4F7; }
+QPushButton#keypadBtn[active="true"] { background: #E0F5F2; border: 1.5px solid #0E9384; color: #0B7A6E; }
+QLabel#keypadSpace {
+    border: 1px solid #CDD5DD; border-radius: 6px; background: #FFFFFF; color: #5A6774; font-size: 11px;
+}
+QLabel#keypadSpace[active="true"] { background: #E0F5F2; border: 1.5px solid #0E9384; color: #0B7A6E; }
+
+/* ---------- P6 경로 탭 칩 ---------- */
+QPushButton#routeChip {
+    background: #FFFFFF; color: #5A6774; border: 1px solid #CDD5DD; border-radius: 5px;
+    font-size: 11px; padding: 3px 8px; min-height: 0; max-height: 22px;
+}
+QPushButton#routeChip:checked { background: #E0F5F2; color: #0B7A6E; font-weight: 500; border-color: #E0F5F2; }
+
+/* ---------- P6 경로 순서 리스트 (드래그 재정렬) ---------- */
+QListWidget#routeOrderList {
+    background: transparent; border: none; border-radius: 0;
+}
+QListWidget#routeOrderList::item {
+    background: #FFFFFF; border: 1px solid #E3E8ED; border-radius: 6px;
+    padding: 4px 8px; margin-bottom: 4px;
+}
+QListWidget#routeOrderList::item:selected { background: #F0F4F7; color: #16202B; }
+
+/* ---------- P5 파일 등록 모달 드롭존 ---------- */
+QFrame#dropzoneCard { background: #F5F7F9; border: 1px dashed #CDD5DD; border-radius: 8px; }
+QFrame#dropzoneCard[filled="true"] { background: #E8F6EF; border: 1px solid #BCE3D0; }
+QFrame#previewBox { background: #F5F7F9; border: 1px solid #E3E8ED; border-radius: 8px; }
+
 /* ---------- P1 행별 비상정지 (§6) ---------- */
 QPushButton#rowEstopBtn {
     background: #FFFFFF; color: #D93B47; border: 1px solid #D93B47;
