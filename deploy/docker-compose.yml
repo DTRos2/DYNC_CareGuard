@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: careguard_postgres
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul
+      PGTZ: Asia/Seoul
+      POSTGRES_DB: ${POSTGRES_DB:-careguard}
+      POSTGRES_USER: ${POSTGRES_USER:-careguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-careguard}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - careguard_postgres_data:/var/lib/postgresql/data
+      - ../pc_careguard/db/schema:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-careguard} -d ${POSTGRES_DB:-careguard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  careguard_postgres_data:

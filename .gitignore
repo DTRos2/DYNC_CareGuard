@@ -8,3 +8,5 @@ server/storage/
 *.bag
 *.db3
 *.pt
+deploy/.env
+server/.env
