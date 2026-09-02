@@ -2,14 +2,21 @@
 
 #include <QCheckBox>
 #include <QFont>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QStyle>
 #include <QSvgWidget>
@@ -67,9 +74,13 @@ private:
 }  // namespace
 
 LoginWindow::LoginWindow(QWidget* parent) : QWidget(parent) {
+    serverUrl_ = QProcessEnvironment::systemEnvironment().value(
+        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    netManager_ = new QNetworkAccessManager(this);
+
     setWindowTitle(QStringLiteral("CareGuard 로그인"));
     setObjectName("centralWidget");  // careguard.qss: QWidget#centralWidget → BG_BASE 배경 재사용
-    setFixedSize(480, 660);
+    setFixedSize(560, 660);
 
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
@@ -87,7 +98,7 @@ LoginWindow::LoginWindow(QWidget* parent) : QWidget(parent) {
 
     auto* card = new QFrame(this);
     card->setObjectName("card");
-    card->setFixedWidth(340);
+    card->setFixedWidth(400);
     auto* shadow = new QGraphicsDropShadowEffect(card);
     shadow->setBlurRadius(Tokens::SHADOW_MD.blur);
     shadow->setOffset(0, Tokens::SHADOW_MD.dy);
@@ -157,9 +168,9 @@ LoginWindow::LoginWindow(QWidget* parent) : QWidget(parent) {
     inlineErrorIcon_->setPixmap(SimpleIcons::alertCircle(Tokens::EMERGENCY.main, 12).pixmap(12, 12));
     inlineErrorText_ = makeStyledLabel(QString(), Tokens::Font::CAPTION, QFont::Normal,
                                         Tokens::EMERGENCY.main, inlineErrorRow_);
-    inlineErrorText_->setWordWrap(true);
-    inlineErrorLayout->addWidget(inlineErrorIcon_, 0, Qt::AlignTop);
-    inlineErrorLayout->addWidget(inlineErrorText_, 1);
+    inlineErrorText_->setWordWrap(false);
+    inlineErrorLayout->addWidget(inlineErrorIcon_, 0, Qt::AlignVCenter);
+    inlineErrorLayout->addWidget(inlineErrorText_, 1, Qt::AlignVCenter);
     cardLayout->addWidget(inlineErrorRow_);
     inlineErrorRow_->setVisible(false);
 
@@ -185,6 +196,7 @@ LoginWindow::LoginWindow(QWidget* parent) : QWidget(parent) {
     QPalette bannerSubPal = bannerSubtitle_->palette();
     bannerSubPal.setColor(QPalette::WindowText, Tokens::TEXT_SECONDARY);
     bannerSubtitle_->setPalette(bannerSubPal);
+    bannerSubtitle_->setWordWrap(true);  // 텍스트가 잘려 안 보이는 대신 2줄로 감싸도록 하는 안전장치
     bannerText->addWidget(bannerTitle_);
     bannerText->addWidget(bannerSubtitle_);
     bannerOuter->addWidget(bannerIcon_, 0, Qt::AlignTop);
@@ -225,37 +237,55 @@ void LoginWindow::onSubmit() {
 
     if (id.isEmpty() || pw.isEmpty()) {
         hideBanner();
-        inlineErrorText_->setText(QStringLiteral("아이디와 비밀번호를 입력하세요"));
+        setInlineErrorText(QStringLiteral("아이디와 비밀번호를 입력하세요"));
         inlineErrorRow_->setVisible(true);
         return;
     }
 
     submitting_ = true;
     setState(State::Authenticating);
-    QTimer::singleShot(600, this, [this, id, pw] { resolveLogin(id, pw); });
+    resolveLogin(id, pw);
 }
 
 void LoginWindow::resolveLogin(const QString& id, const QString& password) {
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/auth/login")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QJsonObject body{{"login_id", id}, {"password", password}};
+    QNetworkReply* reply = netManager_->post(request, QJsonDocument(body).toJson());
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, id] {
+        handleLoginReply(reply, id);
+        reply->deleteLater();
+    });
+}
+
+void LoginWindow::handleLoginReply(QNetworkReply* reply, const QString& id) {
     submitting_ = false;
 
-    // TODO: pc_careguard/server 인증 API 연동 시 아래 스텁 판정을 실제 요청으로 교체한다.
-    if (password == QStringLiteral("offline")) {
+    const int statusCode =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+    if (statusCode == 0) {
+        // 네트워크 에러(연결 거부, 타임아웃 등) — 서버에 도달하지 못함.
         setState(State::ServerError);
         return;
     }
-    if (password == QStringLiteral("wrong")) {
-        failCount_++;
-        if (failCount_ >= 5) {
-            enterLocked();
-            return;
-        }
-        setState(State::AuthFailed);
+
+    if (statusCode == 200) {
+        failCount_ = 0;
+        setState(State::Idle);
+        emit loginSucceeded(id);
         return;
     }
 
-    failCount_ = 0;
-    setState(State::Idle);
-    emit loginSucceeded(id);
+    // 401 등 인증 실패 — 계정 미존재/비활성 여부와 무관하게 동일하게 처리.
+    failCount_++;
+    if (failCount_ >= 5) {
+        enterLocked();
+        return;
+    }
+    setState(State::AuthFailed);
 }
 
 void LoginWindow::setState(State state) {
@@ -297,7 +327,7 @@ void LoginWindow::setState(State state) {
             passwordInput_->setProperty("state", "error");
             repolish(passwordInput_);
             hideBanner();
-            inlineErrorText_->setText(
+            setInlineErrorText(
                 QStringLiteral("아이디 또는 비밀번호가 올바르지 않습니다 (%1/5)").arg(failCount_));
             inlineErrorRow_->setVisible(true);
             break;
@@ -378,6 +408,15 @@ void LoginWindow::hideBanner() { banner_->setVisible(false); }
 void LoginWindow::clearPasswordError() {
     passwordInput_->setProperty("state", QVariant());
     repolish(passwordInput_);
+}
+
+void LoginWindow::setInlineErrorText(const QString& text) {
+    // 카드 콘텐츠 폭(400 - 좌우 여백 28*2) 중 아이콘(12)+간격(4)을 뺀 텍스트 가용 폭.
+    // 한 줄 유지가 최우선이라 폰트가 예상보다 넓어도(번들 폰트 미탑재 시 대체 폰트) 줄바꿈 대신 가운데를 줄인다.
+    constexpr int kMaxWidth = 328;
+    const QFontMetrics fm(inlineErrorText_->font());
+    inlineErrorText_->setText(fm.elidedText(text, Qt::ElideMiddle, kMaxWidth));
+    inlineErrorText_->setToolTip(text);
 }
 
 void LoginWindow::togglePasswordVisibility() {

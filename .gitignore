@@ -4,9 +4,10 @@ log/
 __pycache__/
 *.pyc
 dashboard/build/
-server/storage/
+pc_careguard/server/storage/
 *.bag
 *.db3
 *.pt
 deploy/.env
-server/.env
+pc_careguard/server/.env
+.venv/
