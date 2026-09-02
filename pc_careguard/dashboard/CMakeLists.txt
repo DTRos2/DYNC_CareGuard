@@ -12,10 +12,10 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets Multimedia Multimedi
 
 add_executable(careguard_dashboard
     src/main.cpp
-    src/mainwindow.h
-    src/mainwindow.cpp
-    src/loginwindow.h
-    src/loginwindow.cpp
+    src/windows/mainwindow.h
+    src/windows/mainwindow.cpp
+    src/windows/loginwindow.h
+    src/windows/loginwindow.cpp
     src/theme/tokens.h
     src/widgets/simple_icons.h
     src/widgets/simple_icons.cpp

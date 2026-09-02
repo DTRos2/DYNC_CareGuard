@@ -2,9 +2,9 @@
 #include <QFile>
 #include <QFont>
 
-#include "loginwindow.h"
-#include "mainwindow.h"
 #include "theme/tokens.h"
+#include "windows/loginwindow.h"
+#include "windows/mainwindow.h"
 #include "widgets/splashscreenwidget.h"
 
 #include <QTimer>
