@@ -4,3 +4,4 @@ psycopg2-binary
 bcrypt
 python-dotenv
 pydantic
+python-multipart

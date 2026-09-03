@@ -29,6 +29,7 @@ QIcon power(const QColor& color, int px = 16);       // 종료 (ti-power)
 
 // P4 영상 관리 (p4_video_management_wireframe 대응).
 QIcon play(const QColor& color, int px = 16);         // 썸네일 재생 (ti-player-play)
+QIcon pause(const QColor& color, int px = 16);        // 재생 모달 하단 일시정지 (ti-player-pause)
 QIcon list(const QColor& color, int px = 16);         // 테이블 뷰 토글 (ti-list)
 
 // P4 재생 모달 (p4_video_playback_modal_wireframe 대응).

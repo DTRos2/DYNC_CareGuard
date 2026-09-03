@@ -2,9 +2,13 @@ import bcrypt
 from fastapi import FastAPI, HTTPException
 
 from . import db
+from .media import router as media_router
+from .media import video_events_router
 from .schemas import LoginRequest, LoginResponse
 
 app = FastAPI(title="CareGuard Server")
+app.include_router(media_router)
+app.include_router(video_events_router)
 
 INVALID_CREDENTIALS = "아이디 또는 비밀번호가 올바르지 않습니다"
 
