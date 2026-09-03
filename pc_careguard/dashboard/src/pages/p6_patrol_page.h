@@ -18,6 +18,7 @@ class QStackedLayout;
 class WaypointPopover;
 class QKeyEvent;
 class QMenu;
+class QFrame;
 
 // P6 순찰·경로 — 웨이포인트 편집 캔버스 + WP 목록/경로/스케줄.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 5), §7 참고.
@@ -31,6 +32,12 @@ public slots:
     // 이름·대상자·배경 이미지를 갱신하고, 없으면 새 맵으로 추가한다.
     void upsertMap(const QImage& mapImage, const QString& mapName, const QString& robotId,
                     const QString& recipientName);
+
+protected:
+    // 웨이포인트 목록의 각 행(QFrame, "wpId" 프로퍼티로 표시)을 클릭하면 편집 팝오버를
+    // 연다. p6_patrol_route_wireframe.html의 목록 행에는 별도 액션 아이콘이 없어서,
+    // 대신 행 전체를 눌러 편집으로 들어가는 방식으로 그 상호작용을 유지한다.
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     struct Schedule {
@@ -116,6 +123,8 @@ private:
 
     WaypointCanvas* canvas_;
     WaypointPopover* popover_;
+    QWidget* canvasToolbarRow_;
+    QFrame* routeEditBanner_;
 
     QVector<WaypointCanvas::Waypoint> waypoints_;
     QMap<QString, QVector<QString>> routes_;

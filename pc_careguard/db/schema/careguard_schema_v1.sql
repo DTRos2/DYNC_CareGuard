@@ -985,4 +985,73 @@ COMMENT ON COLUMN system_event.severity IS '심각도';
 COMMENT ON COLUMN system_event.message IS '이벤트 메시지';
 COMMENT ON COLUMN system_event.created_at IS '이벤트 발생 시간';
 
+
+-- =========================================================
+-- 15. User Action Log (대시보드 조작 감사 로그)
+-- =========================================================
+
+CREATE TABLE user_action_log (
+    id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id       INTEGER,
+    action_type   VARCHAR(40) NOT NULL CHECK (
+        action_type IN (
+            'login', 'login_failed', 'login_locked', 'logout',
+            'estop', 'estop_release',
+            'robot_command',
+            'view_live', 'view_video', 'download_video',
+            'recipient_create', 'recipient_update', 'recipient_delete',
+            'guardian_create', 'guardian_update', 'guardian_delete',
+            'policy_update',
+            'medication_schedule_create', 'medication_schedule_update', 'medication_schedule_delete',
+            'waypoint_create', 'waypoint_update', 'waypoint_delete',
+            'patrol_route_create', 'patrol_route_update', 'patrol_route_delete',
+            'patrol_schedule_create', 'patrol_schedule_delete',
+            'call_button_register', 'call_button_update', 'call_button_delete',
+            'map_save', 'map_activate', 'map_delete',
+            'guardian_message_create', 'guardian_message_cancel',
+            'account_create', 'account_update', 'account_delete', 'role_update'
+        )
+    ),
+    target_table  VARCHAR(40),
+    target_id     INTEGER,
+    robot_id      INTEGER,
+    recipient_id  INTEGER,
+    care_event_id INTEGER,
+    payload       JSONB,
+    occurred_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT user_action_log_payload_obj_chk CHECK (
+        payload IS NULL OR jsonb_typeof(payload) = 'object'
+    ),
+    CONSTRAINT user_action_log_video_reason_chk CHECK (
+        action_type NOT IN ('view_live', 'view_video', 'download_video')
+        OR (payload IS NOT NULL AND payload ? 'reason' AND length(trim(payload ->> 'reason')) > 0)
+    )
+);
+
+CREATE INDEX idx_user_action_log_user_occurred_at
+ON user_action_log (user_id, occurred_at DESC);
+
+CREATE INDEX idx_user_action_log_target
+ON user_action_log (target_table, target_id, occurred_at DESC);
+
+CREATE INDEX idx_user_action_log_occurred_at
+ON user_action_log (occurred_at DESC);
+
+-- 영상 열람 이력만 빠르게 뽑는 부분 인덱스 (개인정보 감사용)
+CREATE INDEX idx_user_action_log_video
+ON user_action_log (recipient_id, occurred_at DESC)
+WHERE action_type IN ('view_live', 'view_video', 'download_video');
+
+COMMENT ON TABLE user_action_log IS '대시보드 조작 감사 로그. 이벤트와 무관한 관리 조작(로그인·계정·설정·대상자 등)과 영상 열람 이력을 기록한다. 영상 열람 계열은 payload.reason(열람 사유)이 필수이며 CHECK 제약으로 강제된다. care_event에 대한 담당자 조치(확인/완료/취소/119·112 신고 등)는 이 테이블에 중복 기록하지 않고 care_action이 유일한 원본으로 담당한다. P7 감사 로그 화면은 이 테이블과 care_action을 시각순으로 UNION해 구성한다';
+COMMENT ON COLUMN user_action_log.id IS 'PK, 자동 증가';
+COMMENT ON COLUMN user_action_log.user_id IS '조작 계정 id (careguard_user). FK 제약 없음. 로그인 실패로 계정을 특정 못하면 NULL';
+COMMENT ON COLUMN user_action_log.action_type IS '조작 종류. login_failed/login_locked는 로그인 실패·5회 잠금(§5-8). view_live(실시간 스트림) / view_video(녹화 재생) / download_video(내려받기)는 영상 열람 계열. 이벤트 처리 조치는 여기 넣지 않고 care_action에 기록';
+COMMENT ON COLUMN user_action_log.target_table IS '조작 대상 테이블명, 예: medication_schedule / files. 어느 레코드를 건드렸는지 추적';
+COMMENT ON COLUMN user_action_log.target_id IS '조작 대상 레코드 id. 영상 열람이면 files.id 또는 camera_recording.id';
+COMMENT ON COLUMN user_action_log.robot_id IS '대상 로봇 id. E-STOP·실시간 영상 열람 시 사용';
+COMMENT ON COLUMN user_action_log.recipient_id IS '대상 대상자 id. 대상자별 영상 열람 이력 조회에 사용';
+COMMENT ON COLUMN user_action_log.care_event_id IS '연관 이벤트 id. 이벤트와 무관한 조작은 NULL';
+COMMENT ON COLUMN user_action_log.payload IS '상세 데이터. 영상 열람이면 {"reason":"...","access_kind":"clip"}, 설정 변경이면 {"before":{...},"after":{...}}';
+COMMENT ON COLUMN user_action_log.occurred_at IS '조작 시각';
+
 COMMIT;

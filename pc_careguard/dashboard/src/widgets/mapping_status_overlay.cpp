@@ -6,6 +6,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QStyle>
 
@@ -82,16 +83,17 @@ void MappingStatusOverlay::buildPanel() {
     grid->setContentsMargins(0, 0, 0, 0);
     grid->setSpacing(0);
 
-    const QStringList headers = {QStringLiteral("맵 · 가정"), QStringLiteral("대상자"),
-                                  QStringLiteral("할당 로봇"), QStringLiteral("WP"), QStringLiteral("경로"),
-                                  QStringLiteral("최종 배포")};
+    const QStringList headers = {QStringLiteral("맵 · 가정"),   QStringLiteral("대상자"),
+                                  QStringLiteral("할당 로봇"),   QStringLiteral("WP"),
+                                  QStringLiteral("경로"),       QStringLiteral("최종 배포"),
+                                  QString()};  // 마지막 열은 미리보기 버튼 — 헤더 텍스트 없음.
     auto* headerRow = new QFrame(panel_);
     headerRow->setObjectName("mappingStatusRowHeader");
     auto* headerLayout = new QHBoxLayout(headerRow);
     headerLayout->setContentsMargins(12, 6, 12, 6);
     headerLayout->setSpacing(6);
-    const QList<int> stretches = {1, 0, 0, 0, 0, 0};
-    const QList<int> widths = {0, 72, 72, 46, 46, 100};
+    const QList<int> stretches = {1, 0, 0, 0, 0, 0, 0};
+    const QList<int> widths = {0, 72, 72, 46, 46, 100, 28};
     for (int i = 0; i < headers.size(); ++i) {
         auto* lbl = new QLabel(headers[i], headerRow);
         lbl->setProperty("role", "label");
@@ -126,6 +128,18 @@ void MappingStatusOverlay::buildPanel() {
         QLabel* routeCell = addCell(r.route, 46, true, warnColor);
         QLabel* lastCell =
             addCell(r.lastDeployed, 100, true, r.warn ? &Tokens::ATTENTION.main : &Tokens::TEXT_SECONDARY);
+
+        // 미리보기 버튼 — 이 위젯 자신은 맵 이미지를 안 들고 있으므로(kRows는 텍스트
+        // 더미), robotId만 담아 시그널로 알리고 실제 조회·모달 표시는 상위(P5MapPage)가 한다.
+        auto* previewBtn = new QPushButton(SimpleIcons::eye(Tokens::TEXT_MUTED, 12), QString(), rowFrame);
+        previewBtn->setProperty("variant", "ghost");
+        previewBtn->setFixedSize(24, 24);
+        previewBtn->setIconSize(QSize(12, 12));
+        previewBtn->setToolTip(QStringLiteral("맵 미리보기"));
+        const QString robotIdForPreview = r.robot;
+        connect(previewBtn, &QPushButton::clicked, this,
+                [this, robotIdForPreview] { emit mapPreviewRequested(robotIdForPreview); });
+        rowLayout->addWidget(previewBtn, 0);
 
         rows_.append(RowWidgets{r.robot, rowFrame, nameCell, recipientCell, wpCell, routeCell, lastCell});
 

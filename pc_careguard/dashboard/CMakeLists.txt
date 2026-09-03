@@ -27,6 +27,8 @@ add_executable(careguard_dashboard
     src/widgets/splashscreencontentwidget.cpp
     src/widgets/splashassetresolver.h
     src/widgets/splashassetresolver.cpp
+    src/widgets/canvas_geometry.h
+    src/widgets/canvas_geometry.cpp
     src/widgets/slam_mapping_card.h
     src/widgets/slam_mapping_card.cpp
     src/widgets/teleop_panel.h
@@ -39,12 +41,18 @@ add_executable(careguard_dashboard
     src/widgets/toggle_switch.cpp
     src/widgets/yaw_dial.h
     src/widgets/yaw_dial.cpp
+    src/widgets/camera_live_view.h
+    src/widgets/camera_live_view.cpp
+    src/widgets/image_zoom_view.h
+    src/widgets/image_zoom_view.cpp
     src/widgets/waypoint_canvas.h
     src/widgets/waypoint_canvas.cpp
     src/widgets/waypoint_popover.h
     src/widgets/waypoint_popover.cpp
     src/dialogs/map_file_register_dialog.h
     src/dialogs/map_file_register_dialog.cpp
+    src/dialogs/map_preview_dialog.h
+    src/dialogs/map_preview_dialog.cpp
     src/pages/p1_overview_page.h
     src/pages/p1_overview_page.cpp
     src/pages/p2_event_page.h
@@ -64,3 +72,8 @@ add_executable(careguard_dashboard
 
 target_include_directories(careguard_dashboard PRIVATE src)
 target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network)
+
+# 대시보드 실행 시 FastAPI 서버를 자동 기동하기 위한 기본 경로.
+# 환경변수 CAREGUARD_SERVER_DIR로 재정의 가능 (main.cpp 참고).
+target_compile_definitions(careguard_dashboard PRIVATE
+    CAREGUARD_SERVER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../server")

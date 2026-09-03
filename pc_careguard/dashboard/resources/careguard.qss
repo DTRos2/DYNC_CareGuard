@@ -117,6 +117,7 @@ QLabel#badge[level="ok"]        { background: #E8F6EF; color: #16875A; border: 1
 QLabel#badge[level="info"]      { background: #E9F2FB; color: #2563A8; border: 1px solid #C2D9F0; }
 QLabel#badge[level="offline"]   { background: #F1F4F6; color: #5A6774; border: 1px solid #DFE5EA; }
 QLabel#badge[level="emergencyFill"] { background: #D93B47; color: #FFFFFF; border: none; } /* 상단바·썸네일용 */
+QLabel#badge[size="xs"] { font-size: 10px; padding: 1px 6px; min-height: 14px; }
 
 /* ---------- 카드 ---------- */
 QFrame#card {
@@ -185,6 +186,10 @@ QLineEdit::placeholder { color: #93A0AC; }
 QSpinBox, QDoubleSpinBox, QTimeEdit {
     font-family: "JetBrains Mono", "D2Coding", monospace; font-size: 13px;
 }
+/* 와이어프레임(P5 텔레옵 속도값, P6 yaw 값)은 증감 화살표 없는 평범한 박스로 그려진다 —
+   네이티브 스핀 버튼을 숨겨 맞춘다. 휠·화살표 키로는 계속 증감할 수 있다. */
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0; border: none; }
 QComboBox::drop-down { border: none; width: 22px; }
 QComboBox QAbstractItemView {
     background: #FFFFFF; border: 1px solid #CDD5DD; border-radius: 8px;
@@ -258,6 +263,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 /* ---------- 리스트 (알림 피드 등) ---------- */
 QListWidget { background: #FFFFFF; border: 1px solid #E3E8ED; border-radius: 12px; outline: none; }
 QListWidget::item { border-bottom: 1px solid #E3E8ED; padding: 7px 12px; }
+QListWidget#alertList::item { padding: 3px 12px; }
 QListWidget::item:hover { background: #F0F4F7; }
 QListWidget::item:selected { background: #E0F5F2; color: #16202B; }
 
@@ -269,6 +275,19 @@ QProgressBar {
 QProgressBar::chunk { background: #0E9384; border-radius: 4px; }
 QProgressBar[level="attention"]::chunk { background: #C27500; }
 QProgressBar[level="emergency"]::chunk { background: #D93B47; }
+
+/* ---------- 슬라이더 (P5 텔레옵 선속도/각속도) ---------- */
+/* p5_slam_mapping_wireframe_standalone.html: 트랙 6px, 채움 ACCENT, 손잡이 12x12 원 */
+QSlider::groove:horizontal { height: 6px; background: #EDF1F4; border-radius: 3px; }
+QSlider::add-page:horizontal  { background: #EDF1F4; border-radius: 3px; }
+QSlider::sub-page:horizontal  { background: #0E9384; border-radius: 3px; }
+QSlider::handle:horizontal {
+    width: 12px; height: 12px; margin: -3px 0;
+    background: #FFFFFF; border: 1.5px solid #0E9384; border-radius: 6px;
+}
+QSlider::handle:horizontal:hover   { border-color: #0B7A6E; }
+QSlider:disabled::sub-page:horizontal { background: #CDD5DD; }
+QSlider:disabled::handle:horizontal   { border-color: #CDD5DD; }
 
 /* ---------- 툴팁 ---------- */
 QToolTip {
@@ -298,12 +317,30 @@ QPushButton#loginBtn:disabled { background: #EDF1F4; color: #93A0AC; border: 1px
 QPushButton#loginBtn[state="loading"] { background: #0B7A6E; }
 QLabel#loginError { color: #D93B47; font-size: 11px; }
 
-/* ---------- P5 로봇 셀렉터 칩 ---------- */
+/* ---------- P5 로봇 셀렉터 칩 / P6 맵 선택 칩 ---------- */
 QPushButton#robotChip {
     background: #FFFFFF; color: #16202B; border: 1px solid #CDD5DD; border-radius: 6px;
     font-size: 11px; padding: 0 10px; min-height: 28px; max-height: 28px; text-align: left;
 }
 QPushButton#robotChip:hover { background: #F0F4F7; }
+/* 문구 안에 이미 "▾"를 직접 넣으므로, setMenu()가 붙는 버튼(P6 mapChipBtn_)의 Qt 기본
+   메뉴 인디케이터는 숨긴다 — 안 그러면 화살표가 두 개 겹쳐 보인다. */
+QPushButton#robotChip::menu-indicator { image: none; width: 0; }
+
+/* ---------- 드롭다운 메뉴 (예: P6 mapMenu_) ---------- */
+QMenu {
+    background: #FFFFFF;
+    border: 1px solid #E0E0E0;
+    border-radius: 8px;
+    padding: 6px;
+}
+QMenu::item {
+    padding: 8px 14px;
+    border-radius: 6px;
+    color: #16202B;
+}
+QMenu::item:selected { background: #E0F5F2; color: #0B7A6E; }
+QMenu::separator { height: 1px; background: #E3E8ED; margin: 4px 6px; }
 
 /* ---------- P5 매핑 현황 오버레이 (§6 — 레이아웃 밀지 않는 자식 오버레이) ---------- */
 QFrame#mappingStatusHeader { background: #FFFFFF; border: 1px solid #E3E8ED; border-radius: 12px; }
@@ -341,7 +378,7 @@ QListWidget#routeOrderList {
 }
 QListWidget#routeOrderList::item {
     background: #FFFFFF; border: 1px solid #E3E8ED; border-radius: 6px;
-    padding: 4px 8px; margin-bottom: 4px;
+    padding: 4px 8px; margin-bottom: 4px; font-size: 11px;
 }
 QListWidget#routeOrderList::item:selected { background: #F0F4F7; color: #16202B; }
 
@@ -350,11 +387,17 @@ QFrame#dropzoneCard { background: #F5F7F9; border: 1px dashed #CDD5DD; border-ra
 QFrame#dropzoneCard[filled="true"] { background: #E8F6EF; border: 1px solid #BCE3D0; }
 QFrame#previewBox { background: #F5F7F9; border: 1px solid #E3E8ED; border-radius: 8px; }
 
-/* ---------- P1 행별 비상정지 (§6) ---------- */
+/* ---------- P1 행별 액션·비상정지 (§6) ---------- */
+/* QPushButton[size="s"]는 QWidget의 내장 size 프로퍼티(QSize)와 이름이 겹쳐
+   setProperty("size", "s")가 항상 실패한다 — 그래서 objectName으로 직접 지정. */
+QPushButton#detailBtn {
+    border-radius: 6px; font-size: 12px; font-weight: 500;
+    min-height: 28px; max-height: 28px; padding: 0 10px;
+}
 QPushButton#rowEstopBtn {
     background: #FFFFFF; color: #D93B47; border: 1px solid #D93B47;
-    border-radius: 6px; font-size: 11px; font-weight: 500;
-    min-height: 26px; max-height: 26px; padding: 0 8px;
+    border-radius: 6px; font-size: 12px; font-weight: 500;
+    min-height: 28px; max-height: 28px; padding: 0 10px;
 }
 QPushButton#rowEstopBtn:hover   { background: #FDECEE; }
 QPushButton#rowEstopBtn:disabled{ background: #EDF1F4; color: #93A0AC; border: 1px solid #E3E8ED; }

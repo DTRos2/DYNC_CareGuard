@@ -18,6 +18,11 @@ public:
     // 사용자가 등록 시 입력한 값으로 갱신한다 (WP/경로/최종배포 갱신 + 경고 해제).
     void markMapDeployed(const QString& robotId, const QString& mapName, const QString& recipientName);
 
+signals:
+    // 행의 미리보기 아이콘을 눌렀을 때 — 이 위젯은 맵 이미지를 들고 있지 않으므로
+    // (kRows는 텍스트 더미), 실제 이미지 조회·모달 표시는 P5MapPage가 담당한다.
+    void mapPreviewRequested(const QString& robotId);
+
 protected:
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;

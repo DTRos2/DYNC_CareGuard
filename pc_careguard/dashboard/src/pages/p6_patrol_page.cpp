@@ -2,6 +2,7 @@
 
 #include <QButtonGroup>
 #include <QComboBox>
+#include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QAction>
@@ -97,6 +98,23 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     connect(canvas_, &WaypointCanvas::testRunFinished, this, [this] {
         QMessageBox::information(this, QStringLiteral("주행 완료"), QStringLiteral("목적지까지 주행을 마쳤습니다."));
     });
+    // 창 크기 변경으로 캔버스가 웨이포인트 좌표를 다시 배치했다 — 이 페이지가 들고
+    // 있는 사본과 현재 맵 데이터도 같이 갱신해야 다음 편집에서 되돌아가지 않는다.
+    connect(canvas_, &WaypointCanvas::viewRescaled, this, [this] {
+        waypoints_ = canvas_->waypoints();
+        // 로봇 "현재 위치"는 캔버스 내부에서도 같은 변환으로 리매핑되지만, 페이지가 아직
+        // 숨겨진 상태(QStackedWidget에서 P6이 current가 아닐 때)에서 loadMapData()가
+        // setCurrentRobotPosition을 호출하면 그 시점엔 캔버스 실제 크기를 몰라 값이
+        // 어긋날 수 있다 — 방금 새로 갱신된 웨이포인트 좌표를 기준으로 다시 한 번
+        // 확실하게 맞춰준다.
+        const QString chargeId = chargingWaypointId();
+        if (const WaypointCanvas::Waypoint* c = canvas_->findWaypoint(chargeId)) {
+            canvas_->setCurrentRobotPosition(c->pos, 0.0);
+        }
+        saveCurrentMapData();
+        rebuildWpList();
+        popover_->hide();
+    });
 
     loadMapData(0);
 }
@@ -116,6 +134,8 @@ QWidget* P6PatrolPage::buildHeaderRow() {
     mapChipBtn_->setIconSize(QSize(12, 12));
     mapMenu_ = new QMenu(mapChipBtn_);
     mapChipBtn_->setMenu(mapMenu_);
+    // 버튼에 딱 붙어 보이지 않도록 살짝 간격을 띄워서 연다.
+    connect(mapMenu_, &QMenu::aboutToShow, this, [this] { mapMenu_->move(mapMenu_->pos() + QPoint(0, 6)); });
     rebuildMapMenu();
     layout->addWidget(mapChipBtn_);
     layout->addStretch();
@@ -142,11 +162,13 @@ QWidget* P6PatrolPage::buildCanvasCard() {
                                 Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
     layout->setSpacing(8);
 
-    auto* toolbar = new QHBoxLayout();
+    canvasToolbarRow_ = new QWidget(card);
+    auto* toolbar = new QHBoxLayout(canvasToolbarRow_);
+    toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(6);
 
-    auto* addModeBtn = new QPushButton(QStringLiteral("WP 추가"), card);
-    auto* moveModeBtn = new QPushButton(QStringLiteral("이동"), card);
+    auto* addModeBtn = new QPushButton(QStringLiteral("WP 추가"), canvasToolbarRow_);
+    auto* moveModeBtn = new QPushButton(QStringLiteral("이동"), canvasToolbarRow_);
     for (auto* btn : {addModeBtn, moveModeBtn}) {
         btn->setObjectName("segBtn");
         btn->setCheckable(true);
@@ -172,12 +194,33 @@ QWidget* P6PatrolPage::buildCanvasCard() {
 
     auto* hint = new QLabel(
         QStringLiteral("휠 확대/축소 · 빈 곳 드래그로 이동 · 더블클릭 원상복귀 — 그 외 모드별 안내는 지도 하단 참고"),
-        card);
+        canvasToolbarRow_);
     hint->setProperty("role", "muted");
     hint->setStyleSheet(QStringLiteral("font-size:11px;"));
     toolbar->addWidget(hint);
     toolbar->addStretch();
-    layout->addLayout(toolbar);
+    layout->addWidget(canvasToolbarRow_);
+
+    // 경로 편집 모드에선 위 툴바(WP 추가/이동은 편집 중 의미가 없다) 대신 이 배너로
+    // 바꿔 보여준다 — p6_route_edit_schedule_wireframe.html의 파란 안내 바.
+    routeEditBanner_ = new QFrame(card);
+    routeEditBanner_->setObjectName("banner");
+    routeEditBanner_->setProperty("level", "editMode");
+    auto* bannerLayout = new QHBoxLayout(routeEditBanner_);
+    bannerLayout->setContentsMargins(10, 7, 10, 7);
+    bannerLayout->setSpacing(6);
+    auto* bannerIcon = new QLabel(routeEditBanner_);
+    bannerIcon->setPixmap(SimpleIcons::route(Tokens::INFO.main, 12).pixmap(12, 12));
+    bannerLayout->addWidget(bannerIcon);
+    auto* bannerText = new QLabel(QStringLiteral("경로 편집 중 — 웨이포인트를 순서대로 클릭하세요"), routeEditBanner_);
+    bannerText->setStyleSheet(QStringLiteral("font-weight:500;"));
+    bannerLayout->addWidget(bannerText);
+    bannerLayout->addStretch();
+    auto* bannerHint = new QLabel(QStringLiteral("재클릭 = 제거"), routeEditBanner_);
+    bannerHint->setStyleSheet(QStringLiteral("color:#5A6774; font-size:11px;"));
+    bannerLayout->addWidget(bannerHint);
+    routeEditBanner_->hide();
+    layout->addWidget(routeEditBanner_);
 
     canvas_ = new WaypointCanvas(card);
     layout->addWidget(canvas_, /*stretch=*/1);
@@ -508,18 +551,28 @@ void P6PatrolPage::rebuildWpList() {
         delete item;
     }
 
-    auto* header = new QHBoxLayout();
-    auto* title = new QLabel(QStringLiteral("웨이포인트 %1").arg(waypoints_.size()), wpListCard_);
+    // 헤더를 QWidget으로 감싸서 addWidget()한다 — addLayout()으로 바로 붙이면 위 clear
+    // 루프의 delete item->widget()이 nullptr을 지우는 셈이라(레이아웃 아이템은 위젯이
+    // 아니다) title·typeHint가 지워지지 않고 남아, 다시 그릴 때마다 옛 "웨이포인트 N"
+    // 라벨이 새 라벨과 겹쳐 보이는 버그가 있었다.
+    auto* headerRow = new QWidget(wpListCard_);
+    auto* header = new QHBoxLayout(headerRow);
+    header->setContentsMargins(0, 0, 0, 0);
+    auto* title = new QLabel(QStringLiteral("웨이포인트 %1").arg(waypoints_.size()), headerRow);
     title->setProperty("role", "label");
     header->addWidget(title);
     header->addStretch();
-    auto* typeHint = new QLabel(QStringLiteral("유형: 순찰 지점 · 충전"), wpListCard_);
+    auto* typeHint = new QLabel(QStringLiteral("유형: 순찰 지점 · 충전"), headerRow);
     typeHint->setProperty("role", "muted");
     typeHint->setStyleSheet(QStringLiteral("font-size:11px;"));
     header->addWidget(typeHint);
-    wpListLayout_->addLayout(header);
-    wpListLayout_->addSpacing(4);
+    wpListLayout_->addWidget(headerRow);
+    wpListLayout_->addSpacing(6);
 
+    // p6_patrol_route_wireframe.html 그대로 — 하나의 테두리 안에 구분선으로만 나뉜
+    // 단순한 한 줄짜리 행: ID · 이름 · (충전이면 "초기 위치" 배지, 아니면 우측 정렬된
+    // "x, y, yaw°"). 행 자체를 누르면 편집 팝오버가 열린다(eventFilter) — 와이어프레임엔
+    // 없는 동작이지만 겉모습은 바꾸지 않으면서 기존 "행 클릭 = 편집" 진입을 유지한다.
     auto* listFrame = new QFrame(wpListCard_);
     listFrame->setStyleSheet(
         QStringLiteral("border:1px solid #E3E8ED; border-radius:8px; background:#FFFFFF;"));
@@ -529,70 +582,71 @@ void P6PatrolPage::rebuildWpList() {
 
     for (int i = 0; i < waypoints_.size(); ++i) {
         const WaypointCanvas::Waypoint& w = waypoints_[i];
+
         auto* row = new QFrame(listFrame);
         if (i + 1 < waypoints_.size()) {
             row->setStyleSheet(QStringLiteral("border-bottom:1px solid #E3E8ED;"));
         }
-        auto* rowLayout = new QVBoxLayout(row);
-        rowLayout->setContentsMargins(8, 5, 8, 5);
-        rowLayout->setSpacing(1);
+        row->setCursor(Qt::PointingHandCursor);
+        row->setProperty("wpId", w.id);
+        row->installEventFilter(this);
 
-        auto* topRow = new QHBoxLayout();
-        topRow->setSpacing(6);
+        auto* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(8, 5, 8, 5);
+        rowLayout->setSpacing(6);
 
         auto* idLabel = new QLabel(w.id, row);
-        idLabel->setProperty("role", "mono");
-        idLabel->setStyleSheet(QStringLiteral("color:#5A6774; font-size:11px;"));
-        topRow->addWidget(idLabel);
+        idLabel->setStyleSheet(
+            w.charging ? QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
+                                         "color:#0B7A6E; font-size:11px; font-weight:500;")
+                       : QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
+                                        "color:#5A6774; font-size:11px;"));
+        rowLayout->addWidget(idLabel);
 
         auto* nameLabel = new QLabel(w.name, row);
-        nameLabel->setStyleSheet(QStringLiteral("font-size:11px;"));
-        topRow->addWidget(nameLabel);
-        topRow->addStretch();
+        nameLabel->setStyleSheet(QStringLiteral("color:#16202B; font-size:11px;"));
+        rowLayout->addWidget(nameLabel);
+        rowLayout->addStretch();
 
         if (w.charging) {
             auto* badge = new QLabel(QStringLiteral("초기 위치"), row);
-            badge->setStyleSheet(
-                QStringLiteral("color:#0B7A6E; background:#E0F5F2; font-size:10px; padding:1px 5px; "
-                                "border-radius:3px;"));
-            topRow->addWidget(badge);
+            badge->setStyleSheet(QStringLiteral(
+                "color:#0B7A6E; background:#E0F5F2; font-size:10px; padding:1px 5px; border-radius:3px;"));
+            rowLayout->addWidget(badge);
+        } else {
+            auto* coordLabel = new QLabel(
+                QStringLiteral("%1, %2, %3°")
+                    .arg(w.pos.x() / kPxPerMeter, 0, 'f', 1)
+                    .arg(w.pos.y() / kPxPerMeter, 0, 'f', 1)
+                    .arg(static_cast<int>(w.yawDeg)),
+                row);
+            coordLabel->setStyleSheet(QStringLiteral(
+                "font-family:'JetBrains Mono','D2Coding',monospace; color:#93A0AC; font-size:11px;"));
+            rowLayout->addWidget(coordLabel);
         }
-
-        const QString id = w.id;
-        auto* editBtn = new QPushButton(SimpleIcons::chevronRight(Tokens::TEXT_MUTED, 10), QString(), row);
-        editBtn->setProperty("variant", "ghost");
-        editBtn->setFixedSize(20, 20);
-        editBtn->setIconSize(QSize(10, 10));
-        editBtn->setToolTip(QStringLiteral("웨이포인트 편집"));
-        connect(editBtn, &QPushButton::clicked, this, [this, id] { handleCanvasEditRequested(id); });
-        topRow->addWidget(editBtn);
-
-        if (!w.charging) {
-            auto* driveBtn = new QPushButton(SimpleIcons::play(Tokens::ACCENT, 9), QString(), row);
-            driveBtn->setProperty("variant", "ghost");
-            driveBtn->setFixedSize(20, 20);
-            driveBtn->setIconSize(QSize(9, 9));
-            driveBtn->setToolTip(QStringLiteral("이 지점으로만 주행"));
-            connect(driveBtn, &QPushButton::clicked, this, [this, id] { driveToSingleWaypoint(id); });
-            topRow->addWidget(driveBtn);
-        }
-
-        rowLayout->addLayout(topRow);
-
-        auto* coordLabel = new QLabel(
-            QStringLiteral("x %1  y %2  yaw %3°")
-                .arg(w.pos.x() / kPxPerMeter, 0, 'f', 1)
-                .arg(w.pos.y() / kPxPerMeter, 0, 'f', 1)
-                .arg(static_cast<int>(w.yawDeg)),
-            row);
-        coordLabel->setProperty("role", "mono");
-        coordLabel->setStyleSheet(QStringLiteral("color:#93A0AC; font-size:10px;"));
-        rowLayout->addWidget(coordLabel);
 
         listLayout->addWidget(row);
     }
 
     wpListLayout_->addWidget(listFrame);
+}
+
+bool P6PatrolPage::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonPress) {
+        const QVariant wpId = watched->property("wpId");
+        if (wpId.isValid()) {
+            // 캔버스가 "이동" 모드일 때 지도 위 마커를 클릭하면 그 지점으로 주행하는
+            // 것과 똑같이, 목록에서도 같은 웨이포인트를 누르면 주행 요청으로 이어지게
+            // 한다. "WP 추가" 모드에서는 기존대로 편집 팝오버를 연다.
+            if (canvas_->interactionMode() == WaypointCanvas::InteractionMode::MoveWaypoint) {
+                driveToSingleWaypoint(wpId.toString());
+            } else {
+                handleCanvasEditRequested(wpId.toString());
+            }
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void P6PatrolPage::rebuildRouteChips() {
@@ -765,6 +819,8 @@ void P6PatrolPage::enterRouteEditMode(const QString& routeName) {
     canvas_->setRouteEditMode(true);
     canvas_->setRouteEditSelection(routeEditSelection_);
     routeStack_->setCurrentIndex(1);
+    canvasToolbarRow_->hide();
+    routeEditBanner_->show();
     rebuildRouteEditList();
 }
 
@@ -785,6 +841,8 @@ void P6PatrolPage::exitRouteEditMode(bool save) {
     routeEditMode_ = false;
     canvas_->setRouteEditMode(false);
     routeStack_->setCurrentIndex(0);
+    routeEditBanner_->hide();
+    canvasToolbarRow_->show();
 
     rebuildRouteChips();
     rebuildRouteOrderList();
