@@ -65,8 +65,16 @@ private:
     void populateRobotRow(int r);
     void refreshRobotTable();
 
+    void openAccountDialog(int rowIndex);  // -1이면 신규 등록
+    void populateAccountRow(int r);
+    void refreshAccountTable();
+    bool isLastActiveAdmin(int rowIndex) const;
+
     QTableWidget* robotTable_ = nullptr;
     QLabel* robotCountLabel_ = nullptr;
+    QTableWidget* accountTable_ = nullptr;
+    // 데모용 고정값 — 실제 로그인 세션 연동은 범위 밖. accounts_[0]("admin")을 본인으로 취급한다.
+    QString currentUserLoginId_ = QStringLiteral("admin");
 
     std::vector<RobotRow> robots_;
     std::vector<NodeDetail> r03Nodes_;

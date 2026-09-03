@@ -13,6 +13,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 
+#include "dialogs/p7_account_dialog.h"
 #include "dialogs/p7_robot_dialog.h"
 #include "theme/tokens.h"
 #include "widgets/simple_icons.h"
@@ -346,83 +347,43 @@ QWidget* P7SettingsPage::buildAccountTab() {
 
     const int activeCount = static_cast<int>(
         std::count_if(accounts_.begin(), accounts_.end(), [](const AccountRow& a) { return a.active; }));
-    layout->addWidget(buildListHeader(
+    auto* headerRow = buildListHeader(
         QStringLiteral("계정 %1 · 활성 %2").arg(accounts_.size()).arg(activeCount),
-        QStringLiteral("계정 등록")));
+        QStringLiteral("계정 등록"));
+    auto* headerBtn = headerRow->findChild<QPushButton*>();
+    if (headerBtn != nullptr) {
+        connect(headerBtn, &QPushButton::clicked, this, [this] { openAccountDialog(-1); });
+    }
+    layout->addWidget(headerRow);
 
-    auto* table = new QTableWidget(tab);
+    accountTable_ = new QTableWidget(tab);
     const QStringList headers = {QStringLiteral("ID"), QStringLiteral("이름"), QStringLiteral("역할"),
                                   QStringLiteral("담당 (대상자·로봇)"), QStringLiteral("최종 로그인"),
                                   QStringLiteral("상태"), QStringLiteral("액션")};
-    table->setColumnCount(headers.size());
-    table->setHorizontalHeaderLabels(headers);
-    table->verticalHeader()->setVisible(false);
-    table->verticalHeader()->setDefaultSectionSize(Tokens::Layout::TABLE_ROW_H);
-    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    table->setSelectionMode(QAbstractItemView::NoSelection);
-    table->setFocusPolicy(Qt::NoFocus);
-    table->setShowGrid(false);
+    accountTable_->setColumnCount(headers.size());
+    accountTable_->setHorizontalHeaderLabels(headers);
+    accountTable_->verticalHeader()->setVisible(false);
+    accountTable_->verticalHeader()->setDefaultSectionSize(Tokens::Layout::TABLE_ROW_H);
+    accountTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    accountTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    accountTable_->setFocusPolicy(Qt::NoFocus);
+    accountTable_->setShowGrid(false);
 
-    auto* header = table->horizontalHeader();
+    auto* header = accountTable_->horizontalHeader();
     header->setSectionResizeMode(QHeaderView::Interactive);
     header->setSectionResizeMode(3, QHeaderView::Stretch);
-    table->setColumnWidth(0, 110);  // ID
-    table->setColumnWidth(1, 100);  // 이름
-    table->setColumnWidth(2, 100);  // 역할
-    table->setColumnWidth(4, 130);  // 최종 로그인
-    table->setColumnWidth(5, 90);   // 상태
-    table->setColumnWidth(6, 150);  // 액션
+    accountTable_->setColumnWidth(0, 110);  // ID
+    accountTable_->setColumnWidth(1, 100);  // 이름
+    accountTable_->setColumnWidth(2, 100);  // 역할
+    accountTable_->setColumnWidth(4, 130);  // 최종 로그인
+    accountTable_->setColumnWidth(5, 90);   // 상태
+    accountTable_->setColumnWidth(6, 150);  // 액션
 
-    table->setRowCount(static_cast<int>(accounts_.size()));
+    accountTable_->setRowCount(static_cast<int>(accounts_.size()));
     for (int r = 0; r < static_cast<int>(accounts_.size()); ++r) {
-        const AccountRow& acc = accounts_[static_cast<size_t>(r)];
-        const QColor rowBg = acc.active ? Tokens::BG_SURFACE : Tokens::BG_SUNKEN;
-        const QColor textColor = acc.active ? Tokens::TEXT_PRIMARY : Tokens::TEXT_MUTED;
-
-        auto* idItem = new QTableWidgetItem(acc.id);
-        idItem->setFont(QFont(Tokens::Font::MONO));
-        idItem->setTextAlignment(Qt::AlignCenter);
-        idItem->setBackground(rowBg);
-        idItem->setForeground(textColor);
-        table->setItem(r, 0, idItem);
-
-        auto* nameItem = new QTableWidgetItem(acc.name);
-        nameItem->setTextAlignment(Qt::AlignCenter);
-        nameItem->setBackground(rowBg);
-        nameItem->setForeground(textColor);
-        table->setItem(r, 1, nameItem);
-
-        auto* roleItem = new QTableWidgetItem(acc.role);
-        roleItem->setTextAlignment(Qt::AlignCenter);
-        roleItem->setBackground(rowBg);
-        roleItem->setForeground(acc.role == QStringLiteral("관리자") ? Tokens::ACCENT_HOVER : textColor);
-        QFont roleFont = roleItem->font();
-        roleFont.setWeight(acc.role == QStringLiteral("관리자") ? QFont::DemiBold : QFont::Normal);
-        roleItem->setFont(roleFont);
-        table->setItem(r, 2, roleItem);
-
-        auto* chargeItem = new QTableWidgetItem(acc.charge);
-        chargeItem->setTextAlignment(Qt::AlignCenter);
-        chargeItem->setBackground(rowBg);
-        chargeItem->setForeground(textColor);
-        table->setItem(r, 3, chargeItem);
-
-        auto* loginItem = new QTableWidgetItem(acc.lastLogin);
-        loginItem->setFont(QFont(Tokens::Font::MONO));
-        loginItem->setTextAlignment(Qt::AlignCenter);
-        loginItem->setBackground(rowBg);
-        loginItem->setForeground(acc.active ? Tokens::TEXT_SECONDARY : Tokens::TEXT_MUTED);
-        table->setItem(r, 4, loginItem);
-
-        table->setCellWidget(
-            r, 5, wrapCellWidget(makeBadge(acc.active ? Tokens::Prop::OK : Tokens::Prop::OFFLINE,
-                                            acc.active ? QStringLiteral("활성") : QStringLiteral("비활성")),
-                                  rowBg));
-
-        const QString actionText = acc.active ? QStringLiteral("수정 · PW 초기화") : QStringLiteral("활성화");
-        table->setCellWidget(r, 6, wrapCellWidget(linkText(actionText), rowBg));
+        populateAccountRow(r);
     }
-    layout->addWidget(table, /*stretch=*/1);
+    layout->addWidget(accountTable_, /*stretch=*/1);
 
     return tab;
 }
@@ -722,6 +683,142 @@ void P7SettingsPage::openRobotDialog(int rowIndex) {
             robots_.erase(robots_.begin() + rowIndex);
             refreshRobotTable();
         }
+    });
+    dialog->exec();
+    dialog->deleteLater();
+}
+
+namespace {
+AccountDialog::Role koreanRoleToEnum(const QString& role) {
+    if (role == QStringLiteral("관리자")) return AccountDialog::Role::Admin;
+    if (role == QStringLiteral("보호자")) return AccountDialog::Role::Guardian;
+    return AccountDialog::Role::Operator;
+}
+
+QString roleEnumToKorean(AccountDialog::Role role) {
+    switch (role) {
+        case AccountDialog::Role::Admin: return QStringLiteral("관리자");
+        case AccountDialog::Role::Guardian: return QStringLiteral("보호자");
+        case AccountDialog::Role::Operator: return QStringLiteral("관제");
+    }
+    return QString();
+}
+}  // namespace
+
+bool P7SettingsPage::isLastActiveAdmin(int rowIndex) const {
+    const AccountRow& target = accounts_[static_cast<size_t>(rowIndex)];
+    if (target.role != QStringLiteral("관리자") || !target.active) return false;
+    int activeAdmins = 0;
+    for (const auto& acc : accounts_) {
+        if (acc.role == QStringLiteral("관리자") && acc.active) ++activeAdmins;
+    }
+    return activeAdmins <= 1;
+}
+
+void P7SettingsPage::populateAccountRow(int r) {
+    const AccountRow& acc = accounts_[static_cast<size_t>(r)];
+    const QColor rowBg = acc.active ? Tokens::BG_SURFACE : Tokens::BG_SUNKEN;
+    const QColor textColor = acc.active ? Tokens::TEXT_PRIMARY : Tokens::TEXT_MUTED;
+
+    auto* idItem = new QTableWidgetItem(acc.id);
+    idItem->setFont(QFont(Tokens::Font::MONO));
+    idItem->setTextAlignment(Qt::AlignCenter);
+    idItem->setBackground(rowBg);
+    idItem->setForeground(textColor);
+    accountTable_->setItem(r, 0, idItem);
+
+    auto* nameItem = new QTableWidgetItem(acc.name);
+    nameItem->setTextAlignment(Qt::AlignCenter);
+    nameItem->setBackground(rowBg);
+    nameItem->setForeground(textColor);
+    accountTable_->setItem(r, 1, nameItem);
+
+    auto* roleItem = new QTableWidgetItem(acc.role);
+    roleItem->setTextAlignment(Qt::AlignCenter);
+    roleItem->setBackground(rowBg);
+    roleItem->setForeground(acc.role == QStringLiteral("관리자") ? Tokens::ACCENT_HOVER : textColor);
+    QFont roleFont = roleItem->font();
+    roleFont.setWeight(acc.role == QStringLiteral("관리자") ? QFont::DemiBold : QFont::Normal);
+    roleItem->setFont(roleFont);
+    accountTable_->setItem(r, 2, roleItem);
+
+    auto* chargeItem = new QTableWidgetItem(acc.charge);
+    chargeItem->setTextAlignment(Qt::AlignCenter);
+    chargeItem->setBackground(rowBg);
+    chargeItem->setForeground(textColor);
+    accountTable_->setItem(r, 3, chargeItem);
+
+    auto* loginItem = new QTableWidgetItem(acc.lastLogin);
+    loginItem->setFont(QFont(Tokens::Font::MONO));
+    loginItem->setTextAlignment(Qt::AlignCenter);
+    loginItem->setBackground(rowBg);
+    loginItem->setForeground(acc.active ? Tokens::TEXT_SECONDARY : Tokens::TEXT_MUTED);
+    accountTable_->setItem(r, 4, loginItem);
+
+    accountTable_->setCellWidget(
+        r, 5,
+        wrapCellWidget(makeBadge(acc.active ? Tokens::Prop::OK : Tokens::Prop::OFFLINE,
+                                  acc.active ? QStringLiteral("활성") : QStringLiteral("비활성")),
+                        rowBg));
+
+    if (acc.active) {
+        auto* editBtn = new QPushButton(QStringLiteral("수정 · PW 초기화"));
+        editBtn->setObjectName("linkBtn");
+        editBtn->setCursor(Qt::PointingHandCursor);
+        connect(editBtn, &QPushButton::clicked, this, [this, r] { openAccountDialog(r); });
+        accountTable_->setCellWidget(r, 6, wrapCellWidget(editBtn, rowBg));
+    } else {
+        accountTable_->setCellWidget(r, 6, wrapCellWidget(linkText(QStringLiteral("활성화")), rowBg));
+    }
+}
+
+void P7SettingsPage::refreshAccountTable() {
+    accountTable_->setRowCount(static_cast<int>(accounts_.size()));
+    for (int r = 0; r < static_cast<int>(accounts_.size()); ++r) {
+        populateAccountRow(r);
+    }
+}
+
+void P7SettingsPage::openAccountDialog(int rowIndex) {
+    const bool isNew = (rowIndex < 0);
+    AccountDialog::AccountData data;
+    QStringList existingIds;
+    for (const auto& acc : accounts_) existingIds << acc.id;
+
+    if (!isNew) {
+        const AccountRow& acc = accounts_[static_cast<size_t>(rowIndex)];
+        data.loginId = acc.id;
+        data.displayName = acc.name;
+        data.role = koreanRoleToEnum(acc.role);
+        data.active = acc.active;
+        data.lastLogin = acc.lastLogin;
+        data.isSelf = (acc.id == currentUserLoginId_);
+        data.isLastActiveAdmin = isLastActiveAdmin(rowIndex);
+    }
+
+    auto* dialog = new AccountDialog(isNew ? AccountDialog::Mode::Register : AccountDialog::Mode::Edit, data,
+                                      existingIds, this);
+    connect(dialog, &AccountDialog::accountSaved, this,
+            [this, rowIndex, isNew](const AccountDialog::AccountData& saved) {
+                AccountRow row;
+                if (isNew) {
+                    row.charge = QStringLiteral("미배정");
+                } else {
+                    row = accounts_[static_cast<size_t>(rowIndex)];
+                }
+                row.id = saved.loginId;
+                row.name = saved.displayName;
+                row.role = roleEnumToKorean(saved.role);
+                row.active = saved.active;
+                if (isNew) {
+                    accounts_.push_back(row);
+                } else {
+                    accounts_[static_cast<size_t>(rowIndex)] = row;
+                }
+                refreshAccountTable();
+            });
+    connect(dialog, &AccountDialog::passwordResetRequested, this, [](const QString&) {
+        // 실제 초기화 API 연동은 범위 밖 — 이 목업 단계에서는 요청만 흘려보낸다.
     });
     dialog->exec();
     dialog->deleteLater();
