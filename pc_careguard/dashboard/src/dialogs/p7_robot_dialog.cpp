@@ -168,7 +168,7 @@ RobotDialog::RobotDialog(Mode mode, const RobotData& data, QWidget* parent)
         previewLayout->setSpacing(2);
 
         auto* urlLine = new QLabel(
-            QStringLiteral("ws://%1:8080/ws/robot/%2").arg(isEdit ? data.wsHost : data.wsHost, data.code),
+            QStringLiteral("ws://%1:8080/ws/robot/%2").arg(data.wsHost, data.code),
             preview);
         urlLine->setFont(QFont(Tokens::Font::MONO));
         urlLine->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_SECONDARY.name()));

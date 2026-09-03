@@ -300,15 +300,19 @@ AccountDialog::Role AccountDialog::selectedRole() const {
 }
 
 void AccountDialog::updateAdminBanners() {
+    const bool isEdit = (mode_ == Mode::Edit);
     const bool admin = (selectedRole() == Role::Admin);
     const bool showSelfBlock = admin && data_.isSelf;
     const bool showLastAdminBlock = admin && !data_.isSelf && data_.isLastActiveAdmin && activeCheck_->isChecked();
-    const bool showAdminWarn = admin && !showSelfBlock && !showLastAdminBlock;
+    const bool showAdminWarn = admin && !showSelfBlock && !showLastAdminBlock && isEdit;
 
     adminWarnBanner_->setVisible(showAdminWarn);
     selfBlockBanner_->setVisible(showSelfBlock);
     lastAdminBlockBanner_->setVisible(showLastAdminBlock);
-    activeCheck_->setEnabled(!(showSelfBlock || showLastAdminBlock));
+    // 체크박스의 활성/비활성은 현재 선택된 역할과 무관해야 한다 — 관리자에서 다른
+    // 역할로 바꿨다가 다시 관리자로 돌아오는 우회로 본인/마지막 관리자 계정을
+    // 비활성화할 수 있으면 안 된다(리뷰 지적 #4).
+    activeCheck_->setEnabled(!(data_.isSelf || data_.isLastActiveAdmin));
 }
 
 void AccountDialog::handleActiveToggled(bool) {
@@ -362,13 +366,30 @@ void AccountDialog::handleSaveClicked() {
     const QString loginId = isEdit ? data_.loginId : loginIdEdit_->text().trimmed();
     const QString name = nameEdit_->text().trimmed();
 
+    // 로그인 ID 필드 상태 갱신 (Register 모드에서만 — Edit 모드는 read-only/잠금)
+    if (!isEdit) {
+        loginIdEdit_->setProperty("state", loginId.isEmpty() ? "error" : QVariant());
+        loginIdEdit_->style()->unpolish(loginIdEdit_);
+        loginIdEdit_->style()->polish(loginIdEdit_);
+    }
+
+    // 표시 이름 필드 상태 갱신
+    nameEdit_->setProperty("state", name.isEmpty() ? "error" : QVariant());
+    nameEdit_->style()->unpolish(nameEdit_);
+    nameEdit_->style()->polish(nameEdit_);
+
     if (loginId.isEmpty() || name.isEmpty()) return;
     if (!isEdit && existingLoginIds_.contains(loginId)) return;
-    if (!isEdit && (passwordEdit_->text().isEmpty() || passwordEdit_->text() != passwordConfirmEdit_->text())) {
-        passwordConfirmEdit_->setProperty("state", "error");
+    if (!isEdit) {
+        if (passwordEdit_->text().isEmpty() || passwordEdit_->text() != passwordConfirmEdit_->text()) {
+            passwordConfirmEdit_->setProperty("state", "error");
+            passwordConfirmEdit_->style()->unpolish(passwordConfirmEdit_);
+            passwordConfirmEdit_->style()->polish(passwordConfirmEdit_);
+            return;
+        }
+        passwordConfirmEdit_->setProperty("state", QVariant());
         passwordConfirmEdit_->style()->unpolish(passwordConfirmEdit_);
         passwordConfirmEdit_->style()->polish(passwordConfirmEdit_);
-        return;
     }
 
     AccountData result = data_;

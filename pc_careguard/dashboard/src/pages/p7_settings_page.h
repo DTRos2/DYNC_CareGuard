@@ -73,6 +73,7 @@ private:
     QTableWidget* robotTable_ = nullptr;
     QLabel* robotCountLabel_ = nullptr;
     QTableWidget* accountTable_ = nullptr;
+    QLabel* accountCountLabel_ = nullptr;
     // 데모용 고정값 — 실제 로그인 세션 연동은 범위 밖. accounts_[0]("admin")을 본인으로 취급한다.
     QString currentUserLoginId_ = QStringLiteral("admin");
 

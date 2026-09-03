@@ -350,6 +350,7 @@ QWidget* P7SettingsPage::buildAccountTab() {
     auto* headerRow = buildListHeader(
         QStringLiteral("계정 %1 · 활성 %2").arg(accounts_.size()).arg(activeCount),
         QStringLiteral("계정 등록"));
+    accountCountLabel_ = headerRow->findChild<QLabel*>();
     auto* headerBtn = headerRow->findChild<QPushButton*>();
     if (headerBtn != nullptr) {
         connect(headerBtn, &QPushButton::clicked, this, [this] { openAccountDialog(-1); });
@@ -773,6 +774,11 @@ void P7SettingsPage::populateAccountRow(int r) {
 }
 
 void P7SettingsPage::refreshAccountTable() {
+    if (accountCountLabel_ != nullptr) {
+        const int activeCount = static_cast<int>(
+            std::count_if(accounts_.begin(), accounts_.end(), [](const AccountRow& a) { return a.active; }));
+        accountCountLabel_->setText(QStringLiteral("계정 %1 · 활성 %2").arg(accounts_.size()).arg(activeCount));
+    }
     accountTable_->setRowCount(static_cast<int>(accounts_.size()));
     for (int r = 0; r < static_cast<int>(accounts_.size()); ++r) {
         populateAccountRow(r);
