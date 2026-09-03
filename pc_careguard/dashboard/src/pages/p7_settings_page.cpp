@@ -196,6 +196,7 @@ QWidget* P7SettingsPage::buildRobotTab() {
 
     auto* headerRow = buildListHeader(QStringLiteral("등록 로봇 %1").arg(robots_.size()),
                                        QStringLiteral("로봇 등록"));
+    robotCountLabel_ = headerRow->findChild<QLabel*>();
     auto* headerBtn = headerRow->findChild<QPushButton*>();
     if (headerBtn != nullptr) {
         connect(headerBtn, &QPushButton::clicked, this, [this] { openRobotDialog(-1); });
@@ -646,6 +647,9 @@ void P7SettingsPage::populateRobotRow(int r) {
 }
 
 void P7SettingsPage::refreshRobotTable() {
+    if (robotCountLabel_ != nullptr) {
+        robotCountLabel_->setText(QStringLiteral("등록 로봇 %1").arg(robots_.size()));
+    }
     robotTable_->setRowCount(static_cast<int>(robots_.size()));
     for (int r = 0; r < static_cast<int>(robots_.size()); ++r) {
         populateRobotRow(r);
@@ -683,8 +687,11 @@ void P7SettingsPage::openRobotDialog(int rowIndex) {
         }
     }
 
+    const QString previousRecipient = isNew ? QString() : robots_[static_cast<size_t>(rowIndex)].recipientLabel;
+
     auto* dialog = new RobotDialog(isNew ? RobotDialog::Mode::Register : RobotDialog::Mode::Edit, data, this);
-    connect(dialog, &RobotDialog::robotSaved, this, [this, rowIndex, isNew](const RobotDialog::RobotData& saved) {
+    connect(dialog, &RobotDialog::robotSaved, this,
+            [this, rowIndex, isNew, previousRecipient](const RobotDialog::RobotData& saved) {
         RobotRow row;
         if (isNew) {
             row.id = saved.code;
@@ -700,7 +707,9 @@ void P7SettingsPage::openRobotDialog(int rowIndex) {
         row.model = saved.model;
         row.rosDomainId = saved.rosDomainId;
         row.recipientLabel = saved.recipientLabel;
-        row.mapRecipient = saved.recipientLabel;
+        if (isNew || saved.recipientLabel != previousRecipient) {
+            row.mapRecipient = saved.recipientLabel;
+        }
         if (isNew) {
             robots_.push_back(row);
         } else {

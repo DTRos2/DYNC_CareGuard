@@ -6,6 +6,7 @@
 #include "theme/tokens.h"
 
 class QTableWidget;
+class QLabel;
 
 // P7 시스템 설정 — 로봇 관리 / 계정 관리 / 임계값·알림 / 감사 로그 4탭.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 6), §7 참고.
@@ -65,6 +66,7 @@ private:
     void refreshRobotTable();
 
     QTableWidget* robotTable_ = nullptr;
+    QLabel* robotCountLabel_ = nullptr;
 
     std::vector<RobotRow> robots_;
     std::vector<NodeDetail> r03Nodes_;
