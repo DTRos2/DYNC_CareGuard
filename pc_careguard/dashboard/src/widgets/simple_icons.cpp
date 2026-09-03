@@ -289,6 +289,15 @@ QIcon play(const QColor& color, int px) {
     });
 }
 
+QIcon pause(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal /*w*/) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawRect(QRectF(6, 4, 4, 16));
+        p.drawRect(QRectF(14, 4, 4, 16));
+    });
+}
+
 QIcon list(const QColor& color, int px) {
     return makeIcon(color, px, [color](QPainter& p, qreal w) {
         p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
