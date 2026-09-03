@@ -2,19 +2,30 @@
 
 #include <QButtonGroup>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDialog>
 #include <QFont>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QAudioOutput>
+#include <QMediaPlayer>
 #include <QMouseEvent>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
 #include <QPainterPath>
+#include <QProcessEnvironment>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QSizePolicy>
@@ -23,6 +34,7 @@
 #include <QTime>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QVideoWidget>
 
 #include "theme/tokens.h"
 #include "widgets/simple_icons.h"
@@ -64,6 +76,92 @@ QVector<VideoClip> mockVideoClips() {
          /*viewHistory=*/{QStringLiteral("09:31:05 · 도희정 · 사유: 정기 점검 확인")}},
     };
 }
+
+namespace {
+
+// server/app/media.py GET /video-events 응답을 VideoClip으로 매핑하는 헬퍼들.
+
+// Python datetime.isoformat()은 마이크로초(6자리)까지 내려주는데 Qt::ISODateWithMs는
+// 밀리초(3자리)까지만 인식해서, 소수점 이하를 3자리로 잘라낸 뒤 파싱한다.
+QDateTime parseIsoDateTime(const QString& raw) {
+    if (raw.isEmpty()) return QDateTime();
+    QString trimmed = raw;
+    static const QRegularExpression fracRe(QStringLiteral("\\.(\\d{3})\\d*"));
+    trimmed.replace(fracRe, QStringLiteral(".\\1"));
+    QDateTime dt = QDateTime::fromString(trimmed, Qt::ISODateWithMs);
+    if (!dt.isValid()) dt = QDateTime::fromString(trimmed, Qt::ISODate);
+    return dt;
+}
+
+VideoTagStyle tagStyleFromString(const QString& style) {
+    if (style == QStringLiteral("emergency")) return VideoTagStyle::Emergency;
+    if (style == QStringLiteral("attention")) return VideoTagStyle::Attention;
+    return VideoTagStyle::Neutral;
+}
+
+// "MM:SS" 형식. duration_sec이 없거나 음수면 "00:00".
+QString formatDurationLabel(int durationSec) {
+    const int sec = qMax(0, durationSec);
+    return QStringLiteral("%1:%2")
+        .arg(sec / 60, 2, 10, QChar('0'))
+        .arg(sec % 60, 2, 10, QChar('0'));
+}
+
+// GET /video-events 응답 한 건을 VideoClip으로 매핑한다.
+// heartRateBpm/deviationStart는 서버에 대응하는 심박 데이터가 없어(기능 자체가 없음)
+// 항상 기본값(0 / 빈 문자열)으로 둔다.
+VideoClip videoClipFromJson(const QJsonObject& obj) {
+    VideoClip clip;
+    clip.robotId = obj.value("robot_code").toString();
+    clip.recipientName = obj.value("recipient_name").toString();
+
+    const QString summary = obj.value("summary").toString();
+    clip.eventLabel = summary.isEmpty() ? QStringLiteral("순찰 스냅샷") : summary;
+
+    clip.tagText = obj.value("tag_text").toString();
+    clip.tagStyle = tagStyleFromString(obj.value("tag_style").toString());
+
+    const QDateTime capturedAt = parseIsoDateTime(obj.value("captured_at").toString());
+    clip.capturedAt = capturedAt.isValid() ? capturedAt.toString(QStringLiteral("MM.dd HH:mm"))
+                                            : Tokens::Format::EMPTY;
+
+    const QString eventUid = obj.value("event_uid").toString();
+    clip.eventId = eventUid.isEmpty() ? Tokens::Format::EMPTY : eventUid;
+
+    clip.durationLabel = formatDurationLabel(obj.value("duration_sec").toInt());
+    clip.viewCount = obj.value("view_count").toInt();
+
+    // TODO(team): 보관 정책이 아직 없어 files.retention_until이 항상 null로 내려온다.
+    // 그동안은 만료 배지가 거짓으로 D-0 경고를 띄우지 않도록 넉넉한 기본값을 쓴다.
+    const QDateTime retentionUntil = parseIsoDateTime(obj.value("retention_until").toString());
+    clip.expireDays = retentionUntil.isValid()
+                           ? qMax(0, static_cast<int>(QDateTime::currentDateTime().daysTo(retentionUntil)))
+                           : 30;
+
+    clip.heartRateBpm = 0;
+    clip.location = obj.value("location").toString();
+    clip.deviationStart = QString();
+    // video_url은 서버 기준 상대 경로("/media/files/{id}")라, serverUrl_은 이 함수가
+    // 몰라서 여기선 그대로 담아두고 handleVideoClipsReply()에서 앞에 이어붙인다.
+    clip.videoUrl = obj.value("video_url").toString();
+
+    const QJsonArray history = obj.value("view_history").toArray();
+    for (const QJsonValue& entry : history) {
+        const QJsonObject h = entry.toObject();
+        const QDateTime occurredAt = parseIsoDateTime(h.value("occurred_at").toString());
+        const QString loginId = h.value("login_id").toString();
+        const QString reason = h.value("reason").toString();
+        clip.viewHistory.append(
+            QStringLiteral("%1 · %2 · 사유: %3")
+                .arg(occurredAt.isValid() ? occurredAt.toString(QStringLiteral("HH:mm:ss"))
+                                           : Tokens::Format::EMPTY,
+                     loginId.isEmpty() ? QStringLiteral("알 수 없음") : loginId, reason));
+    }
+
+    return clip;
+}
+
+}  // namespace
 
 // 클릭을 신호로 내보내는 카드. QFrame엔 기본 clicked()가 없어서 이렇게 감싼다.
 class ClickableCard : public QFrame {
@@ -511,7 +609,33 @@ private:
         auto* centerRow = new QHBoxLayout();
         centerRow->addStretch();
         centerRow->addWidget(buildLockCard());
-        playingLabel_ = new QLabel(QStringLiteral("▶  재생 중 (mock — 실제 스트림 연동 전)"), area);
+
+        // 실제 재생 위젯. GET /media/files/{id}를 QMediaPlayer가 HTTP로 직접 받아 재생한다
+        // (서버가 Range 요청을 지원해서 탐색도 됨). 잠금 해제 전엔 숨겨두고, unlock()에서 보여준다.
+        videoWidget_ = new QVideoWidget(area);
+        // 로봇 녹화 영상은 항상 640×480(4:3)으로 고정. QVideoWidget::sizeHint()가 영상 원본
+        // 해상도를 그대로 돌려주는데, maximumSize를 그 해상도로 캡 걸어두면 레이아웃이 그 이상
+        // 커지지 않으면서(=화면 밖으로 안 나감) 좁은 모달에서는 비율 유지하며 줄어든다.
+        videoWidget_->setMinimumSize(320, 240);
+        videoWidget_->setMaximumSize(640, 480);
+        videoWidget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        videoWidget_->hide();
+        centerRow->addWidget(videoWidget_);
+
+        player_ = new QMediaPlayer(this);
+        audioOutput_ = new QAudioOutput(this);
+        player_->setAudioOutput(audioOutput_);
+        player_->setVideoOutput(videoWidget_);
+        player_->setSource(QUrl(clip_.videoUrl));
+        connect(player_, &QMediaPlayer::errorOccurred, this,
+                [this](QMediaPlayer::Error, const QString& errorString) {
+                    videoWidget_->hide();
+                    playingLabel_->setText(QStringLiteral("재생 오류: %1").arg(errorString));
+                    playingLabel_->show();
+                });
+
+        // 재생 오류 전용 — 정상 재생 중엔 videoWidget_가 이 자리를 대신한다.
+        playingLabel_ = new QLabel(QString(), area);
         playingLabel_->setObjectName("videoLockLabel");
         playingLabel_->hide();
         centerRow->addWidget(playingLabel_);
@@ -579,23 +703,60 @@ private:
         auto* row = new QHBoxLayout();
         row->setSpacing(6);
 
-        auto addIcon = [row](const QIcon& icon, int px) {
-            auto* label = new QLabel;
-            label->setPixmap(icon.pixmap(px, px));
-            row->addWidget(label);
+        // buildVideoArea()가 먼저 호출돼 player_가 이미 만들어진 뒤라(buildLeftColumn() 순서
+        // 참고) 여기서 바로 연결해도 된다. unlock() 전엔 재생 자체가 안 되니 비활성으로 시작.
+        auto makeIconBtn = [row, this](const QIcon& icon, int px, const QString& tooltip) {
+            auto* btn = new QPushButton(this);
+            btn->setProperty("variant", "ghost");
+            btn->setProperty("size", "s");
+            btn->setFixedSize(22, 22);
+            btn->setIcon(icon);
+            btn->setIconSize(QSize(px, px));
+            btn->setToolTip(tooltip);
+            btn->setEnabled(false);
+            row->addWidget(btn);
+            return btn;
         };
-        addIcon(SimpleIcons::play(Tokens::TEXT_MUTED, 13), 13);
-        addIcon(SimpleIcons::trackPrev(Tokens::TEXT_MUTED, 11), 11);
-        addIcon(SimpleIcons::trackNext(Tokens::TEXT_MUTED, 11), 11);
+
+        playToggleBtn_ =
+            makeIconBtn(SimpleIcons::play(Tokens::TEXT_MUTED, 13), 13, QStringLiteral("재생"));
+        seekBackBtn_ = makeIconBtn(SimpleIcons::trackPrev(Tokens::TEXT_MUTED, 11), 11,
+                                    QStringLiteral("10초 되감기"));
+        seekForwardBtn_ = makeIconBtn(SimpleIcons::trackNext(Tokens::TEXT_MUTED, 11), 11,
+                                       QStringLiteral("10초 앞으로"));
+
+        connect(playToggleBtn_, &QPushButton::clicked, this, [this] {
+            if (player_->playbackState() == QMediaPlayer::PlayingState) {
+                player_->pause();
+            } else {
+                player_->play();
+            }
+        });
+        connect(seekBackBtn_, &QPushButton::clicked, this, [this] {
+            player_->setPosition(qMax(qint64(0), player_->position() - 10000));
+        });
+        connect(seekForwardBtn_, &QPushButton::clicked, this, [this] {
+            player_->setPosition(qMin(player_->duration(), player_->position() + 10000));
+        });
+        connect(player_, &QMediaPlayer::playbackStateChanged, this,
+                [this](QMediaPlayer::PlaybackState state) {
+                    playToggleBtn_->setIcon(state == QMediaPlayer::PlayingState
+                                                 ? SimpleIcons::pause(Tokens::TEXT_MUTED, 13)
+                                                 : SimpleIcons::play(Tokens::TEXT_MUTED, 13));
+                });
+        connect(player_, &QMediaPlayer::positionChanged, this, [this](qint64 posMs) {
+            timeLabel_->setText(QStringLiteral("%1 / %2").arg(
+                formatDurationLabel(static_cast<int>(posMs / 1000)), clip_.durationLabel));
+        });
 
         auto* speedLabel = new QLabel(QStringLiteral("배속 1.0×"));
         speedLabel->setProperty("role", "muted");
         row->addWidget(speedLabel);
         row->addStretch();
 
-        auto* timeLabel = new QLabel(QStringLiteral("--:-- / %1").arg(clip_.durationLabel));
-        timeLabel->setProperty("role", "mono");
-        row->addWidget(timeLabel);
+        timeLabel_ = new QLabel(QStringLiteral("--:-- / %1").arg(clip_.durationLabel));
+        timeLabel_->setProperty("role", "mono");
+        row->addWidget(timeLabel_);
 
         return row;
     }
@@ -793,9 +954,13 @@ private:
     void unlock() {
         viewed_ = true;
         lockCard_->hide();
-        playingLabel_->show();
+        videoWidget_->show();
+        player_->play();
         playBtn_->setEnabled(false);
         reasonInput_->setEnabled(false);
+        playToggleBtn_->setEnabled(true);
+        seekBackBtn_->setEnabled(true);
+        seekForwardBtn_->setEnabled(true);
 
         remainingSeconds_ = 10 * 60;
         updateCountdownLabel();
@@ -806,8 +971,12 @@ private:
     void expireSession() {
     // 세션 만료: 재생 중이던 화면을 다시 잠그고, 사유를 새로 입력해야만 재생 가능하게 만든다.
     viewed_ = false;
-    playingLabel_->hide();
+    player_->pause();
+    videoWidget_->hide();
     lockCard_->show();
+    playToggleBtn_->setEnabled(false);
+    seekBackBtn_->setEnabled(false);
+    seekForwardBtn_->setEnabled(false);
 
     reasonInput_->clear();
     reasonInput_->setEnabled(true);
@@ -832,6 +1001,10 @@ private:
             leftColumnLayout_->removeWidget(videoArea_);
             static_cast<QVBoxLayout*>(fullscreenHost_->layout())->addWidget(videoArea_, 1);
             fullscreenHost_->setGeometry(parentWidget()->geometry());
+            // 평소엔 videoWidget_을 영상 원본 해상도(640×480)로 캡 걸어두지만, 전체화면에선
+            // 그 캡을 풀어야 화면 크기에 맞춰 비율 유지하며 커진다(QVideoWidget이 내부적으로
+            // 종횡비를 유지해 레터박스 처리하므로 찌그러지진 않는다).
+            videoWidget_->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
             fullscreenHost_->show();
             fullscreenHost_->raise();
             fullscreenHost_->activateWindow();
@@ -841,6 +1014,7 @@ private:
         } else {
             fullscreenHost_->layout()->removeWidget(videoArea_);
             fullscreenHost_->hide();
+            videoWidget_->setMaximumSize(640, 480);
             leftColumnLayout_->insertWidget(0, videoArea_, /*stretch=*/1);
             fullscreenBtn_->setIcon(SimpleIcons::expand(Qt::white, 14));
             fullscreenBtn_->setToolTip(QStringLiteral("전체화면"));
@@ -876,10 +1050,23 @@ private:
     QVBoxLayout* leftColumnLayout_ = nullptr;
     QWidget* videoArea_ = nullptr;
     QWidget* fullscreenHost_ = nullptr;
+
+    QVideoWidget* videoWidget_ = nullptr;
+    QMediaPlayer* player_ = nullptr;
+    QAudioOutput* audioOutput_ = nullptr;
+
+    // 하단 재생 컨트롤 (buildPlaybackRow()). unlock() 전까지는 비활성 — 사유 입력 전엔
+    // 재생 자체가 안 되니 되감기/앞으로가기도 의미가 없다.
+    QPushButton* playToggleBtn_ = nullptr;
+    QPushButton* seekBackBtn_ = nullptr;
+    QPushButton* seekForwardBtn_ = nullptr;
+    QLabel* timeLabel_ = nullptr;
 };
 
 P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
-    clips_ = mockVideoClips();
+    serverUrl_ = QProcessEnvironment::systemEnvironment().value(
+        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    netManager_ = new QNetworkAccessManager(this);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(Tokens::Layout::PAGE_PADDING, Tokens::Layout::PAGE_PADDING,
@@ -1031,6 +1218,39 @@ P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
     connect(tableToggle, &QPushButton::toggled, this, [viewStack](bool checked) {
         if (checked) viewStack->setCurrentIndex(1);
     });
+
+    fetchVideoClips();
+}
+
+void P4VideoPage::fetchVideoClips() {
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/video-events")));
+    QNetworkReply* reply = netManager_->get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        handleVideoClipsReply(reply);
+        reply->deleteLater();
+    });
+}
+
+void P4VideoPage::handleVideoClipsReply(QNetworkReply* reply) {
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode != 200) {
+        // 네트워크 에러(statusCode == 0)나 서버 에러 — clips_는 비운 채로 두고, 카드 그리드는
+        // makeEmptySlot()의 "이벤트 발생 시 자동으로 추가됩니다" 안내만 보여준다.
+        clips_.clear();
+        rebuildCardGrid();
+        return;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    QVector<VideoClip> clips;
+    for (const QJsonValue& value : doc.array()) {
+        VideoClip clip = videoClipFromJson(value.toObject());
+        clip.videoUrl = serverUrl_ + clip.videoUrl;  // video_url은 서버 기준 상대 경로로 옴
+        clips.append(clip);
+    }
+    clips_ = clips;
+    rebuildCardGrid();
 }
 
 void P4VideoPage::rebuildCardGrid() {

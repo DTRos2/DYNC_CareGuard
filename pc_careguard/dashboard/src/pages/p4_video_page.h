@@ -4,6 +4,9 @@
 #include <QVector>
 #include <QWidget>
 
+class QNetworkAccessManager;
+class QNetworkReply;
+
 // P4 영상 관리 — 담당 팀원이 이 페이지의 메인 뷰를 구현한다.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 3), §7 참고.
 
@@ -30,6 +33,7 @@ struct VideoClip {
     QString location;          // "행복빌라 302 거실" 등. eventId가 있을 때만 사용
     QString deviationStart;    // 타임라인 차트 "이탈 시작 HH:MM" 라벨. 비어있으면 정상 구간만 표시
     QStringList viewHistory;   // "HH:MM:SS · 사유: ..." 최신순. 재생할 때마다 맨 앞에 추가된다
+    QString videoUrl;          // 재생용 절대 URL (serverUrl + GET /video-events의 video_url)
 };
 
 // 와이어프레임(p4_video_management_wireframe) 그대로의 mock 데이터.
@@ -59,6 +63,12 @@ private:
     bool matchesFilters(const VideoClip& clip) const;
     int computeColumnCount() const;
 
+    // 서버 GET /video-events 호출해 clips_를 채운 뒤 rebuildCardGrid()로 다시 그린다.
+    // 실패해도(네트워크 에러 등) clips_를 비운 채로 두고 조용히 넘어간다 — §4 카드 그리드는
+    // 비어 있으면 makeEmptySlot() 안내만 보여주므로 별도 에러 배너는 아직 안 만든다.
+    void fetchVideoClips();
+    void handleVideoClipsReply(QNetworkReply* reply);
+
     // mock 상태 보관용. model/VideoModel이 생기면 이 멤버들은 그쪽으로 옮긴다 (VideoClip 주석 참고).
     QVector<VideoClip> clips_;
     QWidget* gridPage_ = nullptr;
@@ -71,4 +81,9 @@ private:
     QComboBox* recipientFilter_ = nullptr;
     QComboBox* periodFilter_ = nullptr;  // TODO(team): mock엔 "오늘" 기준이 없어 아직 미적용
     QComboBox* typeFilter_ = nullptr;
+
+    // GET /video-events 호출용. 서버 주소는 loginwindow.cpp와 동일하게 환경변수
+    // CAREGUARD_SERVER_URL, 없으면 http://127.0.0.1:8000.
+    QNetworkAccessManager* netManager_ = nullptr;
+    QString serverUrl_;
 };
