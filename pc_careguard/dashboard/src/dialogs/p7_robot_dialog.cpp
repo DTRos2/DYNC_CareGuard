@@ -285,12 +285,36 @@ QFrame* RobotDialog::buildFooter(const QString& primaryLabel) {
 }
 
 void RobotDialog::handleSaveClicked() {
+    // In Register mode, get from codeEdit; in Edit mode, use originalCode
     const QString code = (mode_ == Mode::Edit) ? originalCode_ : codeEdit_->text().trimmed();
     const QString name = nameEdit_->text().trimmed();
-    if (code.isEmpty() || name.isEmpty()) {
-        nameEdit_->setProperty("state", name.isEmpty() ? "error" : QVariant());
-        nameEdit_->style()->unpolish(nameEdit_);
-        nameEdit_->style()->polish(nameEdit_);
+
+    // Determine which fields are empty (only check codeEdit_ in Register mode)
+    const bool codeIsEmpty = (mode_ == Mode::Register) && codeEdit_->text().trimmed().isEmpty();
+    const bool nameIsEmpty = name.isEmpty();
+
+    // Update codeEdit_ styling (only in Register mode)
+    if (mode_ == Mode::Register) {
+        if (codeIsEmpty) {
+            codeEdit_->setProperty("state", "error");
+        } else {
+            codeEdit_->setProperty("state", QVariant());
+        }
+        codeEdit_->style()->unpolish(codeEdit_);
+        codeEdit_->style()->polish(codeEdit_);
+    }
+
+    // Update nameEdit_ styling
+    if (nameIsEmpty) {
+        nameEdit_->setProperty("state", "error");
+    } else {
+        nameEdit_->setProperty("state", QVariant());
+    }
+    nameEdit_->style()->unpolish(nameEdit_);
+    nameEdit_->style()->polish(nameEdit_);
+
+    // Don't proceed if any required field is empty
+    if (codeIsEmpty || nameIsEmpty) {
         return;
     }
 
