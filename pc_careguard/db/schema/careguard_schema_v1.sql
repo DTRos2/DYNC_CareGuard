@@ -43,6 +43,7 @@ CREATE TABLE careguard_user (
     id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     login_id      VARCHAR(64) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
+    display_name  VARCHAR(64) NOT NULL,
     role_id       INTEGER NOT NULL,
     is_active     BOOLEAN NOT NULL DEFAULT TRUE,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -59,6 +60,7 @@ COMMENT ON TABLE careguard_user IS '관제 대시보드 로그인 계정';
 COMMENT ON COLUMN careguard_user.id IS '계정 PK, 자동 증가';
 COMMENT ON COLUMN careguard_user.login_id IS '로그인 ID. 활성 계정끼리만 유니크';
 COMMENT ON COLUMN careguard_user.password_hash IS '비밀번호 해시';
+COMMENT ON COLUMN careguard_user.display_name IS '화면 표시용 이름. 상단바 담당자, 계정 목록, 감사 로그, 이벤트 처리자 표시에 사용';
 COMMENT ON COLUMN careguard_user.role_id IS '역할 id (role.id). FK 제약 없음, 조회 시 애플리케이션에서 JOIN';
 COMMENT ON COLUMN careguard_user.is_active IS '계정 사용 가능 여부';
 COMMENT ON COLUMN careguard_user.created_at IS '계정 생성 시간';
@@ -998,6 +1000,7 @@ CREATE TABLE user_action_log (
             'login', 'login_failed', 'login_locked', 'logout',
             'estop', 'estop_release',
             'robot_command',
+            'robot_create', 'robot_update', 'robot_deregister',
             'view_live', 'view_video', 'download_video',
             'recipient_create', 'recipient_update', 'recipient_delete',
             'guardian_create', 'guardian_update', 'guardian_delete',
@@ -1009,7 +1012,9 @@ CREATE TABLE user_action_log (
             'call_button_register', 'call_button_update', 'call_button_delete',
             'map_save', 'map_activate', 'map_delete',
             'guardian_message_create', 'guardian_message_cancel',
-            'account_create', 'account_update', 'account_delete', 'role_update'
+            'account_create', 'account_update', 'account_delete',
+            'account_activate', 'account_deactivate', 'password_reset',
+            'role_update'
         )
     ),
     target_table  VARCHAR(40),
