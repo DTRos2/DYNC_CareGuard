@@ -13,6 +13,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 
+#include "dialogs/p7_robot_dialog.h"
 #include "theme/tokens.h"
 #include "widgets/simple_icons.h"
 
@@ -122,16 +123,23 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     robots_ = {
         {QStringLiteral("R-01"), QStringLiteral("192.168.0.11"), QStringLiteral("/limo_01"),
          QStringLiteral("행복빌라 302 · 김순자"), Tokens::Level::Normal, QStringLiteral("● 온라인"),
-         QStringLiteral("6/6 정상")},
+         QStringLiteral("6/6 정상"), QStringLiteral("1호기"), QStringLiteral("limo"), 41,
+         QStringLiteral("김순자 (C-001)"), QStringLiteral("192.168.0.9"),
+         QStringLiteral("최근 ping 응답 0.6s 전 · 세션 5d 1h")},
         {QStringLiteral("R-02"), QStringLiteral("192.168.0.12"), QStringLiteral("/limo_02"),
          QStringLiteral("은빛아파트 101 · 박영호"), Tokens::Level::Normal, QStringLiteral("● 온라인"),
-         QStringLiteral("6/6 정상")},
+         QStringLiteral("6/6 정상"), QStringLiteral("2호기"), QStringLiteral("limo"), 42,
+         QStringLiteral("박영호 (C-002)"), QStringLiteral("192.168.0.9"),
+         QStringLiteral("최근 ping 응답 0.5s 전 · 세션 4d 3h")},
         {QStringLiteral("R-03"), QStringLiteral("192.168.0.13"), QStringLiteral("/limo_03"),
          QStringLiteral("솔마을 7호 · 이말순"), Tokens::Level::Attention, QStringLiteral("● 온라인"),
-         QStringLiteral("5/6 · voice 응답 지연")},
+         QStringLiteral("5/6 · voice 응답 지연"), QStringLiteral("3호기"), QStringLiteral("limo"), 43,
+         QStringLiteral("이말순 (C-003)"), QStringLiteral("192.168.0.9"),
+         QStringLiteral("최근 ping 응답 0.4s 전 · 세션 3d 2h")},
         {QStringLiteral("R-04"), QStringLiteral("192.168.0.14"), QStringLiteral("/limo_04"),
          QStringLiteral("동산주택 2층 · 최금례"), Tokens::Level::Offline, QStringLiteral("오프라인"),
-         Tokens::Format::EMPTY},
+         Tokens::Format::EMPTY, QStringLiteral("4호기"), QStringLiteral("limo"), 44,
+         QStringLiteral("최금례 (C-004)"), QStringLiteral("192.168.0.9"), QString()},
     };
 
     r03Nodes_ = {
@@ -186,8 +194,13 @@ QWidget* P7SettingsPage::buildRobotTab() {
     layout->setContentsMargins(0, 12, 0, 0);
     layout->setSpacing(8);
 
-    layout->addWidget(buildListHeader(
-        QStringLiteral("등록 로봇 %1").arg(robots_.size()), QStringLiteral("로봇 등록")));
+    auto* headerRow = buildListHeader(QStringLiteral("등록 로봇 %1").arg(robots_.size()),
+                                       QStringLiteral("로봇 등록"));
+    auto* headerBtn = headerRow->findChild<QPushButton*>();
+    if (headerBtn != nullptr) {
+        connect(headerBtn, &QPushButton::clicked, this, [this] { openRobotDialog(-1); });
+    }
+    layout->addWidget(headerRow);
 
     robotTable_ = new QTableWidget(tab);
     const QStringList headers = {QStringLiteral("로봇"),  QStringLiteral("IP"), QStringLiteral("네임스페이스"),
@@ -215,60 +228,7 @@ QWidget* P7SettingsPage::buildRobotTab() {
 
     robotTable_->setRowCount(static_cast<int>(robots_.size()));
     for (int r = 0; r < static_cast<int>(robots_.size()); ++r) {
-        const RobotRow& row = robots_[static_cast<size_t>(r)];
-        const bool offline = row.level == Tokens::Level::Offline;
-        const QColor rowBg = offline ? Tokens::BG_SUNKEN : Tokens::BG_SURFACE;
-        const QColor textColor = offline ? Tokens::TEXT_MUTED : Tokens::TEXT_PRIMARY;
-
-        auto* idItem = new QTableWidgetItem(row.id);
-        idItem->setFont(QFont(Tokens::Font::MONO));
-        idItem->setTextAlignment(Qt::AlignCenter);
-        idItem->setBackground(rowBg);
-        idItem->setForeground(textColor);
-        robotTable_->setItem(r, 0, idItem);
-
-        auto* ipItem = new QTableWidgetItem(row.ip);
-        ipItem->setFont(QFont(Tokens::Font::MONO));
-        ipItem->setTextAlignment(Qt::AlignCenter);
-        ipItem->setBackground(rowBg);
-        ipItem->setForeground(offline ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
-        robotTable_->setItem(r, 1, ipItem);
-
-        auto* nsItem = new QTableWidgetItem(row.ns);
-        nsItem->setFont(QFont(Tokens::Font::MONO));
-        nsItem->setTextAlignment(Qt::AlignCenter);
-        nsItem->setBackground(rowBg);
-        nsItem->setForeground(offline ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
-        robotTable_->setItem(r, 2, nsItem);
-
-        auto* mapItem = new QTableWidgetItem(row.mapRecipient);
-        mapItem->setTextAlignment(Qt::AlignCenter);
-        mapItem->setBackground(rowBg);
-        mapItem->setForeground(textColor);
-        robotTable_->setItem(r, 3, mapItem);
-
-        QColor statusColor = Tokens::OK.main;
-        if (row.level == Tokens::Level::Offline) statusColor = Tokens::TEXT_MUTED;
-        auto* statusItem = new QTableWidgetItem(row.statusDetail);
-        statusItem->setTextAlignment(Qt::AlignCenter);
-        statusItem->setBackground(rowBg);
-        statusItem->setForeground(statusColor);
-        robotTable_->setItem(r, 4, statusItem);
-
-        const QColor nodeColor = row.level == Tokens::Level::Attention ? Tokens::ATTENTION.main : textColor;
-        auto* nodeItem = new QTableWidgetItem(row.nodeSummary);
-        nodeItem->setTextAlignment(Qt::AlignCenter);
-        nodeItem->setBackground(rowBg);
-        nodeItem->setForeground(nodeColor);
-        if (row.level == Tokens::Level::Attention) {
-            QFont f = nodeItem->font();
-            f.setWeight(QFont::DemiBold);
-            nodeItem->setFont(f);
-        }
-        robotTable_->setItem(r, 5, nodeItem);
-
-        const QString actionText = offline ? QStringLiteral("재연결") : QStringLiteral("수정 · 재시작");
-        robotTable_->setCellWidget(r, 6, wrapCellWidget(linkText(actionText), rowBg));
+        populateRobotRow(r);
     }
     layout->addWidget(robotTable_, /*stretch=*/1);
 
@@ -619,4 +579,141 @@ QWidget* P7SettingsPage::buildAuditTab() {
     layout->addWidget(footnote);
 
     return tab;
+}
+
+void P7SettingsPage::populateRobotRow(int r) {
+    const RobotRow& row = robots_[static_cast<size_t>(r)];
+    const bool offline = row.level == Tokens::Level::Offline;
+    const QColor rowBg = offline ? Tokens::BG_SUNKEN : Tokens::BG_SURFACE;
+    const QColor textColor = offline ? Tokens::TEXT_MUTED : Tokens::TEXT_PRIMARY;
+
+    auto* idItem = new QTableWidgetItem(row.id);
+    idItem->setFont(QFont(Tokens::Font::MONO));
+    idItem->setTextAlignment(Qt::AlignCenter);
+    idItem->setBackground(rowBg);
+    idItem->setForeground(textColor);
+    robotTable_->setItem(r, 0, idItem);
+
+    auto* ipItem = new QTableWidgetItem(row.ip);
+    ipItem->setFont(QFont(Tokens::Font::MONO));
+    ipItem->setTextAlignment(Qt::AlignCenter);
+    ipItem->setBackground(rowBg);
+    ipItem->setForeground(offline ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
+    robotTable_->setItem(r, 1, ipItem);
+
+    auto* nsItem = new QTableWidgetItem(row.ns);
+    nsItem->setFont(QFont(Tokens::Font::MONO));
+    nsItem->setTextAlignment(Qt::AlignCenter);
+    nsItem->setBackground(rowBg);
+    nsItem->setForeground(offline ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
+    robotTable_->setItem(r, 2, nsItem);
+
+    auto* mapItem = new QTableWidgetItem(row.mapRecipient);
+    mapItem->setTextAlignment(Qt::AlignCenter);
+    mapItem->setBackground(rowBg);
+    mapItem->setForeground(textColor);
+    robotTable_->setItem(r, 3, mapItem);
+
+    QColor statusColor = Tokens::OK.main;
+    if (row.level == Tokens::Level::Offline) statusColor = Tokens::TEXT_MUTED;
+    auto* statusItem = new QTableWidgetItem(row.statusDetail);
+    statusItem->setTextAlignment(Qt::AlignCenter);
+    statusItem->setBackground(rowBg);
+    statusItem->setForeground(statusColor);
+    robotTable_->setItem(r, 4, statusItem);
+
+    const QColor nodeColor = row.level == Tokens::Level::Attention ? Tokens::ATTENTION.main : textColor;
+    auto* nodeItem = new QTableWidgetItem(row.nodeSummary);
+    nodeItem->setTextAlignment(Qt::AlignCenter);
+    nodeItem->setBackground(rowBg);
+    nodeItem->setForeground(nodeColor);
+    if (row.level == Tokens::Level::Attention) {
+        QFont f = nodeItem->font();
+        f.setWeight(QFont::DemiBold);
+        nodeItem->setFont(f);
+    }
+    robotTable_->setItem(r, 5, nodeItem);
+
+    if (offline) {
+        robotTable_->setCellWidget(r, 6, wrapCellWidget(linkText(QStringLiteral("재연결")), rowBg));
+    } else {
+        auto* editBtn = new QPushButton(QStringLiteral("수정 · 재시작"));
+        editBtn->setObjectName("linkBtn");
+        editBtn->setCursor(Qt::PointingHandCursor);
+        connect(editBtn, &QPushButton::clicked, this, [this, r] { openRobotDialog(r); });
+        robotTable_->setCellWidget(r, 6, wrapCellWidget(editBtn, rowBg));
+    }
+}
+
+void P7SettingsPage::refreshRobotTable() {
+    robotTable_->setRowCount(static_cast<int>(robots_.size()));
+    for (int r = 0; r < static_cast<int>(robots_.size()); ++r) {
+        populateRobotRow(r);
+    }
+}
+
+void P7SettingsPage::openRobotDialog(int rowIndex) {
+    const bool isNew = (rowIndex < 0);
+    RobotDialog::RobotData data;
+    if (isNew) {
+        int maxNum = 0;
+        for (const auto& r : robots_) {
+            const int num = r.id.mid(2).toInt();
+            maxNum = std::max(maxNum, num);
+        }
+        data.code = QStringLiteral("R-%1").arg(maxNum + 1, 2, 10, QLatin1Char('0'));
+    } else {
+        const RobotRow& row = robots_[static_cast<size_t>(rowIndex)];
+        data.code = row.id;
+        data.name = row.name;
+        data.model = row.model;
+        data.rosDomainId = row.rosDomainId;
+        data.recipientLabel = row.recipientLabel;
+        data.connected = (row.level != Tokens::Level::Offline);
+        data.wsHost = row.wsHost;
+        data.connectionDetail = row.connectionDetail;
+        if (row.id == QStringLiteral("R-03")) {
+            for (const auto& node : r03Nodes_) {
+                if (node.warn) {
+                    data.warnNode = node.name;
+                    data.warnDetail = node.detail;
+                    break;
+                }
+            }
+        }
+    }
+
+    auto* dialog = new RobotDialog(isNew ? RobotDialog::Mode::Register : RobotDialog::Mode::Edit, data, this);
+    connect(dialog, &RobotDialog::robotSaved, this, [this, rowIndex, isNew](const RobotDialog::RobotData& saved) {
+        RobotRow row;
+        if (isNew) {
+            row.id = saved.code;
+            row.ip = QStringLiteral("—");
+            row.ns = QStringLiteral("/limo_%1").arg(saved.code.mid(2));
+            row.level = Tokens::Level::Offline;
+            row.statusDetail = QStringLiteral("오프라인");
+            row.nodeSummary = Tokens::Format::EMPTY;
+        } else {
+            row = robots_[static_cast<size_t>(rowIndex)];
+        }
+        row.name = saved.name;
+        row.model = saved.model;
+        row.rosDomainId = saved.rosDomainId;
+        row.recipientLabel = saved.recipientLabel;
+        row.mapRecipient = saved.recipientLabel;
+        if (isNew) {
+            robots_.push_back(row);
+        } else {
+            robots_[static_cast<size_t>(rowIndex)] = row;
+        }
+        refreshRobotTable();
+    });
+    connect(dialog, &RobotDialog::robotDeregisterRequested, this, [this, rowIndex](const QString&) {
+        if (rowIndex >= 0) {
+            robots_.erase(robots_.begin() + rowIndex);
+            refreshRobotTable();
+        }
+    });
+    dialog->exec();
+    dialog->deleteLater();
 }
