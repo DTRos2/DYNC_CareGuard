@@ -11,3 +11,5 @@ pc_careguard/server/storage/
 deploy/.env
 pc_careguard/server/.env
 .venv/
+CLAUDE.md
+.superpowers/
