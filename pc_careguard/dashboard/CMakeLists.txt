@@ -55,6 +55,8 @@ add_executable(careguard_dashboard
     src/dialogs/map_preview_dialog.cpp
     src/dialogs/p7_robot_dialog.h
     src/dialogs/p7_robot_dialog.cpp
+    src/dialogs/p7_account_dialog.h
+    src/dialogs/p7_account_dialog.cpp
     src/pages/p1_overview_page.h
     src/pages/p1_overview_page.cpp
     src/pages/p2_event_page.h
