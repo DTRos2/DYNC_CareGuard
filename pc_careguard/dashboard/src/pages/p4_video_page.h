@@ -1,4 +1,5 @@
 #pragma once
+#include <QDateTime>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -11,7 +12,7 @@ class QNetworkReply;
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 3), §7 참고.
 
 // 카드 좌상단 태그 스타일. EMERGENCY/ATTENTION은 Tokens::Level과 동일한 색 규칙을 쓰지만,
-// "순찰"·"수동 열람"은 상태 판정(§7-1)과 무관한 중립 태그라 별도 값으로 둔다.
+// "순찰"은 상태 판정(§7-1)과 무관한 중립 태그라 별도 값으로 둔다.
 enum class VideoTagStyle { Emergency, Attention, Neutral };
 
 // TODO(team): DB 스키마(pc_careguard/db/schema)와 model/VideoModel이 생기면
@@ -19,8 +20,8 @@ enum class VideoTagStyle { Emergency, Attention, Neutral };
 struct VideoClip {
     QString robotId;        // "R-01"
     QString recipientName;  // "김순자"
-    QString eventLabel;     // "심박 이상" (카드 제목에 이어붙는 설명)
-    QString tagText;        // "긴급" / "주의" / "순찰" / "수동 열람"
+    QString eventLabel;     // "SOS 호출" (카드 제목에 이어붙는 설명)
+    QString tagText;        // "긴급" / "주의" / "순찰"
     VideoTagStyle tagStyle;
     QString capturedAt;     // "08.26 14:29" (§10: MM.DD HH:MM)
     QString eventId;        // "EV-260826-014" 또는 "—" (이벤트 미연동)
@@ -29,11 +30,17 @@ struct VideoClip {
     int expireDays = 0;     // 만료 D-N (§10: D-7 이하 ATTENTION 색)
 
     // ---- 재생 모달(p4_video_playback_modal_wireframe) 전용 ----
-    int heartRateBpm = 0;      // 연결 이벤트 카드용. 0이면 심박 관련 이벤트가 아니라 표시 안 함
     QString location;          // "행복빌라 302 거실" 등. eventId가 있을 때만 사용
-    QString deviationStart;    // 타임라인 차트 "이탈 시작 HH:MM" 라벨. 비어있으면 정상 구간만 표시
     QStringList viewHistory;   // "HH:MM:SS · 사유: ..." 최신순. 재생할 때마다 맨 앞에 추가된다
     QString videoUrl;          // 재생용 절대 URL (serverUrl + GET /video-events의 video_url)
+
+    // mockVideoClips()의 항목들은 이 필드를 안 채워도 된다 — 기본값 0 그대로 두면
+    // recordVideoView()가 "서버에서 온 클립이 아님"으로 보고 API 호출을 건너뛴다.
+    int cameraRecordingId = 0;  // camera_recording.id. POST /video-events/{id}/view 호출에 사용
+
+    // capturedAt은 이미 화면 표시용으로 포맷된 문자열이라 기간 필터 계산엔 못 써서 원본을 따로 든다.
+    // 기본값(invalid QDateTime)이면 matchesFilters()가 기간 필터 선택 시 이 클립을 제외한다.
+    QDateTime capturedAtRaw;
 };
 
 // 와이어프레임(p4_video_management_wireframe) 그대로의 mock 데이터.
@@ -43,6 +50,7 @@ QVector<VideoClip> mockVideoClips();
 class QGridLayout;
 class QComboBox;
 class QResizeEvent;
+class QTableWidget;
 
 class P4VideoPage : public QWidget {
     Q_OBJECT
@@ -59,6 +67,9 @@ protected:
 
 private:
     void rebuildCardGrid();
+    // 그리드 뷰(rebuildCardGrid())와 같은 clips_/matchesFilters()를 표로 다시 그린다.
+    // rebuildCardGrid() 끝에서 항상 같이 호출되어, 필터 변경·목록 새로고침 시 두 뷰가 같이 갱신된다.
+    void rebuildTableView();
     void openVideoPlayer(int clipIndex);
     bool matchesFilters(const VideoClip& clip) const;
     int computeColumnCount() const;
@@ -69,17 +80,23 @@ private:
     void fetchVideoClips();
     void handleVideoClipsReply(QNetworkReply* reply);
 
+    // 열람 사유 확인 후 재생이 시작되면(unlock()) 호출한다. 서버 POST
+    // /video-events/{id}/view가 성공하면 응답의 view_count/view_history로 clips_[clipIndex]를
+    // 갱신하고 다시 그린다 — 로컬에서 임의로 +1 하지 않고 항상 서버가 다시 센 값을 그대로 쓴다.
+    void recordVideoView(int clipIndex, const QString& reason);
+
     // mock 상태 보관용. model/VideoModel이 생기면 이 멤버들은 그쪽으로 옮긴다 (VideoClip 주석 참고).
     QVector<VideoClip> clips_;
     QWidget* gridPage_ = nullptr;
     QGridLayout* cardGrid_ = nullptr;
+    QTableWidget* tableView_ = nullptr;  // 필터바 "테이블" 토글로 전환되는 뷰. rebuildTableView()가 채운다
     int columns_ = 3;  // resizeEvent()가 창 폭에 맞춰 갱신 — 초기값은 첫 rebuild 전 임시값
     QString currentUserName_ = QStringLiteral("담당자");  // setUserName() 호출 전 fallback
 
     // 필터 바 콤보박스. currentIndexChanged 시 rebuildCardGrid()가 이 값들을 읽어 다시 걸러낸다.
     QComboBox* robotFilter_ = nullptr;
     QComboBox* recipientFilter_ = nullptr;
-    QComboBox* periodFilter_ = nullptr;  // TODO(team): mock엔 "오늘" 기준이 없어 아직 미적용
+    QComboBox* periodFilter_ = nullptr;  // "기간 전체"/오늘/최근 7일/최근 30일. matchesFilters()가 capturedAtRaw로 판단
     QComboBox* typeFilter_ = nullptr;
 
     // GET /video-events 호출용. 서버 주소는 loginwindow.cpp와 동일하게 환경변수
