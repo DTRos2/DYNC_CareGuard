@@ -1,13 +1,21 @@
 import uuid
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from psycopg2.extras import Json
 
 from . import config, db
-from .schemas import MediaUploadResponse, VideoEventItem, ViewHistoryEntry
+from .schemas import (
+    MediaUploadResponse,
+    RecordVideoViewRequest,
+    RecordVideoViewResponse,
+    VideoEventItem,
+    ViewHistoryEntry,
+)
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -28,6 +36,11 @@ SEVERITY_TAGS = {
     "attention": ("주의", "attention"),
 }
 DEFAULT_TAG = ("순찰", "neutral")
+
+# 보관 정책 (RetentionPolicyDialog 안내 문구와 동일): 이벤트에 연동된 영상은 30일,
+# 사건과 무관한 일반 영상(순찰 스냅샷 등, care_event_id 없음)은 7일 보관 후 자동 삭제 대상이 된다.
+RETENTION_DAYS_EVENT_CLIP = 30
+RETENTION_DAYS_PATROL_SNAPSHOT = 7
 
 
 @router.post("/upload", response_model=MediaUploadResponse)
@@ -59,14 +72,20 @@ def upload_video(
     # 스냅샷 등) 로봇을 가리키게 해서 entity_id가 항상 채워지게 한다.
     entity_id = str(care_event_id) if care_event_id is not None else str(robot_id)
 
+    # care_event_id 유무로 보관 기간을 정한다 (RETENTION_DAYS_* 주석 참고).
+    retention_days = (
+        RETENTION_DAYS_EVENT_CLIP if care_event_id is not None else RETENTION_DAYS_PATROL_SNAPSHOT
+    )
+    retention_until = datetime.now(timezone.utc) + timedelta(days=retention_days)
+
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO files (entity_type, entity_id, storage_path, original_filename, duration_sec)
-            VALUES ('event_clip', %s, %s, %s, %s)
+            INSERT INTO files (entity_type, entity_id, storage_path, original_filename, duration_sec, retention_until)
+            VALUES ('event_clip', %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (entity_id, str(storage_path), file.filename, duration_sec),
+            (entity_id, str(storage_path), file.filename, duration_sec, retention_until),
         )
         file_id = cur.fetchone()["id"]
 
@@ -228,3 +247,89 @@ def list_video_events(
             )
         )
     return items
+
+
+@video_events_router.post("/{camera_recording_id}/view", response_model=RecordVideoViewResponse)
+def record_video_view(camera_recording_id: int, body: RecordVideoViewRequest):
+    """영상 열람 사실을 감사 로그(user_action_log)에 기록한다.
+
+    view_count 전용 컬럼은 없다 — list_video_events()와 마찬가지로 이 테이블을 그때그때
+    다시 세는 방식이 유일한 원본이라, 여기서도 INSERT 후 같은 방식으로 다시 세어 돌려준다.
+    VideoPlayerDialog가 "사유 확인 후 재생"으로 잠금을 풀 때(unlock()) 이 API를 호출해야 한다.
+    """
+    reason = body.reason.strip()
+    if not reason:
+        # user_action_log_video_reason_chk와 동일한 조건. DB가 걸러주기 전에 먼저 400으로 막는다.
+        raise HTTPException(status_code=400, detail="열람 사유를 입력해야 합니다")
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT robot_id, care_event_id FROM camera_recording WHERE id = %s AND deleted_at IS NULL",
+            (camera_recording_id,),
+        )
+        recording = cur.fetchone()
+        if recording is None:
+            raise HTTPException(status_code=404, detail="녹화를 찾을 수 없습니다")
+
+        cur.execute(
+            "SELECT id FROM careguard_user WHERE login_id = %s AND deleted_at IS NULL",
+            (body.login_id,),
+        )
+        user = cur.fetchone()
+        if user is None:
+            raise HTTPException(status_code=404, detail="계정을 찾을 수 없습니다")
+
+        # recipient_id 역조회: list_video_events()의 rc_by_robot과 동일한 규칙
+        # (이벤트에 연동됐으면 그 이벤트의 대상자, 아니면 로봇 담당 대상자).
+        cur.execute(
+            """
+            SELECT COALESCE(ce.recipient_id, rc_by_robot.id) AS recipient_id
+            FROM camera_recording cr
+            LEFT JOIN care_event ce ON ce.id = cr.care_event_id
+            LEFT JOIN recipient rc_by_robot
+                ON rc_by_robot.robot_id = cr.robot_id AND rc_by_robot.deregistered_at IS NULL
+            WHERE cr.id = %s
+            """,
+            (camera_recording_id,),
+        )
+        recipient_id = cur.fetchone()["recipient_id"]
+
+        cur.execute(
+            """
+            INSERT INTO user_action_log
+                (user_id, action_type, target_table, target_id, robot_id, recipient_id, care_event_id, payload)
+            VALUES (%s, 'view_video', 'camera_recording', %s, %s, %s, %s, %s)
+            """,
+            (
+                user["id"],
+                camera_recording_id,
+                recording["robot_id"],
+                recipient_id,
+                recording["care_event_id"],
+                Json({"reason": reason}),
+            ),
+        )
+
+        # 방금 기록한 것까지 포함해 다시 센 view_count/view_history를 그대로 응답으로 돌려준다.
+        # list_video_events()가 매번 다시 계산하는 방식과 맞춰서, 클라이언트가 이 응답만으로
+        # 화면을 최신 상태로 갱신할 수 있게 한다.
+        cur.execute(
+            """
+            SELECT ual.occurred_at, u.login_id, ual.payload ->> 'reason' AS reason
+            FROM user_action_log ual
+            LEFT JOIN careguard_user u ON u.id = ual.user_id
+            WHERE ual.action_type = 'view_video'
+                AND ual.target_table = 'camera_recording'
+                AND ual.target_id = %s
+            ORDER BY ual.occurred_at DESC
+            """,
+            (camera_recording_id,),
+        )
+        history = [
+            ViewHistoryEntry(occurred_at=row["occurred_at"], login_id=row["login_id"], reason=row["reason"])
+            for row in cur.fetchall()
+        ]
+
+        conn.commit()
+
+    return RecordVideoViewResponse(view_count=len(history), view_history=history)

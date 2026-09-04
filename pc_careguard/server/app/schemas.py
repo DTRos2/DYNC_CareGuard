@@ -29,6 +29,16 @@ class ViewHistoryEntry(BaseModel):
     reason: Optional[str] = None  # user_action_log.payload->>'reason'
 
 
+class RecordVideoViewRequest(BaseModel):
+    login_id: str  # 열람한 계정의 로그인 ID. careguard_user.id로 역조회해 user_action_log.user_id에 남긴다
+    reason: str  # 열람 사유. user_action_log CHECK 제약상 공백 제외 1자 이상이어야 한다
+
+
+class RecordVideoViewResponse(BaseModel):
+    view_count: int
+    view_history: List[ViewHistoryEntry]  # 방금 기록한 열람 포함, 최신순
+
+
 class VideoEventItem(BaseModel):
     camera_recording_id: int
     robot_code: str  # robot.code, 예: "R-01"
