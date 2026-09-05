@@ -654,4 +654,170 @@ QIcon bolt(const QColor& color, int px) {
     });
 }
 
+QIcon alertOctagon(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath octagon;
+        octagon.moveTo(8.5, 3);
+        octagon.lineTo(15.5, 3);
+        octagon.lineTo(21, 8.5);
+        octagon.lineTo(21, 15.5);
+        octagon.lineTo(15.5, 21);
+        octagon.lineTo(8.5, 21);
+        octagon.lineTo(3, 15.5);
+        octagon.lineTo(3, 8.5);
+        octagon.closeSubpath();
+        p.drawPath(octagon);
+        p.drawLine(QPointF(12, 7.5), QPointF(12, 13.5));
+        p.setBrush(color);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(12, 16.5), 1.1, 1.1);
+    });
+}
+
+QIcon chevronLeft(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath v;
+        v.moveTo(15, 5);
+        v.lineTo(8, 12);
+        v.lineTo(15, 19);
+        p.drawPath(v);
+    });
+}
+
+QIcon barChart(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(QRectF(4, 13, 4, 7), 1, 1);
+        p.drawRoundedRect(QRectF(10, 9, 4, 11), 1, 1);
+        p.drawRoundedRect(QRectF(16, 5, 4, 15), 1, 1);
+    });
+}
+
+QIcon file(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath body;
+        body.moveTo(6, 2.5);
+        body.lineTo(14, 2.5);
+        body.lineTo(18, 6.5);
+        body.lineTo(18, 21.5);
+        body.lineTo(6, 21.5);
+        body.closeSubpath();
+        p.drawPath(body);
+        QPainterPath fold;
+        fold.moveTo(14, 2.5);
+        fold.lineTo(14, 6.5);
+        fold.lineTo(18, 6.5);
+        p.drawPath(fold);
+        p.drawLine(QPointF(9, 13), QPointF(15, 13));
+        p.drawLine(QPointF(9, 17), QPointF(15, 17));
+    });
+}
+
+QIcon speakerphone(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath body;
+        body.moveTo(9, 9);
+        body.lineTo(15, 4.5);
+        body.lineTo(15, 19.5);
+        body.lineTo(9, 15);
+        body.closeSubpath();
+        p.drawPath(body);
+        p.drawRoundedRect(QRectF(3.5, 9, 5.5, 6), 1.2, 1.2);
+        p.drawLine(QPointF(6, 15), QPointF(6, 20));
+        p.drawArc(QRectF(16, 6.5, 6, 11), -60 * 16, 120 * 16);
+    });
+}
+
+QIcon phone(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath receiver;
+        receiver.moveTo(4.5, 5.5);
+        receiver.cubicTo(4.5, 4.3, 5.5, 3.5, 6.8, 3.7);
+        receiver.lineTo(9.3, 4.1);
+        receiver.cubicTo(10.2, 4.3, 10.6, 5.3, 10.2, 6.1);
+        receiver.lineTo(8.8, 8.6);
+        receiver.cubicTo(9.6, 10.6, 13.4, 14.4, 15.4, 15.2);
+        receiver.lineTo(17.9, 13.8);
+        receiver.cubicTo(18.7, 13.4, 19.7, 13.8, 19.9, 14.7);
+        receiver.lineTo(20.3, 17.2);
+        receiver.cubicTo(20.5, 18.5, 19.7, 19.5, 18.5, 19.5);
+        receiver.cubicTo(11.3, 19.5, 4.5, 12.7, 4.5, 5.5);
+        receiver.closeSubpath();
+        p.drawPath(receiver);
+    });
+}
+
+QIcon users(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        QPen pen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QRectF(3.5, 5, 6, 6));
+        QPainterPath frontShoulders;
+        frontShoulders.moveTo(1.5, 20);
+        frontShoulders.cubicTo(1.5, 15.5, 4, 13.3, 6.5, 13.3);
+        frontShoulders.cubicTo(9, 13.3, 11.5, 15.5, 11.5, 20);
+        p.drawPath(frontShoulders);
+        p.drawEllipse(QRectF(13, 4.3, 5.2, 5.2));
+        QPainterPath backShoulders;
+        backShoulders.moveTo(13.5, 20);
+        backShoulders.cubicTo(13.5, 16, 15.7, 13.8, 18, 13.8);
+        backShoulders.cubicTo(20.3, 13.8, 22.5, 16, 22.5, 20);
+        p.drawPath(backShoulders);
+    });
+}
+
+QIcon message(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath bubble;
+        bubble.moveTo(4, 5.5);
+        bubble.lineTo(20, 5.5);
+        bubble.lineTo(20, 15.5);
+        bubble.lineTo(9.5, 15.5);
+        bubble.lineTo(6, 19.5);
+        bubble.lineTo(6, 15.5);
+        bubble.lineTo(4, 15.5);
+        bubble.closeSubpath();
+        p.drawPath(bubble);
+        p.drawLine(QPointF(7.5, 9.5), QPointF(16.5, 9.5));
+        p.drawLine(QPointF(7.5, 12.5), QPointF(14, 12.5));
+    });
+}
+
+QIcon phoneCall(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath receiver;
+        receiver.moveTo(4.5, 6.5);
+        receiver.cubicTo(4.5, 5.3, 5.5, 4.5, 6.8, 4.7);
+        receiver.lineTo(9.3, 5.1);
+        receiver.cubicTo(10.2, 5.3, 10.6, 6.3, 10.2, 7.1);
+        receiver.lineTo(8.8, 9.6);
+        receiver.cubicTo(9.6, 11.6, 12.4, 14.4, 14.4, 15.2);
+        receiver.lineTo(16.9, 13.8);
+        receiver.cubicTo(17.7, 13.4, 18.7, 13.8, 18.9, 14.7);
+        receiver.lineTo(19.3, 17.2);
+        receiver.cubicTo(19.5, 18.5, 18.7, 19.5, 17.5, 19.5);
+        receiver.cubicTo(10.3, 19.5, 4.5, 13.7, 4.5, 6.5);
+        receiver.closeSubpath();
+        p.drawPath(receiver);
+        p.drawLine(QPointF(15, 3.5), QPointF(20.5, 9));
+        p.drawLine(QPointF(20.5, 3.5), QPointF(15, 9));
+    });
+}
+
 }  // namespace SimpleIcons

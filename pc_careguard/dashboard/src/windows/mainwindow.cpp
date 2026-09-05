@@ -44,7 +44,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     pageStack_ = new QStackedWidget(central);
     pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
-    pageStack_->addWidget(new P2EventPage(pageStack_));      // idx 1
+    auto* eventPage = new P2EventPage(pageStack_);
+    pageStack_->addWidget(eventPage);                        // idx 1
     pageStack_->addWidget(new P3RecipientPage(pageStack_));  // idx 2
     videoPage_ = new P4VideoPage(pageStack_);
     pageStack_->addWidget(videoPage_);                       // idx 3
@@ -57,6 +58,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 같은 이름·대상자·이미지로 반영한다.
     connect(mapPage, &P5MapPage::mapRegistered, patrolPage, &P6PatrolPage::upsertMap);
+
+    // P2의 미처리 이벤트 집계를 TopBar 뱃지에 반영한다.
+    connect(eventPage, &P2EventPage::unresolvedCountsChanged, this,
+            [this](int emergencyCount, int attentionCount) {
+                setEmergencyCount(emergencyCount);
+                setAttentionCount(attentionCount);
+            });
 
     rootLayout->addLayout(body, /*stretch=*/1);
 }
