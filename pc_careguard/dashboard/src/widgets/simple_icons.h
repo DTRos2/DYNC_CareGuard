@@ -62,4 +62,17 @@ QIcon infoCircle(const QColor& color, int px = 16);      // ti-info-circle
 // play/trash는 위 P4 선언(30~40행)과 이름이 겹쳐서 여기서는 빼고 그 선언을 그대로 쓴다.
 QIcon bolt(const QColor& color, int px = 16);            // ti-bolt — 충전 스테이션 유형 표시
 
+// P2(이벤트 관제) 와이어프레임 대응 아이콘.
+QIcon alertOctagon(const QColor& color, int px = 16);    // 긴급 배지 (ti-alert-octagon)
+QIcon chevronLeft(const QColor& color, int px = 16);     // 페이지네이션 이전 (ti-chevron-left)
+QIcon barChart(const QColor& color, int px = 16);        // 통계 버튼 (ti-chart-bar)
+QIcon file(const QColor& color, int px = 16);             // PDF 보고서 버튼 (ti-file)
+
+// P2 이벤트 상세 모달 조치 버튼 (gui/wireframe/v1/p2_event_detail_modal_wireframe.html).
+QIcon speakerphone(const QColor& color, int px = 16);     // 스피커 통화 (ti-speakerphone)
+QIcon phone(const QColor& color, int px = 16);            // 대상자 전화 (ti-phone)
+QIcon users(const QColor& color, int px = 16);            // 보호자 연락 (ti-users)
+QIcon message(const QColor& color, int px = 16);          // 보호자 문자 (ti-message)
+QIcon phoneCall(const QColor& color, int px = 16);        // 119 모의 신고 (ti-phone-call)
+
 }  // namespace SimpleIcons

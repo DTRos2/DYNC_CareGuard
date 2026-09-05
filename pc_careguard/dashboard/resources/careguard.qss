@@ -169,22 +169,132 @@ QTabBar::tab:hover:!selected { color: #16202B; }
 QTabWidget::pane { border: none; border-top: 1px solid #E3E8ED; }
 
 /* ---------- 입력 ---------- */
-QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit {
+QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit, QDateEdit {
     background: #FFFFFF; color: #16202B;
     border: 1px solid #CDD5DD; border-radius: 6px;
     padding: 5px 8px; min-height: 22px;
     selection-background-color: #B9E2DB; selection-color: #16202B;
 }
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
-QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTimeEdit:focus {
+QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTimeEdit:focus, QDateEdit:focus {
     border: 1.5px solid #0E9384;
 }
 QLineEdit[state="error"], QComboBox[state="error"] { border: 1.5px solid #D93B47; }
-QLineEdit:disabled, QComboBox:disabled { background: #F5F7F9; color: #93A0AC; }
+QLineEdit:disabled, QComboBox:disabled, QDateEdit:disabled { background: #F5F7F9; color: #93A0AC; }
 QLineEdit::placeholder { color: #93A0AC; }
 
-QSpinBox, QDoubleSpinBox, QTimeEdit {
+QSpinBox, QDoubleSpinBox, QTimeEdit, QDateEdit {
     font-family: "JetBrains Mono", "D2Coding", monospace; font-size: 13px;
+}
+
+/* P2 기간 필터 — "직접" 선택 전에는 읽기 전용으로 계산된 범위만 보여준다
+   (gui/wireframe/v1/p2_filter_bar_period_segment_wireframe.html .date.off) */
+QDateEdit[state="off"] { background: #F5F7F9; color: #93A0AC; border-color: #E3E8ED; }
+
+QDateEdit::drop-down {
+    subcontrol-origin: padding; subcontrol-position: center right;
+    width: 22px; border: none;
+    border-top-right-radius: 6px; border-bottom-right-radius: 6px;
+}
+QDateEdit::drop-down:hover { background: #F0F4F7; }
+/* down-arrow 서브컨트롤은 image를 지정하지 않으면 빈 상자로 렌더링된다(Qt 스타일시트
+   특성). QComboBox와 동일하게 규칙 자체를 두지 않아 스타일 기본 화살표가 그려지게 한다. */
+
+/* ---------- 날짜 선택 팝업 (QCalendarWidget) ----------
+   주말 색·요일 라벨·오늘 표시는 QSS로 제어 불가 —
+   theme/calendar_style.h 의 applyCareGuardDateEdit() 를 반드시 함께 호출할 것. */
+QCalendarWidget {
+    background: #FFFFFF;
+    border: 1px solid #CDD5DD;
+    border-radius: 8px;
+}
+QCalendarWidget QWidget {
+    alternate-background-color: #FFFFFF;
+    background: #FFFFFF;
+}
+QCalendarWidget QWidget#qt_calendar_navigationbar {
+    background: #FFFFFF;
+    border-bottom: 1px solid #E3E8ED;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    min-height: 42px;
+    max-height: 42px;
+}
+QCalendarWidget QToolButton {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #16202B;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 10px;
+    min-height: 26px;
+    max-height: 26px;
+    margin: 0 2px;
+}
+QCalendarWidget QToolButton:hover   { background: #F0F4F7; }
+QCalendarWidget QToolButton:pressed { background: #EDF1F4; }
+QCalendarWidget QToolButton::menu-indicator { image: none; width: 0; }
+QCalendarWidget QToolButton#qt_calendar_prevmonth,
+QCalendarWidget QToolButton#qt_calendar_nextmonth {
+    min-width: 28px;  max-width: 28px;
+    min-height: 28px; max-height: 28px;
+    padding: 0;
+    color: #5A6774;
+    font-size: 16px;
+    font-weight: 400;
+}
+QCalendarWidget QMenu {
+    background: #FFFFFF;
+    border: 1px solid #CDD5DD;
+    border-radius: 8px;
+    padding: 4px;
+}
+QCalendarWidget QMenu::item {
+    color: #16202B;
+    font-size: 13px;
+    padding: 5px 16px;
+    border-radius: 6px;
+}
+QCalendarWidget QMenu::item:selected {
+    background: #E0F5F2;
+    color: #0B7A6E;
+}
+QCalendarWidget QSpinBox#qt_calendar_yearedit {
+    background: #FFFFFF;
+    color: #16202B;
+    border: 1px solid #0E9384;
+    border-radius: 6px;
+    font-family: "JetBrains Mono", "D2Coding", monospace;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 2px 6px;
+    min-width: 64px;
+    selection-background-color: #B9E2DB;
+    selection-color: #16202B;
+}
+QCalendarWidget QSpinBox#qt_calendar_yearedit::up-button,
+QCalendarWidget QSpinBox#qt_calendar_yearedit::down-button { width: 14px; border: none; }
+QCalendarWidget QAbstractItemView#qt_calendar_calendarview {
+    background: #FFFFFF;
+    border: none;
+    border-top-left-radius: 0px;
+    border-top-right-radius: 0px;
+    outline: none;
+    font-size: 13px;
+    padding: 6px 6px 8px 6px;
+    selection-background-color: #0E9384;
+    selection-color: #FFFFFF;
+}
+QCalendarWidget QAbstractItemView:enabled  { color: #16202B; }
+QCalendarWidget QAbstractItemView:disabled { color: #CDD5DD; }
+QCalendarWidget QAbstractItemView#qt_calendar_calendarview QHeaderView::section {
+    background: #FFFFFF;
+    color: #93A0AC;
+    font-size: 11px;
+    font-weight: 500;
+    border: none;
+    padding: 4px 0;
 }
 /* 와이어프레임(P5 텔레옵 속도값, P6 yaw 값)은 증감 화살표 없는 평범한 박스로 그려진다 —
    네이티브 스핀 버튼을 숨겨 맞춘다. 휠·화살표 키로는 계속 증감할 수 있다. */
