@@ -38,7 +38,9 @@
        ~/wego_ws에 실제로 존재) — rosdep에 없을 수 있어 빌드 실패시 무시해도 됨. -->
   <exec_depend>limo_description</exec_depend>
   <exec_depend>limo_base</exec_depend>
-  <exec_depend>astra_camera</exec_depend>
+  <!-- 원본(limo_pro)은 astra_camera였지만 이 로봇에는 orbbec_camera만 설치되어
+       있다(2026-09-06 실기 확인) — 로봇 개체마다 카메라 모델이 다를 수 있다. -->
+  <exec_depend>orbbec_camera</exec_depend>
   <exec_depend>ydlidar_ros2_driver</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

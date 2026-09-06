@@ -3,6 +3,10 @@
 # careguard_bringup 패키지로 그대로 옮겨왔다 — 로직은 원본과 동일, 참조하는
 # 공유 디렉터리 이름만 'wego' -> 'careguard_bringup'으로 바꿨다.
 # 라이선스 원문: THIRD_PARTY_LICENSE_wego.Apache-2.0.txt 참고.
+#
+# 카메라 패키지 이름은 원본(limo_pro)의 'astra_camera'가 아니라 'orbbec_camera'로
+# 바꿨다 — 이 로봇(2026-09-06 실기 확인)에는 astra_camera가 없고 orbbec_camera만
+# 설치되어 있다(같은 이름의 launch 파일 dabai.launch.py는 그대로 존재).
 import launch
 
 from launch import LaunchDescription
@@ -56,7 +60,7 @@ def generate_launch_description():
             PathJoinSubstitution([FindPackageShare('limo_base'), 'launch', 'limo_base.launch.py'])
         ),
         IncludeLaunchDescription(
-            PathJoinSubstitution([FindPackageShare('astra_camera'), 'launch', 'dabai.launch.py'])
+            PathJoinSubstitution([FindPackageShare('orbbec_camera'), 'launch', 'dabai.launch.py'])
         ),
         IncludeLaunchDescription(
             PathJoinSubstitution([FindPackageShare('ydlidar_ros2_driver'), 'launch', 'ydlidar.launch.py'])
