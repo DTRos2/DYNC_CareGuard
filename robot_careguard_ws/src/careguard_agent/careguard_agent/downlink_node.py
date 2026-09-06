@@ -133,25 +133,40 @@ class DownlinkNode(Node):
         if self._slam_process is not None and self._slam_process.poll() is None:
             self.get_logger().warn('이미 SLAM 작업이 진행 중입니다')
             return
-        self._slam_process = subprocess.Popen(['ros2', 'launch', 'careguard_bringup', 'cartographer_launch.py'])
+        # start_new_session=True로 이 프로세스를 새 프로세스 그룹의 리더로 만든다 —
+        # _stop_slam이 SIGINT를 "그룹 전체"에 보낼 수 있어야 한다(아래 이유 참고).
+        self._slam_process = subprocess.Popen(
+            ['ros2', 'launch', 'careguard_bringup', 'cartographer_launch.py'], start_new_session=True)
 
     def _stop_slam(self, message: dict):
         # "매핑 취소"/"매핑 재시작"(재시작은 서버가 취소 API 먼저 부른 뒤 slam_start를
         # 다시 보낸다) — 지금 떠 있는 cartographer_launch.py를 실제로 끈다. 이걸 안 하면
         # _start_slam이 "이미 SLAM 작업이 진행 중입니다"로 다음 시작을 계속 거부한다.
-        # ros2 launch는 SIGINT를 받으면 자기가 띄운 노드들까지 정상 종료시켜준다(터미널
-        # 에서 Ctrl+C 누르는 것과 같은 경로) — 그래서 SIGTERM/kill 대신 SIGINT를 쓴다.
+        #
+        # ros2 launch 프로세스 "하나"에만 SIGINT를 보내면(subprocess.send_signal) 정작
+        # 그 밑에서 실제로 도는 cartographer_node/occupancy_grid_node/rviz2는 안 죽고
+        # 고아 프로세스로 남는다(실 로봇에서 확인됨) — 터미널에서 Ctrl+C를 누르면
+        # 셸이 "포그라운드 프로세스 그룹 전체"에 신호를 보내기 때문에 잘 죽는 것이지,
+        # ros2 launch 자체가 자식들에게 신호를 잘 전달해줘서가 아니었다. 그래서
+        # os.killpg로 프로세스 그룹 전체에 SIGINT를 보내 Ctrl+C와 같은 효과를 낸다.
         if self._slam_process is None or self._slam_process.poll() is not None:
             self.get_logger().warn('취소할 SLAM 작업이 없습니다')
             self._slam_process = None
             return
-        self._slam_process.send_signal(signal.SIGINT)
+
+        pgid = os.getpgid(self._slam_process.pid)
         try:
+            os.killpg(pgid, signal.SIGINT)
             self._slam_process.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
             self.get_logger().warn('SLAM 프로세스가 5초 내에 안 죽어 강제 종료합니다')
-            self._slam_process.kill()
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             self._slam_process.wait(timeout=5.0)
+        except ProcessLookupError:
+            pass  # 이미 죽어 있었음
         self._slam_process = None
 
     def _save_map(self, message: dict):
