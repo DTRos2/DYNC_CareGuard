@@ -2,8 +2,9 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
+import yaml
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from psycopg2.extras import Json
@@ -171,6 +172,33 @@ def upload_map_image(
         storage_path=str(storage_path),
         original_filename=file.filename,
     )
+
+
+def write_map_yaml_sidecar(file_id: int, raw_yaml: Dict[str, Any]) -> None:
+    """업로드된 맵 이미지(.pgm) 옆에 실제 .yaml 파일을 같이 남긴다.
+
+    SLAM 저장(ws/robot_ws.py::_save_slam_result)·파일로 등록(api/v1/map.py::
+    create_map) 둘 다 지금까지는 .yaml 내용(resolution/origin 등)을 DB 컬럼에만
+    남기고 실제 파일은 안 남겼다 — 그래서 나중에 "파일로 등록"으로 이 폴더의
+    pgm+yaml 쌍을 다시 불러오고 싶어도 yaml이 없어서 불가능했다(등록엔 .yaml이
+    필수). 이 함수가 그 실제 파일을 만든다.
+
+    raw_yaml의 image 필드는 원본 위치(로봇의 임시 경로, 또는 사용자 PC의 로컬
+    경로)를 가리키고 있어서 그대로 두면 잘못된 참조가 된다 — 실제로 옆에 저장된
+    파일명으로 고쳐 쓴다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT storage_path FROM files WHERE id = %s", (file_id,))
+        row = cur.fetchone()
+    if row is None:
+        return
+
+    pgm_path = Path(row["storage_path"])
+    yaml_path = pgm_path.with_suffix(".yaml")
+    content = dict(raw_yaml)
+    content["image"] = pgm_path.name
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(content, f, default_flow_style=None, sort_keys=False)
 
 
 @router.api_route("/files/{file_id}", methods=["GET", "HEAD"])

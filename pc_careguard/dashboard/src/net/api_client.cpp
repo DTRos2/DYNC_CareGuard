@@ -312,8 +312,12 @@ void ApiClient::cancelSlamJob(int jobId, ItemCallback<SlamJobInfo> callback) {
              });
 }
 
-void ApiClient::saveSlamJob(int jobId, ItemCallback<SlamJobInfo> callback) {
-    postJson(QStringLiteral("/slam-jobs/%1/save").arg(jobId), QJsonObject{},
+void ApiClient::saveSlamJob(int jobId, const QString& mapName, ItemCallback<SlamJobInfo> callback) {
+    QJsonObject body;
+    if (!mapName.trimmed().isEmpty()) {
+        body.insert(QStringLiteral("map_name"), mapName.trimmed());
+    }
+    postJson(QStringLiteral("/slam-jobs/%1/save").arg(jobId), body,
              [callback](bool ok, const QByteArray& respBody, const QString& err) {
                  if (!ok) {
                      callback(false, SlamJobInfo{}, err);

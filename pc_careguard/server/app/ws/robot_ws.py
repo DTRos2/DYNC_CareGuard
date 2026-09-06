@@ -4,7 +4,7 @@ import psycopg2.extras
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from . import dashboard_ws
-from .. import db
+from .. import db, media
 
 router = APIRouter()
 
@@ -186,6 +186,12 @@ def _save_slam_result(message: dict) -> Optional[int]:
             (map_id, job_id),
         )
         conn.commit()
+
+    if file_id is not None:
+        # .pgm 옆에 실제 .yaml도 남겨야 나중에 "파일로 등록"으로 이 폴더에서
+        # 다시 불러올 수 있다 — DB 컬럼에만 있으면 등록 화면이 요구하는 .yaml이
+        # 실제로 없어서 불가능하다.
+        media.write_map_yaml_sidecar(file_id, message.get("raw_yaml", {}))
 
     return map_id
 

@@ -114,9 +114,11 @@ public:
     void startSlamJob(const QString& robotCode, const QString& mapName, ItemCallback<SlamJobInfo> callback);
     // POST /slam-jobs/{id}/cancel — 매핑 취소("매핑 재시작"은 이걸로 취소 후 startSlamJob을 다시 부른다).
     void cancelSlamJob(int jobId, ItemCallback<SlamJobInfo> callback);
-    // POST /slam-jobs/{id}/save — "SLAM 맵 저장·배포". 이 응답은 "로봇에 명령을 보냈다"는
-    // 뜻이지 저장이 끝났다는 뜻이 아니다 — 실제 완료는 나중에 WS로 오는 slam_done을 봐야 한다.
-    void saveSlamJob(int jobId, ItemCallback<SlamJobInfo> callback);
+    // POST /slam-jobs/{id}/save — "SLAM 맵 저장·배포". mapName은 "매핑 시작" 때 넣은
+    // 임시 이름을 실제 저장할 이름으로 덮어쓴다(비워두면 기존 이름 유지). 이 응답은
+    // "로봇에 명령을 보냈다"는 뜻이지 저장이 끝났다는 뜻이 아니다 — 실제 완료는 나중에
+    // WS로 오는 slam_done을 봐야 한다.
+    void saveSlamJob(int jobId, const QString& mapName, ItemCallback<SlamJobInfo> callback);
 
     // POST /media/upload-map(멀티파트) — "파일로 등록" 모달이 로컬에서 고른 .pgm을
     // 실제로 서버에 올린다. 성공하면 files.id(file_id)를 콜백에 넘긴다.

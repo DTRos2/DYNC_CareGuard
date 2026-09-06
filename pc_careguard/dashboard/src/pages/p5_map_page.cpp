@@ -130,8 +130,8 @@ QWidget* P5MapPage::buildSaveInfoCard() {
     auto* nameLabel = new QLabel(QStringLiteral("맵 이름"), card);
     nameLabel->setProperty("role", "secondary");
     layout->addWidget(nameLabel);
-    auto* nameEdit = new QLineEdit(QStringLiteral("동산주택 2층"), card);
-    layout->addWidget(nameEdit);
+    mapNameEdit_ = new QLineEdit(QStringLiteral("동산주택 2층"), card);
+    layout->addWidget(mapNameEdit_);
     layout->addSpacing(5);
 
     auto* recipientLabel = new QLabel(QStringLiteral("대상자 연결"), card);
@@ -158,7 +158,9 @@ QWidget* P5MapPage::buildSaveInfoCard() {
                                   QStringLiteral("먼저 \"매핑 시작\"으로 SLAM 작업을 시작해야 합니다."));
             return;
         }
-        apiClient_->saveSlamJob(currentSlamJobId_,
+        // 이 입력칸의 이름이 실제 저장되는 맵 이름이 된다 — "매핑 시작"이 만든 임시
+        // 이름("새 맵")을 여기서 덮어쓴다.
+        apiClient_->saveSlamJob(currentSlamJobId_, mapNameEdit_->text(),
                                  [this](bool ok, const ApiClient::SlamJobInfo&, const QString& err) {
                                      if (!ok) {
                                          QMessageBox::warning(

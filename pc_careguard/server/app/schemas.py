@@ -233,6 +233,12 @@ class SlamJobCreate(BaseModel):
     slam_backend: Optional[str] = "slam_toolbox"
 
 
+class SlamJobSaveRequest(BaseModel):
+    # P5 "맵 저장 정보" 카드(맵 이름 입력칸)에서 온 최종 이름 — "매핑 시작" 시점에 넣은
+    # 임시 이름(예: "새 맵")을 저장 시점에 덮어쓴다. 안 넘기면 기존 이름 그대로 둔다.
+    map_name: Optional[str] = None
+
+
 class TeleopCommand(BaseModel):
     # P5 방향키 패널이 계산한 목표 속도. 로봇이 그대로 받아 cmd_vel로 퍼블리시한다.
     linear: float = 0.0   # m/s, 전진(+)/후진(-)

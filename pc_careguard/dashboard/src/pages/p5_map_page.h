@@ -67,6 +67,11 @@ private:
     SlamMappingCard* slamCard_;
     TeleopPanel* teleopPanel_;
     QPushButton* robotChipBtn_;
+    // "맵 저장 정보" 카드의 맵 이름 입력칸 — "SLAM 맵 저장·배포" 클릭 시 이 값을 실제
+    // 저장될 이름으로 서버에 넘겨야 해서 멤버로 들고 있는다("매핑 시작" 시점엔 아직
+    // 로봇이 지도를 다 그리기 전이라 이름이 확정 안 됐을 수 있어, 이름 확정은 저장
+    // 시점 기준으로 한다).
+    QLineEdit* mapNameEdit_;
     QMap<QString, RegisteredMapInfo> registeredMaps_;
     ApiClient* apiClient_;
     WsClient* wsClient_;

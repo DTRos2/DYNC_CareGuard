@@ -4,8 +4,17 @@ from fastapi import APIRouter, HTTPException, Query
 
 import psycopg2.extras
 
-from ... import db
-from ...schemas import MapCreate, MapItem, SlamJobCreate, SlamJobItem, WaypointCreate, WaypointItem, WaypointUpdate
+from ... import db, media
+from ...schemas import (
+    MapCreate,
+    MapItem,
+    SlamJobCreate,
+    SlamJobItem,
+    SlamJobSaveRequest,
+    WaypointCreate,
+    WaypointItem,
+    WaypointUpdate,
+)
 from ...ws import robot_ws
 
 router = APIRouter(prefix="/maps", tags=["map"])
@@ -122,6 +131,11 @@ def create_map(payload: MapCreate):
             (map_id,),
         )
         row = cur.fetchone()
+
+    # .pgm 옆에 실제 .yaml도 남겨야 나중에 "파일로 등록"으로 이 폴더에서 다시
+    # 불러올 수 있다 — DB 컬럼에만 있으면 등록 화면이 요구하는 .yaml이 실제로
+    # 없어서 불가능하다.
+    media.write_map_yaml_sidecar(payload.file_id, payload.raw_yaml)
 
     image_file_id = row["image_file_id"]
     return MapItem(**row, image_url=f"/media/files/{image_file_id}" if image_file_id else None)
@@ -296,16 +310,24 @@ async def cancel_slam_job(job_id: int):
 
 
 @slam_jobs_router.post("/{job_id}/save", response_model=SlamJobItem)
-async def save_slam_job(job_id: int):
+async def save_slam_job(job_id: int, payload: SlamJobSaveRequest = SlamJobSaveRequest()):
     """"SLAM 맵 저장·배포" 버튼 — 로봇에 지금까지 그린 지도를 실제로 저장하라고 명령한다.
 
-    여기서는 DB를 안 바꾼다 — 로봇이 map_saver_cli로 저장 + /media/upload-map
-    업로드까지 끝내고 slam_saved를 다시 보내오면 그때 ws/robot_ws.py::
-    _save_slam_result가 map 행을 만들고 slam_job.status를 'saved'로 바꾼다.
-    지금 이 요청은 그 과정을 시작만 시킨다(비동기) — 그래서 응답의 status는
-    아직 'queued'/'running'일 수 있다.
+    payload.map_name이 오면 "매핑 시작" 때 넣어뒀던 임시 이름(예: "새 맵")을 여기서
+    실제 이름으로 덮어쓴다 — slam_job.map_name이 유일한 원본이라, 여기서 갱신해두면
+    로봇에 보내는 이름도, 나중에 ws/robot_ws.py::_save_slam_result가 map.name으로
+    쓰는 값도 자동으로 맞는 이름이 된다(그쪽 코드는 안 건드려도 됨).
+
+    그 외엔 여기서 DB를 안 바꾼다 — 로봇이 map_saver_cli로 저장 + /media/upload-map
+    업로드까지 끝내고 slam_saved를 다시 보내오면 그때 _save_slam_result가 map 행을
+    만들고 slam_job.status를 'saved'로 바꾼다. 지금 이 요청은 그 과정을 시작만
+    시킨다(비동기) — 그래서 응답의 status는 아직 'queued'/'running'일 수 있다.
     """
     with db.get_connection() as conn, conn.cursor() as cur:
+        if payload.map_name:
+            cur.execute("UPDATE slam_job SET map_name = %s WHERE id = %s", (payload.map_name, job_id))
+            conn.commit()
+
         cur.execute(
             """
             SELECT sj.id, sj.robot_id, sj.map_id, sj.map_name, sj.slam_backend, sj.status,
