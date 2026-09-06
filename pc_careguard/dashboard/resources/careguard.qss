@@ -35,15 +35,10 @@ QLabel[role="mono"] {
     font-size: 13px; color: #5A6774;
 }
 QLabel[role="warning"] { color: #C27500; }
+QLabel[role="danger"]  { color: #D93B47; }
 QLabel#pageTitle { font-size: 24px; font-weight: 600; }
 QLabel[role="h2"] { font-size: 18px; font-weight: 600; }
 QLabel[role="h3"] { font-size: 15px; font-weight: 600; }
-QLabel#hrDisplay {  /* 대상자 카드 심박 대형 숫자 */
-    font-size: 32px; font-weight: 700;
-    font-family: "JetBrains Mono", "D2Coding", monospace;
-}
-QLabel#hrDisplay[level="emergency"] { color: #D93B47; }
-QLabel#hrDisplay[level="offline"]   { color: #93A0AC; }
 
 /* ---------- 상단 바 ---------- */
 QFrame#topBar {
@@ -80,6 +75,7 @@ QFrame#sidebarDivider { background: #E3E8ED; max-height: 1px; margin: 6px 12px; 
 QPushButton {
     border-radius: 8px; font-size: 13px; padding: 0 14px;
     min-height: 36px; max-height: 36px;
+    outline: none;
 }
 QPushButton[size="s"] { min-height: 28px; max-height: 28px; font-size: 12px; padding: 0 10px; }
 QPushButton[size="l"] { min-height: 44px; max-height: 44px; font-size: 14px; padding: 0 18px; }
@@ -139,6 +135,17 @@ QFrame#recipientCard[status="attention"] { background: #FFF6E5; border: 1.5px so
 QFrame#recipientCard[status="emergency"] { background: #FDECEE; border: 1.5px solid #D93B47; }
 QFrame#recipientCard[status="offline"]   { background: #F1F4F6; border: 1px solid #DFE5EA; }
 QFrame#recipientCard[status="offline"] QLabel { color: #93A0AC; }
+/* EMERGENCY 배경 펄스(§9 모션, 2초 주기) — pulse="off"일 때 EMERGENCY_PULSE_B로 전환 */
+QFrame#recipientCard[status="emergency"][pulse="off"] { background: #FBDDE0; }
+
+/* 복약 3칸 인디케이터 (§5-3). 상태는 QLabel 텍스트(✓/⏳/✕/빈칸)로도 구분해 색만으로 표시하지 않는다 */
+QLabel#medSlot {
+    border: 1px solid #CDD5DD; border-radius: 4px;
+    font-size: 12px; font-weight: 600; color: #93A0AC;
+}
+QLabel#medSlot[state="done"]       { background: #E8F6EF; color: #16875A; border: none; }
+QLabel#medSlot[state="inProgress"] { background: #FFFFFF; color: #2563A8; border: 1px solid #2563A8; }
+QLabel#medSlot[state="missed"]     { background: #D93B47; color: #FFFFFF; border: none; }
 
 /* ---------- 테이블 ---------- */
 QTableView {
