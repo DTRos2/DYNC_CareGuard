@@ -380,11 +380,18 @@ SlamMappingCard::SlamMappingCard(QWidget* parent)
         view_->resetMapping();
         elapsedSeconds_ = 0;
         areaM2_ = 0.0;
+        emit mappingRestartRequested();
     });
     buttons->addWidget(restartBtn);
 
     auto* cancelBtn = new QPushButton(QStringLiteral("매핑 취소"), this);
     cancelBtn->setProperty("variant", "secondary");
+    connect(cancelBtn, &QPushButton::clicked, this, [this] {
+        view_->resetMapping();
+        elapsedSeconds_ = 0;
+        areaM2_ = 0.0;
+        emit mappingCancelRequested();
+    });
     buttons->addWidget(cancelBtn);
 
     buttons->addStretch();

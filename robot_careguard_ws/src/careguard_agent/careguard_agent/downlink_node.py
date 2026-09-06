@@ -12,6 +12,7 @@ ROS2 액션/subprocess로 전달하는 유일한 진입점이다. uplink_node.py
 """
 import asyncio
 import json
+import signal
 import subprocess
 import threading
 
@@ -71,6 +72,8 @@ class DownlinkNode(Node):
             self._start_patrol(message)
         elif msg_type == 'slam_start':
             self._start_slam(message)
+        elif msg_type == 'slam_stop':
+            self._stop_slam(message)
         elif msg_type == 'cmd_vel':
             self._handle_cmd_vel(message)
 
@@ -114,6 +117,25 @@ class DownlinkNode(Node):
             self.get_logger().warn('이미 SLAM 작업이 진행 중입니다')
             return
         self._slam_process = subprocess.Popen(['ros2', 'launch', 'careguard_bringup', 'cartographer_launch.py'])
+
+    def _stop_slam(self, message: dict):
+        # "매핑 취소"/"매핑 재시작"(재시작은 서버가 취소 API 먼저 부른 뒤 slam_start를
+        # 다시 보낸다) — 지금 떠 있는 cartographer_launch.py를 실제로 끈다. 이걸 안 하면
+        # _start_slam이 "이미 SLAM 작업이 진행 중입니다"로 다음 시작을 계속 거부한다.
+        # ros2 launch는 SIGINT를 받으면 자기가 띄운 노드들까지 정상 종료시켜준다(터미널
+        # 에서 Ctrl+C 누르는 것과 같은 경로) — 그래서 SIGTERM/kill 대신 SIGINT를 쓴다.
+        if self._slam_process is None or self._slam_process.poll() is not None:
+            self.get_logger().warn('취소할 SLAM 작업이 없습니다')
+            self._slam_process = None
+            return
+        self._slam_process.send_signal(signal.SIGINT)
+        try:
+            self._slam_process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            self.get_logger().warn('SLAM 프로세스가 5초 내에 안 죽어 강제 종료합니다')
+            self._slam_process.kill()
+            self._slam_process.wait(timeout=5.0)
+        self._slam_process = None
 
 
 def main(args=None):

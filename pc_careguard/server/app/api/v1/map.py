@@ -192,6 +192,41 @@ async def start_slam_job(payload: SlamJobCreate):
     return SlamJobItem(**row, robot_connected=connected)
 
 
+@slam_jobs_router.post("/{job_id}/cancel", response_model=SlamJobItem)
+async def cancel_slam_job(job_id: int):
+    """진행 중인 SLAM을 취소한다 — "매핑 취소"/"매핑 재시작"(재시작은 취소 후 다시 시작)이 쓴다.
+
+    로봇에는 slam_stop을 보내 downlink_node가 띄워둔 cartographer 프로세스를 죽이게
+    한다(안 죽이고 그대로 두면 재시작 시 "이미 SLAM 작업이 진행 중입니다"로 거부됨).
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT sj.id, sj.robot_id, sj.map_id, sj.map_name, sj.slam_backend, sj.status,
+                   sj.started_at, sj.ended_at, r.code AS robot_code
+            FROM slam_job sj JOIN robot r ON r.id = sj.robot_id
+            WHERE sj.id = %s
+            """,
+            (job_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="SLAM 작업을 찾을 수 없습니다")
+
+        cur.execute(
+            """
+            UPDATE slam_job SET status = 'cancelled', ended_at = NOW() WHERE id = %s
+            RETURNING id, robot_id, map_id, map_name, slam_backend, status, started_at, ended_at
+            """,
+            (job_id,),
+        )
+        updated = cur.fetchone()
+        conn.commit()
+
+    connected = await robot_ws.send_command(row["robot_code"], {"type": "slam_stop", "job_id": job_id})
+    return SlamJobItem(**updated, robot_connected=connected)
+
+
 @slam_jobs_router.get("/{job_id}", response_model=SlamJobItem)
 def get_slam_job(job_id: int):
     with db.get_connection() as conn, conn.cursor() as cur:

@@ -112,6 +112,8 @@ public:
 
     // POST /slam-jobs — 매핑 시작. robots.py가 이번 스코프 밖이라 robot.code로 보낸다.
     void startSlamJob(const QString& robotCode, const QString& mapName, ItemCallback<SlamJobInfo> callback);
+    // POST /slam-jobs/{id}/cancel — 매핑 취소("매핑 재시작"은 이걸로 취소 후 startSlamJob을 다시 부른다).
+    void cancelSlamJob(int jobId, ItemCallback<SlamJobInfo> callback);
 
     // POST /patrol-runs — 순찰 시작.
     void startPatrolRun(int robotId, int routeId, const QString& trigger, ItemCallback<PatrolRunInfo> callback);

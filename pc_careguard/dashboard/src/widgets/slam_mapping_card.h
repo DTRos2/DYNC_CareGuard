@@ -96,6 +96,11 @@ public:
 
 signals:
     void emergencyStopRequested();
+    // "매핑 재시작"/"매핑 취소" 클릭 — 화면(view_) 초기화는 이 카드가 바로 처리하지만,
+    // 로봇에게 실제로 SLAM 프로세스를 멈추고(취소)/다시 시작하라고(재시작) 알리는 건
+    // 서버 API 호출이 필요해 P5MapPage가 담당한다.
+    void mappingRestartRequested();
+    void mappingCancelRequested();
 
 public slots:
     void setVelocity(qreal linearMps, qreal angularRadps);

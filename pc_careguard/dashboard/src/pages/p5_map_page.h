@@ -54,6 +54,11 @@ private:
     // (체크리스트 ⑧). 화면상 텔레옵·SlamMapView 시뮬레이션은 서버 연동 여부와 무관하게
     // 그대로 동작한다 — 이 호출은 실제 로봇에게 명령을 전달하는 별도 경로다.
     void startMappingOnServer();
+    // "매핑 취소" — 진행 중인 slam_job을 서버에 취소 요청한다(로봇의 cartographer
+    // 프로세스도 같이 종료됨). "매핑 재시작"도 내부적으로 이걸 먼저 부른 뒤
+    // startMappingOnServer()로 새 job을 다시 시작한다.
+    void cancelMappingOnServer();
+    void restartMappingOnServer();
     // /ws/dashboard 메시지 — slam_progress/slam_done을 현재 로봇 기준으로 반영한다
     // (체크리스트 ⑨).
     void handleWsMessage(const QJsonObject& message);
@@ -65,6 +70,10 @@ private:
     QMap<QString, RegisteredMapInfo> registeredMaps_;
     ApiClient* apiClient_;
     WsClient* wsClient_;
+    // 진행 중인 slam_job id. 0이면 진행 중인 매핑이 없다는 뜻(취소/재시작 버튼이
+    // 서버에 뭘 취소해야 할지 알아야 해서 필요) — startMappingOnServer 성공 시 채우고,
+    // cancelMappingOnServer 성공 시 0으로 되돌린다.
+    int currentSlamJobId_ = 0;
     // 헤더의 로봇 칩은 지금 "R-04" 고정 표시다(로봇 목록 API는 이번 스코프 밖) — 매핑
     // 시작·WS 필터링에 쓰는 로봇 코드도 이 상수를 그대로 따른다.
     QString currentRobotCode_ = QStringLiteral("R-04");

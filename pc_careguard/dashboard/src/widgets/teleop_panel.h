@@ -6,6 +6,7 @@ class QLabel;
 class QPushButton;
 class QSlider;
 class QDoubleSpinBox;
+class QTimer;
 
 // P5 원격 조작(텔레옵) 패널 — 방향키패드 + 속도 프리셋 + 선속도/각속도
 // 슬라이더·스핀박스 양방향 동기화. CareGuard_DESIGN_SYSTEM.md §6(P5 항목) 참고.
@@ -49,4 +50,8 @@ private:
     QSlider* angularSlider_;
 
     QSet<int> pressedKeys_;
+    // 로봇(limo_base) 쪽에 "명령이 일정 시간 안 오면 정지"하는 안전장치가 있어서,
+    // 방향키를 누르고 있는 동안 velocityChanged를 한 번만 보내면 로봇이 가다가 저절로
+    // 멈춘다. 눌려있는 동안 이 타이머로 계속 재전송해 멈추지 않게 한다.
+    QTimer* holdTimer_;
 };

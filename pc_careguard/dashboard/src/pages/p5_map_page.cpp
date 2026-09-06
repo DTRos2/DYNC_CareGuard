@@ -9,6 +9,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <QJsonArray>
@@ -45,6 +46,8 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
 
     slamCard_ = new SlamMappingCard(this);
     connect(slamCard_, &SlamMappingCard::emergencyStopRequested, this, &P5MapPage::handleEmergencyStop);
+    connect(slamCard_, &SlamMappingCard::mappingCancelRequested, this, &P5MapPage::cancelMappingOnServer);
+    connect(slamCard_, &SlamMappingCard::mappingRestartRequested, this, &P5MapPage::restartMappingOnServer);
     content->addWidget(slamCard_, /*stretch=*/16);
 
     auto* rightCol = new QVBoxLayout();
@@ -250,12 +253,45 @@ void P5MapPage::startMappingOnServer() {
                                       err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
                 return;
             }
+            currentSlamJobId_ = job.id;
             if (!job.robotConnected) {
                 QMessageBox::information(
                     this, QStringLiteral("매핑 시작"),
                     QStringLiteral("SLAM 작업은 기록했지만 로봇이 아직 연결되어 있지 않습니다."));
             }
         });
+}
+
+void P5MapPage::cancelMappingOnServer() {
+    if (currentSlamJobId_ == 0) return;  // 시작한 적 없으면 취소할 것도 없다.
+    const int jobId = currentSlamJobId_;
+    currentSlamJobId_ = 0;
+    apiClient_->cancelSlamJob(jobId, [this](bool ok, const ApiClient::SlamJobInfo&, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("매핑 취소 실패"),
+                                  err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
+        }
+    });
+}
+
+void P5MapPage::restartMappingOnServer() {
+    if (currentSlamJobId_ == 0) {
+        // 진행 중이던 job이 없으면(예: 매핑 시작 전에 눌렀거나 이미 취소됨) 바로 새로 시작한다.
+        startMappingOnServer();
+        return;
+    }
+    const int jobId = currentSlamJobId_;
+    currentSlamJobId_ = 0;
+    apiClient_->cancelSlamJob(jobId, [this](bool ok, const ApiClient::SlamJobInfo&, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("매핑 재시작 실패"),
+                                  err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
+            return;
+        }
+        // 로봇이 이전 cartographer 프로세스를 완전히 끝낼 시간을 살짝 두고 다시 시작한다
+        // (바로 다시 보내면 downlink_node가 아직 종료 중인 프로세스를 보고 거부할 수 있음).
+        QTimer::singleShot(500, this, &P5MapPage::startMappingOnServer);
+    });
 }
 
 void P5MapPage::handleWsMessage(const QJsonObject& message) {
