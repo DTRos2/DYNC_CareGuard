@@ -10,6 +10,11 @@ careguard_msgs/action/Patrol 액션 서버. careguard_agent/downlink_node.py가
 (careguard_agent만 서버/WS를 직접 만지도록 하는 "유일한 외부 통신구" 원칙을
 지키기 위해, 이 노드는 서버를 직접 호출하지 않는다).
 
+이 노드는 Nav2가 이미 떠 있다고 가정한다(teleop_launch.py처럼 자동으로
+띄우지 않음) — 순찰 전에 사전에 별도로
+`ros2 launch careguard_bringup navigation_diff_launch.py map:=<등록된 맵 yaml 경로>`
+를 실행해 amcl·costmap·bt_navigator 등을 먼저 올려둬야 한다.
+
 빌드/실행 미검증.
 """
 import json

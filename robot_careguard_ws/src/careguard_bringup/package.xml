@@ -4,10 +4,11 @@
   <name>careguard_bringup</name>
   <version>0.1.0</version>
   <description>
-    통합 런치(베이스 구동 teleop_launch.py, SLAM 매핑 cartographer_launch.py).
-    launch/config/rviz는 WeGo Robotics limo_pro(wego 패키지, Apache-2.0)에서
-    가져왔다 — wego_ws를 별도로 참조하지 않고 이 저장소 안에서 자체 완결되도록
-    하기 위함. 라이선스 원문: THIRD_PARTY_LICENSE_wego.Apache-2.0.txt 참고.
+    통합 런치(베이스 구동 teleop_launch.py, SLAM 매핑 cartographer_launch.py,
+    Nav2 자율주행/위치추정 navigation_diff_launch.py). launch/config/params/rviz는
+    WeGo Robotics limo_pro(wego, wego_2d_nav 패키지, Apache-2.0)에서 가져왔다 —
+    wego_ws를 별도로 참조하지 않고 이 저장소 안에서 자체 완결되도록 하기 위함.
+    라이선스 원문: THIRD_PARTY_LICENSE_wego.Apache-2.0.txt 참고.
   </description>
   <maintainer email="careguard@example.com">CareGuard Team</maintainer>
   <license>Apache-2.0</license>
@@ -21,6 +22,18 @@
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>cartographer_ros</exec_depend>
   <exec_depend>robot_localization</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
+  <exec_depend>nav2_common</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_smoother</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_waypoint_follower</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
   <!-- 아래 4개는 LIMO/wego 강의용 스택이 이미 설치되어 있다는 전제(로봇 쪽
        ~/wego_ws에 실제로 존재) — rosdep에 없을 수 있어 빌드 실패시 무시해도 됨. -->
   <exec_depend>limo_description</exec_depend>
