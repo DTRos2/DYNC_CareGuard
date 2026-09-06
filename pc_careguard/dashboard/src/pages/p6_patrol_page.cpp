@@ -6,6 +6,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QAction>
+#include <QImage>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -1290,11 +1291,24 @@ void P6PatrolPage::finishDeploy(bool hadError) {
 }
 
 void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
-    if (message.value(QStringLiteral("type")).toString() != QStringLiteral("robot_position")) return;
+    const QString type = message.value(QStringLiteral("type")).toString();
+    if (type != QStringLiteral("robot_position") && type != QStringLiteral("camera_frame")) return;
     if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
 
     const QString robotCode = message.value(QStringLiteral("robot_code")).toString();
     if (maps_[currentMapIndex_].robotId != robotCode) return;
+
+    if (type == QStringLiteral("camera_frame")) {
+        // /camera/color/image_raw/compressed를 uplink_node가 재인코딩 없이 그대로
+        // base64로 실어 보낸 것 — JPEG라서 QImage가 바로 디코딩한다.
+        const QByteArray jpegBytes =
+            QByteArray::fromBase64(message.value(QStringLiteral("jpeg_base64")).toString().toLatin1());
+        QImage frame;
+        if (frame.loadFromData(jpegBytes)) {
+            canvas_->setCameraFrame(frame);
+        }
+        return;
+    }
 
     const qreal xMeters = message.value(QStringLiteral("x")).toDouble();
     const qreal yMeters = message.value(QStringLiteral("y")).toDouble();

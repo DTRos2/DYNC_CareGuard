@@ -390,6 +390,19 @@ void P5MapPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
+    if (type == QStringLiteral("camera_frame")) {
+        // /camera/color/image_raw/compressed를 uplink_node가 재인코딩 없이 그대로
+        // base64로 실어 보낸 것 — JPEG라서 QImage가 바로 디코딩한다.
+        if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
+        const QByteArray jpegBytes =
+            QByteArray::fromBase64(message.value(QStringLiteral("jpeg_base64")).toString().toLatin1());
+        QImage frame;
+        if (frame.loadFromData(jpegBytes)) {
+            slamCard_->view()->setCameraFrame(frame);
+        }
+        return;
+    }
+
     if (type == QStringLiteral("slam_scan_update")) {
         // 실시간 라이다 스캔(map 프레임 x,y가 번갈아 들어있는 평탄화 배열) — rviz2처럼
         // 지도 위에 점으로 겹쳐 그린다.

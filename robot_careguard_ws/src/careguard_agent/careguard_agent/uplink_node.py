@@ -22,6 +22,10 @@ amcl이 안 떠 있어 그 토픽에 퍼블리셔가 전혀 없다 — 매핑 �
 보낸다 — 대시보드 P5 뷰에 rviz2처럼 로봇 화살표+라이다 스캔이 실시간으로 겹쳐
 보이게 하기 위함이다. /amcl_pose 구독은 매핑이 끝난 뒤 amcl로 위치를 잡는
 순찰(P6) 단계를 위해 그대로 남겨둔다.
+
+/camera/color/image_raw/compressed(orbbec_camera, sensor_msgs/CompressedImage)도
+같은 방식으로 relay한다 — 이미 JPEG로 압축되어 있어 재인코딩 없이 그대로
+base64만 씌워 보낸다(대시보드 P5/P6 우측 상단 카메라 라이브 박스용).
 """
 import asyncio
 import base64
@@ -37,7 +41,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import CompressedImage, LaserScan
 from std_msgs.msg import String
 
 from . import ws_config
@@ -54,6 +58,11 @@ SLAM_OVERLAY_INTERVAL_SEC = 0.3
 
 # 스캔 포인트를 그대로 다 보내면 메시지가 커진다 — 화면에 뿌릴 용도로는 이 정도로 충분하다.
 MAX_SCAN_POINTS = 450
+
+# 카메라 라이브 미리보기 전송 간격 — 대시보드 우측 상단 작은 박스에 보여줄 용도라
+# 원본 카메라 프레임레이트 그대로 보낼 필요는 없다. 이 정도면 "실시간"으로 보이면서도
+# WS 대역폭 부담이 적다.
+CAMERA_SEND_INTERVAL_SEC = 0.2
 
 
 def _yaw_from_quaternion(q) -> float:
@@ -84,11 +93,17 @@ class UplinkNode(Node):
         self._ws = None
         self._connected = False
         self._last_map_sent_at = 0.0
+        self._last_camera_sent_at = 0.0
 
         self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self._on_pose, 10)
         self.create_subscription(OccupancyGrid, '/map', self._on_map, 1)
         self.create_subscription(String, '/careguard/patrol_status', self._on_status_topic, 10)
         self.create_subscription(String, '/careguard/slam_status', self._on_status_topic, 10)
+        # orbbec_camera가 발행하는 압축(JPEG) 이미지 — 재인코딩 없이 그대로 relay하면
+        # 되므로 cv_bridge/OpenCV 의존성이 필요 없다. 카메라 드라이버도 센서 QoS로
+        # 퍼블리시하는 경우가 많아(ydlidar /scan과 같은 이유) sensor QoS로 구독한다.
+        self.create_subscription(CompressedImage, '/camera/color/image_raw/compressed',
+                                  self._on_camera_frame, qos_profile_sensor_data)
 
         # SLAM(Cartographer) 중에는 /amcl_pose가 없다 — map->base_link TF로 직접 위치를
         # 구해 대시보드의 실시간 rviz2 스타일 뷰(화살표+라이다 스캔)에 넘긴다.
@@ -135,6 +150,20 @@ class UplinkNode(Node):
 
     def _on_scan(self, msg: LaserScan):
         self._latest_scan = msg
+
+    def _on_camera_frame(self, msg: CompressedImage):
+        now = time.monotonic()
+        if now - self._last_camera_sent_at < CAMERA_SEND_INTERVAL_SEC:
+            return
+        if not msg.data:
+            return
+        self._last_camera_sent_at = now
+        # msg.data는 이미 JPEG로 압축되어 있다 — 대시보드가 QImage로 바로 디코딩하므로
+        # 여기서 OpenCV/cv_bridge로 다시 디코딩·인코딩할 필요가 없다.
+        self._send({
+            'type': 'camera_frame',
+            'jpeg_base64': base64.b64encode(bytes(msg.data)).decode('ascii'),
+        })
 
     def _on_slam_overlay_tick(self):
         """map->base_link TF가 있을 때만(=SLAM 진행 중) 위치·스캔을 내보낸다.

@@ -40,6 +40,8 @@ public:
     void setMapMeta(qreal resolutionMPerPx, const QPointF& originMeters, const QSize& imagePixelSize);
     // 실제 로봇 위치(map 프레임, 미터)·방향(라디안). uplink_node의 map->base_link TF 기반.
     void setLivePose(qreal xMeters, qreal yMeters, qreal yawRad);
+    // 우상단 카메라 라이브 화면에 실제 프레임을 흘려보낸다(camera_frame WS 메시지).
+    void setCameraFrame(const QImage& frame);
     // 실시간 라이다 스캔점(map 프레임, 미터 좌표 목록).
     void setLiveScan(const QVector<QPointF>& pointsMeters);
 

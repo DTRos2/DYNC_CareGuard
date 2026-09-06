@@ -2,6 +2,7 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPixmap>
 #include <QVBoxLayout>
 
 #include "theme/tokens.h"
@@ -33,15 +34,42 @@ CameraLiveView::CameraLiveView(QWidget* parent) : QFrame(parent) {
 
     layout->addStretch();
 
-    auto* icon = new QLabel(this);
-    icon->setPixmap(SimpleIcons::video(Tokens::OFFLINE.main, 20).pixmap(20, 20));
-    icon->setAlignment(Qt::AlignHCenter);
-    layout->addWidget(icon);
+    placeholderIcon_ = new QLabel(this);
+    placeholderIcon_->setPixmap(SimpleIcons::video(Tokens::OFFLINE.main, 20).pixmap(20, 20));
+    placeholderIcon_->setAlignment(Qt::AlignHCenter);
+    layout->addWidget(placeholderIcon_);
 
-    auto* statusLabel = new QLabel(QStringLiteral("카메라 연결 중"), this);
-    statusLabel->setAlignment(Qt::AlignHCenter);
-    statusLabel->setStyleSheet(QStringLiteral("color:#8A97A3; font-size:10px; margin-top:4px;"));
-    layout->addWidget(statusLabel);
+    placeholderText_ = new QLabel(QStringLiteral("카메라 연결 중"), this);
+    placeholderText_->setAlignment(Qt::AlignHCenter);
+    placeholderText_->setStyleSheet(QStringLiteral("color:#8A97A3; font-size:10px; margin-top:4px;"));
+    layout->addWidget(placeholderText_);
 
     layout->addStretch();
+
+    // 실시간 영상 — placeholder 뒤에 프레임 크기 그대로 깔아두고, 프레임이 오면
+    // placeholder를 감추고 이걸 보여준다(레이아웃에는 안 넣는다 — LIVE 배지·placeholder와
+    // 겹쳐서 항상 박스 전체를 꽉 채워야 하기 때문).
+    imageLabel_ = new QLabel(this);
+    imageLabel_->setGeometry(0, 0, 148, 96);
+    imageLabel_->setAlignment(Qt::AlignCenter);
+    imageLabel_->setScaledContents(false);
+    imageLabel_->hide();
+    imageLabel_->lower();
+}
+
+void CameraLiveView::setFrame(const QImage& frame) {
+    if (frame.isNull()) return;
+    const QPixmap scaled = QPixmap::fromImage(frame).scaled(imageLabel_->size(), Qt::KeepAspectRatioByExpanding,
+                                                              Qt::SmoothTransformation);
+    imageLabel_->setPixmap(scaled);
+    imageLabel_->show();
+    placeholderIcon_->hide();
+    placeholderText_->hide();
+}
+
+void CameraLiveView::clearFrame() {
+    imageLabel_->hide();
+    imageLabel_->clear();
+    placeholderIcon_->show();
+    placeholderText_->show();
 }
