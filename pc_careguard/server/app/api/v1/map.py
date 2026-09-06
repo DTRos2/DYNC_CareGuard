@@ -227,6 +227,44 @@ async def cancel_slam_job(job_id: int):
     return SlamJobItem(**updated, robot_connected=connected)
 
 
+@slam_jobs_router.post("/{job_id}/save", response_model=SlamJobItem)
+async def save_slam_job(job_id: int):
+    """"SLAM 맵 저장·배포" 버튼 — 로봇에 지금까지 그린 지도를 실제로 저장하라고 명령한다.
+
+    여기서는 DB를 안 바꾼다 — 로봇이 map_saver_cli로 저장 + /media/upload-map
+    업로드까지 끝내고 slam_saved를 다시 보내오면 그때 ws/robot_ws.py::
+    _save_slam_result가 map 행을 만들고 slam_job.status를 'saved'로 바꾼다.
+    지금 이 요청은 그 과정을 시작만 시킨다(비동기) — 그래서 응답의 status는
+    아직 'queued'/'running'일 수 있다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT sj.id, sj.robot_id, sj.map_id, sj.map_name, sj.slam_backend, sj.status,
+                   sj.started_at, sj.ended_at, r.code AS robot_code
+            FROM slam_job sj JOIN robot r ON r.id = sj.robot_id
+            WHERE sj.id = %s
+            """,
+            (job_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="SLAM 작업을 찾을 수 없습니다")
+
+    connected = await robot_ws.send_command(
+        row["robot_code"],
+        {
+            "type": "save_map",
+            "job_id": job_id,
+            "map_name": row["map_name"],
+            "robot_id": row["robot_id"],
+        },
+    )
+    if not connected:
+        raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
+    return SlamJobItem(**row, robot_connected=connected)
+
+
 @slam_jobs_router.get("/{job_id}", response_model=SlamJobItem)
 def get_slam_job(job_id: int):
     with db.get_connection() as conn, conn.cursor() as cur:

@@ -12,11 +12,13 @@ ROS2 액션/subprocess로 전달하는 유일한 진입점이다. uplink_node.py
 """
 import asyncio
 import json
+import os
 import signal
 import subprocess
 import threading
 
 import rclpy
+import yaml
 from geometry_msgs.msg import Twist
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -24,7 +26,7 @@ from rclpy.node import Node
 from careguard_msgs.action import Patrol
 from careguard_msgs.msg import Waypoint as WaypointMsg
 
-from . import ws_config
+from . import media_uploader, ws_config
 
 RECONNECT_DELAY_SEC = 3.0
 
@@ -34,6 +36,7 @@ class DownlinkNode(Node):
         super().__init__('downlink_node')
         self._patrol_client = ActionClient(self, Patrol, 'patrol')
         self._slam_process = None
+        self._ws = None
         # P5 방향키 패널 -> 실제 구동. limo_base(/limo/limo_base)가 이미 /cmd_vel을
         # 구독하고 있다(실 로봇에서 topic info로 확인됨) — 네임스페이스 없이 그대로 쓴다.
         self._cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
@@ -53,12 +56,24 @@ class DownlinkNode(Node):
         while rclpy.ok():
             try:
                 async with websockets.connect(url) as ws:
+                    self._ws = ws
                     self.get_logger().info(f'서버 다운링크 연결됨: {url}')
                     async for raw in ws:
                         self._handle_command(raw)
             except Exception as exc:  # noqa: BLE001 - 재연결 루프이므로 모든 예외를 삼킨다
                 self.get_logger().warn(f'다운링크 연결 실패, {RECONNECT_DELAY_SEC}s 후 재시도: {exc}')
+            self._ws = None
             await asyncio.sleep(RECONNECT_DELAY_SEC)
+
+    def _send(self, payload: dict):
+        # save_map처럼 로봇이 자기 작업 결과를 서버에 알려야 하는 경우 이 연결(다운링크)
+        # 그대로 되쏜다 — uplink_node의 별도 연결을 굳이 거칠 필요가 없다. _handle_command가
+        # 이미 이 코루틴과 같은 스레드/이벤트루프에서 돌지만, uplink_node와 같은 방식
+        # (run_coroutine_threadsafe)으로 통일해 어디서 불러도 안전하게 한다.
+        if self._ws is None:
+            self.get_logger().warn('다운링크 연결이 없어 메시지를 보낼 수 없습니다')
+            return
+        asyncio.run_coroutine_threadsafe(self._ws.send(json.dumps(payload)), self._loop)
 
     def _handle_command(self, raw: str):
         try:
@@ -74,6 +89,8 @@ class DownlinkNode(Node):
             self._start_slam(message)
         elif msg_type == 'slam_stop':
             self._stop_slam(message)
+        elif msg_type == 'save_map':
+            self._save_map(message)
         elif msg_type == 'cmd_vel':
             self._handle_cmd_vel(message)
 
@@ -136,6 +153,81 @@ class DownlinkNode(Node):
             self._slam_process.kill()
             self._slam_process.wait(timeout=5.0)
         self._slam_process = None
+
+    def _save_map(self, message: dict):
+        # "SLAM 맵 저장·배포" 버튼(P5MapPage) -> POST /slam-jobs/{id}/save ->
+        # 여기로 온다. cartographer가 아직 돌고 있어야(=/map이 살아있어야) map_saver_cli가
+        # 지금까지 그린 지도를 저장할 수 있다 — 그래서 slam_stop보다 먼저 이걸 부르는
+        # 순서를 대시보드/서버 쪽에서 지켜야 한다(이 노드는 순서를 강제하지 않는다).
+        job_id = message.get('job_id')
+        robot_id = message.get('robot_id')
+        out_prefix = f'/tmp/careguard_map_job{job_id}'
+
+        try:
+            result = subprocess.run(
+                ['ros2', 'run', 'nav2_map_server', 'map_saver_cli', '-f', out_prefix,
+                 '--ros-args', '-p', 'save_map_timeout:=10.0'],
+                capture_output=True, text=True, timeout=20,
+            )
+        except subprocess.TimeoutExpired:
+            self.get_logger().error('map_saver_cli 실행이 20초를 넘어 중단했습니다')
+            return
+        if result.returncode != 0:
+            self.get_logger().error(f'map_saver_cli 실패(rc={result.returncode}): {result.stderr}')
+            return
+
+        yaml_path = f'{out_prefix}.yaml'
+        try:
+            with open(yaml_path) as f:
+                meta = yaml.safe_load(f)
+            image_path = os.path.join(os.path.dirname(yaml_path), meta['image'])
+            width, height = self._pgm_dimensions(image_path)
+        except Exception as exc:  # noqa: BLE001 - 저장 직후 파싱 실패는 그대로 로그만 남긴다
+            self.get_logger().error(f'저장된 맵 메타데이터 읽기 실패: {exc}')
+            return
+
+        try:
+            file_id = media_uploader.upload_map_image(image_path, robot_id)
+        except Exception as exc:  # noqa: BLE001 - 업로드 실패해도 프로세스는 계속 떠 있어야 한다
+            self.get_logger().error(f'맵 이미지 업로드 실패: {exc}')
+            return
+
+        origin = meta.get('origin', [0.0, 0.0, 0.0])
+        self._send({
+            'type': 'slam_saved',
+            'job_id': job_id,
+            'file_id': file_id,
+            'resolution': meta.get('resolution'),
+            'origin_x': origin[0],
+            'origin_y': origin[1],
+            'origin_yaw': origin[2] if len(origin) > 2 else 0.0,
+            'width_px': width,
+            'height_px': height,
+            'raw_yaml': meta,
+        })
+        self.get_logger().info(f'맵 저장·업로드 완료: job_id={job_id} file_id={file_id}')
+
+    @staticmethod
+    def _pgm_dimensions(path: str):
+        """PGM(P2/P5) 헤더에서 width/height만 읽는다 — 전체 픽셀을 읽을 필요는 없다."""
+        with open(path, 'rb') as f:
+            tokens = []
+            while len(tokens) < 3:
+                token = b''
+                ch = f.read(1)
+                while ch.isspace():
+                    ch = f.read(1)
+                if ch == b'#':
+                    while ch not in (b'\n', b''):
+                        ch = f.read(1)
+                    continue
+                while ch and not ch.isspace():
+                    token += ch
+                    ch = f.read(1)
+                if token:
+                    tokens.append(token)
+            _magic, width, height = tokens
+            return int(width), int(height)
 
 
 def main(args=None):

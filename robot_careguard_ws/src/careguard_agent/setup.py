@@ -10,7 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools', 'websockets', 'requests', 'numpy'],
+    install_requires=['setuptools', 'websockets', 'requests', 'numpy', 'PyYAML'],
     zip_safe=True,
     maintainer='CareGuard Team',
     maintainer_email='careguard@example.com',

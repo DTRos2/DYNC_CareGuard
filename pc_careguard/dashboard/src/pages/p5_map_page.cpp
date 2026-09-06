@@ -149,8 +149,27 @@ QWidget* P5MapPage::buildSaveInfoCard() {
     // 좁은 우측 패널(196px) 폭에 기본 13px 글자로는 문구가 버튼 밖으로 잘려 보인다.
     saveBtn->setStyleSheet(QStringLiteral("font-size:11px;"));
     connect(saveBtn, &QPushButton::clicked, this, [this] {
-        QMessageBox::information(this, QStringLiteral("저장 완료"),
-                                  QStringLiteral("SLAM 맵이 저장되고 R-04에 배포되었습니다."));
+        // 예전엔 이 버튼이 실제로는 아무 것도 안 하고 "저장됐다"는 메시지만 띄웠다 —
+        // 이제 진짜로 로봇에 저장 명령을 보낸다. 로봇이 map_saver_cli 실행+업로드를
+        // 끝내는 데 시간이 걸리므로, 여기서는 "요청을 보냈다"까지만 알리고 실제 완료
+        // 확인(및 매핑 현황 새로고침)은 handleWsMessage의 slam_done에서 처리한다.
+        if (currentSlamJobId_ == 0) {
+            QMessageBox::warning(this, QStringLiteral("저장 실패"),
+                                  QStringLiteral("먼저 \"매핑 시작\"으로 SLAM 작업을 시작해야 합니다."));
+            return;
+        }
+        apiClient_->saveSlamJob(currentSlamJobId_,
+                                 [this](bool ok, const ApiClient::SlamJobInfo&, const QString& err) {
+                                     if (!ok) {
+                                         QMessageBox::warning(
+                                             this, QStringLiteral("저장 요청 실패"),
+                                             err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
+                                         return;
+                                     }
+                                     QMessageBox::information(
+                                         this, QStringLiteral("저장 요청 전송됨"),
+                                         QStringLiteral("로봇에 저장 명령을 보냈습니다. 완료되면 매핑 현황에 반영됩니다."));
+                                 });
     });
     layout->addWidget(saveBtn);
     layout->addSpacing(4);
@@ -345,11 +364,21 @@ void P5MapPage::handleWsMessage(const QJsonObject& message) {
     if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
 
     if (type == QStringLiteral("slam_done")) {
-        // 로봇이 매핑을 끝내고 서버가 map 행을 새로 만들었다 — GET /maps/active를 다시
-        // 불러 파일 등록(openFileRegisterDialog)과 동일한 경로로 화면에 반영한다.
+        // 로봇이 map_saver_cli 실행 + 업로드까지 끝내고 서버가 map 행을 새로 만들었다
+        // (POST /slam-jobs/{id}/save로 시작된 저장의 실제 완료 신호). GET /maps/active를
+        // 다시 불러 파일 등록(openFileRegisterDialog)과 동일한 경로로 화면에 반영한다.
         // 이미지 자체(pgm)는 여기서 새로 내려받지 않는다 — MappingStatusOverlay는 이름·
         // 대상자·상태만 갱신하고, 실제 이미지는 맵 미리보기를 열 때 필요하면 추가한다.
+        const bool hasMapId = !message.value(QStringLiteral("map_id")).isNull();
+        if (message.value(QStringLiteral("job_id")).toInt() == currentSlamJobId_) {
+            currentSlamJobId_ = 0;
+        }
         loadActiveMapsFromServer();
+        if (hasMapId) {
+            QMessageBox::information(this, QStringLiteral("저장 완료"),
+                                      QStringLiteral("SLAM 맵이 저장되고 %1에 배포되었습니다.")
+                                          .arg(currentRobotCode_));
+        }
     }
     // slam_progress는 지금은 별도 진행률 라벨이 없어 무시한다 — SlamMappingCard가 이미
     // 텔레옵 기반 경과시간·탐색면적을 자체적으로 보여주고 있다(로컬 시각 피드백 유지).

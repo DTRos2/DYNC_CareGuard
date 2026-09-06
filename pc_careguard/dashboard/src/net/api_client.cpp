@@ -305,6 +305,22 @@ void ApiClient::cancelSlamJob(int jobId, ItemCallback<SlamJobInfo> callback) {
              });
 }
 
+void ApiClient::saveSlamJob(int jobId, ItemCallback<SlamJobInfo> callback) {
+    postJson(QStringLiteral("/slam-jobs/%1/save").arg(jobId), QJsonObject{},
+             [callback](bool ok, const QByteArray& respBody, const QString& err) {
+                 if (!ok) {
+                     callback(false, SlamJobInfo{}, err);
+                     return;
+                 }
+                 const QJsonObject o = QJsonDocument::fromJson(respBody).object();
+                 SlamJobInfo job;
+                 job.id = o.value(QStringLiteral("id")).toInt();
+                 job.status = o.value(QStringLiteral("status")).toString();
+                 job.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
+                 callback(true, job, err);
+             });
+}
+
 void ApiClient::startPatrolRun(int robotId, int routeId, const QString& trigger,
                                 ItemCallback<PatrolRunInfo> callback) {
     QJsonObject body{{"robot_id", robotId}, {"route_id", routeId}, {"trigger", trigger}};
