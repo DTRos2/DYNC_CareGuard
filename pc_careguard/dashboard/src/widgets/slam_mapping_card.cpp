@@ -31,7 +31,8 @@ QColor scanPointColor(qreal distMeters) {
     constexpr qreal kMaxDist = 6.0;  // 이 거리 이상은 같은 색(보라)으로 뭉친다
     const qreal t = std::clamp(distMeters / kMaxDist, 0.0, 1.0);
     // 가까움(빨강, hue 0) -> 멀어질수록 초록/파랑/보라(hue 270) 순서로 이동.
-    const int hue = static_cast<int>((1.0 - t) * 270.0);
+    // (예전엔 (1-t)*270이라 실제로는 반대로 계산되어 가까운 점이 파란색으로 나왔었다.)
+    const int hue = static_cast<int>(t * 270.0);
     return QColor::fromHsv(hue, 220, 255);
 }
 }  // namespace
@@ -305,7 +306,12 @@ void SlamMapView::paintEvent(QPaintEvent* event) {
 
     if (!backgroundImage_.isNull()) {
         // 실시간 SLAM 미리보기든, "파일로 등록"한 실제 맵이든 같은 경로로 그린다.
-        const QImage scaled = backgroundImage_.scaled(bounds.size().toSize(), Qt::KeepAspectRatio,
+        // PgmImageLoader가 만드는 이미지는 Format_Grayscale8인데, 이 포맷을 그대로
+        // scaled(SmoothTransformation)+drawImage 하면 이 Qt 빌드에서 전부 검게 나온다
+        // (실제 로봇 지도가 하얀/검은 화면으로만 보이던 원인). RGB32로 바꾼 뒤 스케일링하면
+        // 정상적으로 그레이스케일 그대로 그려진다.
+        const QImage rgb = backgroundImage_.convertToFormat(QImage::Format_RGB32);
+        const QImage scaled = rgb.scaled(bounds.size().toSize(), Qt::KeepAspectRatio,
                                                         Qt::SmoothTransformation);
         const QPointF topLeft(bounds.center().x() - scaled.width() / 2.0,
                                bounds.center().y() - scaled.height() / 2.0);
