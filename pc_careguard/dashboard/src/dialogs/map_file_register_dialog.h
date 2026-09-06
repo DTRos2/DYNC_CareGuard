@@ -29,6 +29,9 @@ private:
     QFrame* buildFooter();
     void pickPgmFile();
     void pickYamlFile();
+    // .pgm/.yaml 선택 다이얼로그가 처음 열릴 기본 경로. 환경변수 CAREGUARD_MAPS_DIR로
+    // 재정의 가능, 없으면 컴파일 타임 기본값(robot_careguard_ws/.../careguard_bringup/maps).
+    static QString defaultMapsDir();
     void updateRegisterEnabled();
     void updatePreview();
     void handleRegisterClicked();

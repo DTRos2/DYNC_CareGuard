@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPixmap>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QStyle>
 #include <QVBoxLayout>
@@ -265,8 +266,13 @@ QFrame* MapFileRegisterDialog::buildFooter() {
     return footer;
 }
 
+QString MapFileRegisterDialog::defaultMapsDir() {
+    return QProcessEnvironment::systemEnvironment().value(QStringLiteral("CAREGUARD_MAPS_DIR"),
+                                                            QStringLiteral(CAREGUARD_MAPS_DIR));
+}
+
 void MapFileRegisterDialog::pickPgmFile() {
-    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral(".pgm 파일 선택"), QString(),
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral(".pgm 파일 선택"), defaultMapsDir(),
                                                         QStringLiteral("PGM (*.pgm)"));
     if (path.isEmpty()) return;
 
@@ -294,7 +300,7 @@ void MapFileRegisterDialog::pickPgmFile() {
 }
 
 void MapFileRegisterDialog::pickYamlFile() {
-    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral(".yaml 파일 선택"), QString(),
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral(".yaml 파일 선택"), defaultMapsDir(),
                                                         QStringLiteral("YAML (*.yaml *.yml)"));
     if (path.isEmpty()) return;
 

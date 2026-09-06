@@ -12,55 +12,86 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <algorithm>
 #include <cmath>
 
 #include "theme/tokens.h"
 #include "widgets/camera_live_view.h"
-#include "widgets/canvas_geometry.h"
 
 namespace {
-constexpr qreal kTickMs = 50.0;
-constexpr qreal kPxPerMps = 90.0;  // 캔버스 논리 px per (m/s * s) — 실측 없는 목업 스케일
 constexpr qreal kMinZoom = 0.5;
 constexpr qreal kMaxZoom = 4.0;
 constexpr qreal kZoomStepFactor = 1.15;
+
+// rviz2 기본 팔레트를 흉내낸 색상 — 정확히 같지는 않지만 "빨간 화살표 + 알록달록한
+// 스캔 점" 느낌을 재현하는 게 목적이라 근사치로 충분하다.
+const QColor kPoseArrowColor(QStringLiteral("#E53935"));
+
+QColor scanPointColor(qreal distMeters) {
+    constexpr qreal kMaxDist = 6.0;  // 이 거리 이상은 같은 색(보라)으로 뭉친다
+    const qreal t = std::clamp(distMeters / kMaxDist, 0.0, 1.0);
+    // 가까움(빨강, hue 0) -> 멀어질수록 초록/파랑/보라(hue 270) 순서로 이동.
+    const int hue = static_cast<int>((1.0 - t) * 270.0);
+    return QColor::fromHsv(hue, 220, 255);
 }
+}  // namespace
 
 // ============================================================
 // SlamMapView
 // ============================================================
-SlamMapView::SlamMapView(QWidget* parent)
-    : QFrame(parent), simTimer_(new QTimer(this)), heading_(0.0), linearMps_(0.0), angularRadps_(0.0) {
+SlamMapView::SlamMapView(QWidget* parent) : QFrame(parent) {
     setObjectName("slamCanvas");
     setMinimumHeight(320);
-    robotPos_ = QPointF(90, 260);
-    trajectory_.append(robotPos_);
 
     // 우측 상단에 카메라 라이브 화면 자리를 띄운다 — 자식 위젯이라 아래 paintEvent의
     // 확대/패닝과 무관하게 항상 같은 화면 위치에 고정된다.
     cameraView_ = new CameraLiveView(this);
     cameraView_->move(static_cast<int>(exploredBounds().right()) - cameraView_->width() - 8,
                        static_cast<int>(exploredBounds().top()) + 8);
-
-    connect(simTimer_, &QTimer::timeout, this, &SlamMapView::tick);
-    simTimer_->start(static_cast<int>(kTickMs));
-}
-
-void SlamMapView::setVelocity(qreal linearMps, qreal angularRadps) {
-    linearMps_ = linearMps;
-    angularRadps_ = angularRadps;
 }
 
 void SlamMapView::resetMapping() {
-    trajectory_.clear();
-    robotPos_ = QPointF(90, 260);
-    heading_ = 0.0;
-    trajectory_.append(robotPos_);
+    liveTrajectoryMeters_.clear();
+    liveScanMeters_.clear();
+    hasLivePose_ = false;
+    backgroundImage_ = QImage();
+    mapResolution_ = 0.0;
+    mapPixelSize_ = QSize();
     update();
 }
 
 void SlamMapView::setBackgroundImage(const QImage& image) {
     backgroundImage_ = image;
+    update();
+}
+
+void SlamMapView::setMapMeta(qreal resolutionMPerPx, const QPointF& originMeters, const QSize& imagePixelSize) {
+    mapResolution_ = resolutionMPerPx;
+    mapOriginMeters_ = originMeters;
+    mapPixelSize_ = imagePixelSize;
+}
+
+void SlamMapView::setLivePose(qreal xMeters, qreal yMeters, qreal yawRad) {
+    const QPointF newPos(xMeters, yMeters);
+    if (hasLivePose_) {
+        const qreal moved = std::hypot(newPos.x() - livePoseMeters_.x(), newPos.y() - livePoseMeters_.y());
+        // 몇 mm 단위로 계속 찍으면 궤적 점선이 지저분해지니, 일정 거리 이상 움직였을
+        // 때만 궤적에 추가한다.
+        if (moved > 0.05) {
+            liveTrajectoryMeters_.append(newPos);
+            if (liveTrajectoryMeters_.size() > 2000) liveTrajectoryMeters_.removeFirst();
+        }
+    } else {
+        liveTrajectoryMeters_.append(newPos);
+    }
+    hasLivePose_ = true;
+    livePoseMeters_ = newPos;
+    livePoseYaw_ = yawRad;
+    update();
+}
+
+void SlamMapView::setLiveScan(const QVector<QPointF>& pointsMeters) {
+    liveScanMeters_ = pointsMeters;
     update();
 }
 
@@ -70,28 +101,40 @@ QRectF SlamMapView::exploredBounds() const {
     return r.adjusted(margin, margin, -margin, -margin);
 }
 
+std::optional<QPointF> SlamMapView::mapMetersToCanvas(const QPointF& meters) const {
+    if (mapResolution_ <= 0.0 || mapPixelSize_.isEmpty()) return std::nullopt;
+
+    // meters -> 이미지 픽셀 좌표. uplink_node.py가 PGM으로 인코딩할 때 이미
+    // np.flipud로 위아래를 뒤집어(OccupancyGrid는 좌하단 원점, 이미지는 좌상단 원점)
+    // 저장해뒀으므로, 여기서도 세로를 한 번 더 뒤집어야 이미지 위 실제 자리와 맞는다.
+    const qreal imgCol = (meters.x() - mapOriginMeters_.x()) / mapResolution_;
+    const qreal imgRow = mapPixelSize_.height() - (meters.y() - mapOriginMeters_.y()) / mapResolution_;
+
+    const QRectF bounds = exploredBounds();
+    if (bounds.width() <= 0 || bounds.height() <= 0) return std::nullopt;
+
+    // paintEvent가 backgroundImage_를 bounds에 KeepAspectRatio로 맞출 때와 같은 배율 —
+    // 이 계산이 어긋나면 화살표·스캔점이 지도 위 엉뚱한 자리에 그려진다.
+    const qreal scale =
+        std::min(bounds.width() / mapPixelSize_.width(), bounds.height() / mapPixelSize_.height());
+    const qreal scaledW = mapPixelSize_.width() * scale;
+    const qreal scaledH = mapPixelSize_.height() * scale;
+    const QPointF topLeft(bounds.center().x() - scaledW / 2.0, bounds.center().y() - scaledH / 2.0);
+
+    return topLeft + QPointF(imgCol, imgRow) * scale;
+}
+
 void SlamMapView::resizeEvent(QResizeEvent* event) {
     QFrame::resizeEvent(event);
 
     cameraView_->move(static_cast<int>(exploredBounds().right()) - cameraView_->width() - 8,
                        static_cast<int>(exploredBounds().top()) + 8);
 
-    const QSize oldSize = event->oldSize();
-    if (oldSize.width() <= 0 || oldSize.height() <= 0 || oldSize == event->size()) return;
-
-    // WaypointCanvas::resizeEvent와 같은 이유 — 로봇 위치·주행 궤적이 캔버스 절대
-    // 픽셀 좌표라서, 리사이즈 전/후 바닥 영역 비율을 보존해 옮기지 않으면 창을
-    // 최대화했을 때 궤적이 지도에서 벗어나 보인다.
-    const qreal margin = 28;
-    const QRectF oldBounds = QRectF(QPointF(0, 0), oldSize).adjusted(margin, margin, -margin, -margin);
-    const QRectF newBounds = exploredBounds();
-
-    robotPos_ = CanvasGeometry::remapOnResize(robotPos_, oldBounds, newBounds, backgroundImage_);
-    for (QPointF& p : trajectory_) {
-        p = CanvasGeometry::remapOnResize(p, oldBounds, newBounds, backgroundImage_);
-    }
-
-    // 확대/패닝 상태는 리사이즈 전 배치 기준이라 그대로 두면 새 배치와 어긋난다.
+    // 로봇 위치·스캔점·궤적은 전부 미터(map 프레임) 좌표로 갖고 있다가 매 paint마다
+    // 현재 위젯 크기 기준으로 다시 배치하므로(mapMetersToCanvas), 리사이즈 때 좌표
+    // 자체를 옮겨줄 필요는 없다 — 확대/패닝 상태만 새 배치 기준으로 초기화한다
+    // (WaypointCanvas::resizeEvent와 같은 이유).
+    if (event->oldSize() == event->size()) return;
     zoomScale_ = 1.0;
     panOffset_ = QPointF(0.0, 0.0);
 }
@@ -134,30 +177,109 @@ void SlamMapView::mouseDoubleClickEvent(QMouseEvent* event) {
     update();
 }
 
-void SlamMapView::tick() {
-    if (qFuzzyIsNull(linearMps_) && qFuzzyIsNull(angularRadps_)) return;
+void SlamMapView::drawGrid(QPainter& p, const QRectF& bounds) const {
+    // rviz의 Grid 디스플레이 흉내 — 맵 메타가 아직 없으면(SLAM 시작 전) 고정 논리
+    // 픽셀 간격으로, 있으면 실제 1m 간격으로 원점에 맞춰 그린다.
+    qreal spacing = 40.0;
+    QPointF originPx = bounds.topLeft();
 
-    const qreal dt = kTickMs / 1000.0;
-    heading_ += angularRadps_ * dt;
-
-    const QPointF delta(std::cos(heading_) * linearMps_ * kPxPerMps * dt,
-                         std::sin(heading_) * linearMps_ * kPxPerMps * dt);
-    QPointF next = robotPos_ + delta;
-
-    const QRectF bounds = exploredBounds();
-    next.setX(qBound(bounds.left() + 6, next.x(), bounds.right() - 6));
-    next.setY(qBound(bounds.top() + 6, next.y(), bounds.bottom() - 6));
-
-    if (next != robotPos_) {
-        const qreal pixelDist = std::hypot(next.x() - robotPos_.x(), next.y() - robotPos_.y());
-        robotPos_ = next;
-        trajectory_.append(robotPos_);
-        if (trajectory_.size() > 600) trajectory_.removeFirst();
-        emit distanceTraveled(pixelDist / kPxPerMps);
-        update();
-    } else if (!qFuzzyIsNull(angularRadps_)) {
-        update();  // 제자리 회전도 화살표 방향 갱신
+    if (mapResolution_ > 0.0 && !mapPixelSize_.isEmpty()) {
+        const qreal scale =
+            std::min(bounds.width() / mapPixelSize_.width(), bounds.height() / mapPixelSize_.height());
+        spacing = (1.0 / mapResolution_) * scale;
+        if (const auto originCanvas = mapMetersToCanvas(QPointF(0.0, 0.0))) {
+            originPx = *originCanvas;
+        }
     }
+    if (spacing < 4.0) return;  // 과도하게 촘촘하면(축소 상태) 그리지 않는다
+
+    QColor gridColor = Tokens::TEXT_MUTED;
+    gridColor.setAlpha(50);
+    p.setPen(QPen(gridColor, 0.6));
+
+    const qreal kMin = std::floor((bounds.left() - originPx.x()) / spacing);
+    for (qreal x = originPx.x() + kMin * spacing; x <= bounds.right() + 1.0; x += spacing) {
+        if (x < bounds.left() - 1.0) continue;
+        p.drawLine(QPointF(x, bounds.top()), QPointF(x, bounds.bottom()));
+    }
+    const qreal jMin = std::floor((bounds.top() - originPx.y()) / spacing);
+    for (qreal y = originPx.y() + jMin * spacing; y <= bounds.bottom() + 1.0; y += spacing) {
+        if (y < bounds.top() - 1.0) continue;
+        p.drawLine(QPointF(bounds.left(), y), QPointF(bounds.right(), y));
+    }
+}
+
+void SlamMapView::drawLiveTrajectory(QPainter& p) const {
+    if (liveTrajectoryMeters_.size() < 2) return;
+
+    QPainterPath path;
+    bool started = false;
+    for (const QPointF& meters : liveTrajectoryMeters_) {
+        const auto canvasPt = mapMetersToCanvas(meters);
+        if (!canvasPt) continue;
+        if (!started) {
+            path.moveTo(*canvasPt);
+            started = true;
+        } else {
+            path.lineTo(*canvasPt);
+        }
+    }
+    if (!started) return;
+
+    p.setPen(QPen(Tokens::ACCENT, 1.5, Qt::DashLine, Qt::RoundCap));
+    p.setBrush(Qt::NoBrush);
+    p.drawPath(path);
+}
+
+void SlamMapView::drawLiveScan(QPainter& p) const {
+    if (liveScanMeters_.isEmpty()) return;
+    const QPointF refPoint = hasLivePose_ ? livePoseMeters_ : liveScanMeters_.first();
+
+    p.setPen(Qt::NoPen);
+    for (const QPointF& meters : liveScanMeters_) {
+        const auto canvasPt = mapMetersToCanvas(meters);
+        if (!canvasPt) continue;
+        const qreal dist = std::hypot(meters.x() - refPoint.x(), meters.y() - refPoint.y());
+        p.setBrush(scanPointColor(dist));
+        p.drawEllipse(*canvasPt, 2.0, 2.0);
+    }
+}
+
+void SlamMapView::drawLivePose(QPainter& p) const {
+    if (!hasLivePose_) return;
+    const auto canvasPt = mapMetersToCanvas(livePoseMeters_);
+    if (!canvasPt) return;
+    const QPointF pos = *canvasPt;
+
+    // map 프레임(x: 오른쪽+, y: 위+, yaw: 반시계+)을 이미지 좌표(y 아래+)로 옮기는
+    // 중이라 mapMetersToCanvas가 세로를 뒤집어 배치한 것과 같은 이유로, 화살표 방향도
+    // y 성분의 부호를 반대로 써야 실제 로봇이 보는 방향과 화면이 일치한다.
+    const qreal dx = std::cos(livePoseYaw_);
+    const qreal dy = -std::sin(livePoseYaw_);
+    const QPointF shaftDir(dx, dy);
+    const QPointF normal(-dy, dx);
+
+    constexpr qreal kArrowLen = 26.0;
+    constexpr qreal kHeadLen = 9.0;
+    constexpr qreal kHeadWidth = 8.0;
+    const QPointF tip = pos + shaftDir * kArrowLen;
+
+    p.setPen(QPen(kPoseArrowColor, 3.0, Qt::SolidLine, Qt::RoundCap));
+    p.drawLine(pos, tip - shaftDir * kHeadLen * 0.6);
+
+    QPainterPath head;
+    head.moveTo(tip);
+    head.lineTo(tip - shaftDir * kHeadLen + normal * kHeadWidth / 2.0);
+    head.lineTo(tip - shaftDir * kHeadLen - normal * kHeadWidth / 2.0);
+    head.closeSubpath();
+    p.setPen(Qt::NoPen);
+    p.setBrush(kPoseArrowColor);
+    p.drawPath(head);
+
+    // 로봇 몸체 — rviz의 로봇 footprint 마커를 단순한 원판으로 대신한다.
+    p.setBrush(Tokens::TEXT_PRIMARY);
+    p.setPen(QPen(Qt::white, 1.0));
+    p.drawEllipse(pos, 5.0, 5.0);
 }
 
 void SlamMapView::paintEvent(QPaintEvent* event) {
@@ -177,38 +299,32 @@ void SlamMapView::paintEvent(QPaintEvent* event) {
     p.translate(panOffset_);
     p.scale(zoomScale_, zoomScale_);
 
+    // rviz의 Grid 디스플레이 흉내 — 지도보다 먼저 깔아 SLAM 시작 전에도 바닥 격자가
+    // 항상 보이게 한다.
+    drawGrid(p, bounds);
+
     if (!backgroundImage_.isNull()) {
-        // 파일로 등록된 실제 맵 — pgm 픽셀을 그대로 렌더링한다.
+        // 실시간 SLAM 미리보기든, "파일로 등록"한 실제 맵이든 같은 경로로 그린다.
         const QImage scaled = backgroundImage_.scaled(bounds.size().toSize(), Qt::KeepAspectRatio,
                                                         Qt::SmoothTransformation);
         const QPointF topLeft(bounds.center().x() - scaled.width() / 2.0,
                                bounds.center().y() - scaled.height() / 2.0);
         p.drawImage(topLeft, scaled);
     }
-    // 배경 이미지가 없을 때(파일 등록 전 SLAM 매핑 진행 중 목업)는 위 흰 바닥만 남는다.
-    // 우상단의 "미탐색" 회색 박스 자리는 실은 카메라 라이브 화면 자리였다 —
-    // cameraView_(실제 자식 위젯)로 대체했다.
 
-    // 주행 궤적 (점선)
-    if (trajectory_.size() > 1) {
-        QPainterPath traj;
-        traj.moveTo(trajectory_.first());
-        for (int i = 1; i < trajectory_.size(); ++i) traj.lineTo(trajectory_.at(i));
-        QPen trajPen(Tokens::ACCENT, 1.5, Qt::DashLine, Qt::RoundCap);
-        p.setPen(trajPen);
-        p.setBrush(Qt::NoBrush);
-        p.drawPath(traj);
-    }
+    // rviz2처럼: 지도 위에 궤적 -> 라이다 스캔(색상 점) -> 로봇 화살표 순서로 겹쳐 그린다.
+    drawLiveTrajectory(p);
+    drawLiveScan(p);
+    drawLivePose(p);
 
     p.restore();  // 확대/패닝 종료 — 이 아래는 항상 고정 크기로 그린다.
 
-    // 캡션 — 로봇 마커(라이다 스캔 부채꼴 포함)는 요청에 따라 제거했다.
     p.setPen(Tokens::TEXT_MUTED);
     QFont captionFont = p.font();
     captionFont.setPixelSize(9);
     p.setFont(captionFont);
     p.drawText(QRectF(bounds.left() + 4, bounds.bottom() - 14, bounds.width() - 8, 14),
-               Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("격자 0.05 m/px · 휠 확대/축소 · 드래그 이동"));
+               Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("격자 1 m · 휠 확대/축소 · 드래그 이동"));
 }
 
 // ============================================================
@@ -218,7 +334,7 @@ SlamMappingCard::SlamMappingCard(QWidget* parent)
     : QFrame(parent),
       elapsedTimer_(new QTimer(this)),
       elapsedSeconds_(0),
-      areaM2_(12.4),
+      areaM2_(0.0),
       moving_(false) {
     setObjectName("card");
 
@@ -280,11 +396,6 @@ SlamMappingCard::SlamMappingCard(QWidget* parent)
     connect(elapsedTimer_, &QTimer::timeout, this, &SlamMappingCard::tickElapsed);
     elapsedTimer_->start(1000);
     tickElapsed();
-
-    connect(view_, &SlamMapView::distanceTraveled, this, [this](qreal deltaMeters) {
-        // 대략적인 커버리지 증가 목업 — 실제 점유격자 계산이 아니다.
-        areaM2_ += deltaMeters * 0.6;
-    });
 }
 
 void SlamMappingCard::applyRegisteredMap(const QImage& image, const QString& mapName,
@@ -299,13 +410,16 @@ void SlamMappingCard::applyRegisteredMap(const QImage& image, const QString& map
 
 void SlamMappingCard::setVelocity(qreal linearMps, qreal angularRadps) {
     moving_ = !qFuzzyIsNull(linearMps) || !qFuzzyIsNull(angularRadps);
-    view_->setVelocity(linearMps, angularRadps);
 }
 
 void SlamMappingCard::tickElapsed() {
     ++elapsedSeconds_;
     const int m = elapsedSeconds_ / 60;
     const int s = elapsedSeconds_ % 60;
+    // 탐색 면적(areaM2_)은 실제 점유격자를 세지 않는 자리표시자다 — 예전엔 텔레옵
+    // 속도를 픽셀 단위로 적분한 가짜 이동거리로 늘렸는데, 그 가짜 시뮬레이션 자체를
+    // 제거하면서 값이 늘어날 방법이 없어졌다. 실제 탐색 면적 계산(점유격자 셀 카운트)은
+    // 이번 스코프 밖이라 0에서 시작해 "매핑 재시작"에 맞춰 리셋만 한다.
     elapsedLabel_->setText(QStringLiteral("경과 %1:%2 · %3 m²")
                                 .arg(m, 2, 10, QChar('0'))
                                 .arg(s, 2, 10, QChar('0'))

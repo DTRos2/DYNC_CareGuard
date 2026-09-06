@@ -7,7 +7,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from . import config, db
-from .schemas import MediaUploadResponse, VideoEventItem, ViewHistoryEntry
+from .schemas import MapImageUploadResponse, MediaUploadResponse, VideoEventItem, ViewHistoryEntry
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -17,6 +17,7 @@ router = APIRouter(prefix="/media", tags=["media"])
 video_events_router = APIRouter(prefix="/video-events", tags=["video-events"])
 
 VIDEO_DIR = config.STORAGE_DIR / "videos"
+MAP_DIR = config.STORAGE_DIR / "maps"
 
 # 한 번에 메모리에 올릴 최대 청크 크기. 영상 파일이 커도 통째로 읽지 않고 이 크기씩 나눠 쓴다.
 CHUNK_SIZE = 1024 * 1024
@@ -88,6 +89,53 @@ def upload_video(
         storage_path=str(storage_path),
         original_filename=file.filename,
         duration_sec=duration_sec,
+    )
+
+
+@router.post("/upload-map", response_model=MapImageUploadResponse)
+def upload_map_image(
+    robot_id: int = Form(..., description="매핑을 수행한 로봇 id"),
+    file: UploadFile = File(..., description="업로드할 맵 이미지(.pgm 등) 파일"),
+):
+    """SLAM으로 완성한 맵 이미지를 업로드해 files에 entity_type='map_image'로 기록한다.
+
+    /media/upload(영상용)를 재사용하면 entity_type이 'event_clip'으로 고정되고
+    camera_recording에도 불필요한 행이 생겨, 이후 ws/robot_ws.py::_save_slam_result의
+    "UPDATE files ... WHERE entity_type = 'map_image'" 재연결이 아무 행도 못 찾고
+    조용히 실패한다 — 그래서 맵 전용 엔드포인트를 따로 둔다.
+
+    업로드 시점엔 아직 map.id가 없으므로 entity_id는 임시로 robot_id를 담아 두고,
+    slam_saved 처리 시 _save_slam_result가 새로 만든 map.id로 다시 연결한다.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일이 비어 있습니다")
+
+    robot_dir = MAP_DIR / str(robot_id)
+    robot_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(file.filename).suffix
+    storage_path = robot_dir / f"{uuid.uuid4().hex}{ext}"
+
+    with storage_path.open("wb") as out:
+        while chunk := file.file.read(CHUNK_SIZE):
+            out.write(chunk)
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO files (entity_type, entity_id, storage_path, original_filename)
+            VALUES ('map_image', %s, %s, %s)
+            RETURNING id
+            """,
+            (str(robot_id), str(storage_path), file.filename),
+        )
+        file_id = cur.fetchone()["id"]
+        conn.commit()
+
+    return MapImageUploadResponse(
+        file_id=file_id,
+        storage_path=str(storage_path),
+        original_filename=file.filename,
     )
 
 

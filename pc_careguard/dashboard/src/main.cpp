@@ -15,8 +15,20 @@
 
 namespace {
 
+// isServerReachable()이 "이미 떠 있는지" 확인할 때 쓰는 주소 — loopback으로 확인하면
+// 충분하다(0.0.0.0으로 띄운 서버도 127.0.0.1로 접속된다).
 constexpr auto kServerHost = "127.0.0.1";
 constexpr quint16 kServerPort = 8000;
+
+// 실제로 uvicorn을 띄울 때 바인드할 주소. 로봇(careguard_agent)이 같은 LAN에서
+// ws://이_PC_IP:8000/ws/robot 로 접속해야 해서 기본값을 0.0.0.0(모든 인터페이스
+// 허용)으로 둔다 — loopback(127.0.0.1)만 열면 로봇이 아예 접속할 수 없다.
+// 신뢰 안 되는 네트워크에 있는 노트북 등에서는 CAREGUARD_SERVER_BIND_HOST=127.0.0.1로
+// 되돌릴 수 있다.
+QString serverBindHost() {
+    return QProcessEnvironment::systemEnvironment().value(
+        QStringLiteral("CAREGUARD_SERVER_BIND_HOST"), QStringLiteral("0.0.0.0"));
+}
 
 bool isServerReachable() {
     QTcpSocket socket;
@@ -42,11 +54,11 @@ QProcess* startBackendServer() {
         return nullptr;
     }
 
+    const QString bindHost = serverBindHost();
     const QString venvUvicorn = serverDir + QStringLiteral("/.venv/bin/uvicorn");
     QString program;
-    QStringList args{QStringLiteral("app.main:app"), QStringLiteral("--host"),
-                      QString::fromLatin1(kServerHost), QStringLiteral("--port"),
-                      QString::number(kServerPort)};
+    QStringList args{QStringLiteral("app.main:app"), QStringLiteral("--host"), bindHost,
+                      QStringLiteral("--port"), QString::number(kServerPort)};
     if (QFileInfo::exists(venvUvicorn)) {
         program = venvUvicorn;
     } else {
@@ -65,7 +77,8 @@ QProcess* startBackendServer() {
         delete process;
         return nullptr;
     }
-    qInfo("CareGuard server started (pid %lld)", static_cast<long long>(process->processId()));
+    qInfo("CareGuard server started (pid %lld, bound to %s:%u)", static_cast<long long>(process->processId()),
+          qPrintable(bindHost), kServerPort);
     return process;
 }
 
