@@ -44,7 +44,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     pageStack_ = new QStackedWidget(central);
     pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
-    pageStack_->addWidget(new P2EventPage(pageStack_));      // idx 1
+    auto* eventPage = new P2EventPage(pageStack_);
+    pageStack_->addWidget(eventPage);                        // idx 1
     pageStack_->addWidget(new P3RecipientPage(pageStack_));  // idx 2
     videoPage_ = new P4VideoPage(pageStack_);
     pageStack_->addWidget(videoPage_);                       // idx 3
@@ -52,11 +53,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     pageStack_->addWidget(mapPage);                          // idx 4
     auto* patrolPage = new P6PatrolPage(pageStack_);
     pageStack_->addWidget(patrolPage);                       // idx 5
-    pageStack_->addWidget(new P7SettingsPage(pageStack_));   // idx 6
+    settingsPage_ = new P7SettingsPage(pageStack_);
+    pageStack_->addWidget(settingsPage_);                    // idx 6
     body->addWidget(pageStack_, /*stretch=*/1);
 
     // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 같은 이름·대상자·이미지로 반영한다.
     connect(mapPage, &P5MapPage::mapRegistered, patrolPage, &P6PatrolPage::upsertMap);
+
+    // P2의 미처리 이벤트 집계를 TopBar 뱃지에 반영한다.
+    connect(eventPage, &P2EventPage::unresolvedCountsChanged, this,
+            [this](int emergencyCount, int attentionCount) {
+                setEmergencyCount(emergencyCount);
+                setAttentionCount(attentionCount);
+            });
 
     rootLayout->addLayout(body, /*stretch=*/1);
 }
@@ -189,6 +198,9 @@ QWidget* MainWindow::buildSidebar() {
 void MainWindow::setUserName(const QString& name) {
     userLabel_->setText(name);
     videoPage_->setUserName(name);  // §7 열람 이력에 로그인 사용자 이름을 기록하기 위해 전달
+    // name은 로그인 폼에 입력한 login_id 그대로다(LoginWindow::loginSucceeded 참고).
+    // 계정 관리 탭의 삭제 권한(관리자만) 판단에 실제 로그인 ID가 필요해 여기서 전달한다.
+    settingsPage_->setCurrentUserLoginId(name);
 }
 
 void MainWindow::setEmergencyCount(int count) {

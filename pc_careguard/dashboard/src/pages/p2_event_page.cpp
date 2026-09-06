@@ -1,11 +1,58 @@
 #include "p2_event_page.h"
 
+#include <QButtonGroup>
+#include <QDate>
+#include <QDateEdit>
+#include <QEvent>
+#include <QHeaderView>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
+#include <QMouseEvent>
+#include <QPushButton>
+#include <QStyle>
+#include <QTableView>
+#include <QTimer>
 #include <QVBoxLayout>
+#include <QVariant>
 
+#include "dialogs/event_detail_modal.h"
+#include "theme/calendar_style.h"
 #include "theme/tokens.h"
+#include "widgets/careguard_date_edit.h"
+#include "widgets/event_filter_proxy_model.h"
+#include "widgets/event_row_delegate.h"
+#include "widgets/event_table_model.h"
+#include "widgets/live_search_line_edit.h"
+#include "widgets/simple_icons.h"
+
+namespace {
+
+QPushButton* makeToolbarButton(const QString& text, const QIcon& icon, QWidget* parent) {
+    auto* btn = new QPushButton(icon, text, parent);
+    btn->setProperty("variant", "secondary");
+    btn->setProperty("size", "s");
+    return btn;
+}
+
+QLabel* makeMutedLabel(const QString& text, QWidget* parent) {
+    auto* label = new QLabel(text, parent);
+    label->setProperty("role", "muted");
+    return label;
+}
+
+void repolish(QWidget* widget) {
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+}
+
+}  // namespace
 
 P2EventPage::P2EventPage(QWidget* parent) : QWidget(parent) {
+    model_ = new EventTableModel(this);
+    proxy_ = new EventFilterProxyModel(this);
+    proxy_->setSourceModel(model_);
+
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(Tokens::Layout::PAGE_PADDING, Tokens::Layout::PAGE_PADDING,
                                 Tokens::Layout::PAGE_PADDING, Tokens::Layout::PAGE_PADDING);
@@ -13,11 +60,350 @@ P2EventPage::P2EventPage(QWidget* parent) : QWidget(parent) {
 
     auto* title = new QLabel(QStringLiteral("이벤트 관제"), this);
     title->setObjectName("pageTitle");
-    layout->addWidget(title);
 
-    auto* placeholder = new QLabel(
-        QStringLiteral("TODO: 필터 바 · 이벤트 테이블 · 페이지네이션 (담당 팀원 구현)"), this);
-    placeholder->setProperty("role", "muted");
-    layout->addWidget(placeholder);
+    auto* csvBtn = makeToolbarButton(QStringLiteral("CSV"), SimpleIcons::download(Tokens::TEXT_PRIMARY, 12), this);
+    connect(csvBtn, &QPushButton::clicked, this, [this] { showComingSoon(QStringLiteral("CSV 내보내기")); });
+
+    auto* titleRow = new QHBoxLayout();
+    titleRow->addWidget(title);
+    titleRow->addStretch();
+    titleRow->addWidget(csvBtn);
+    layout->addLayout(titleRow);
+
+    layout->addWidget(buildFilterBar());
+    bulkBar_ = buildBulkBar();
+    layout->addWidget(bulkBar_);
+    layout->addWidget(buildTable(), /*stretch=*/1);
+    layout->addWidget(buildPagination());
+
+    seedMockData();
+
+    connect(model_, &EventTableModel::countsChanged, this, &P2EventPage::refreshCounts);
+
+    elapsedTimer_ = new QTimer(this);
+    connect(elapsedTimer_, &QTimer::timeout, model_, &EventTableModel::tickElapsed);
+    elapsedTimer_->start(1000);
+
+    pulseTimer_ = new QTimer(this);
+    connect(pulseTimer_, &QTimer::timeout, this, [this] {
+        pulseOn_ = !pulseOn_;
+        tableView_->viewport()->update();
+    });
+    pulseTimer_->start(Tokens::Motion::PULSE_PERIOD_MS);
+
+    // MainWindow가 unresolvedCountsChanged를 연결하는 건 이 생성자가 끝난 뒤이므로,
+    // 여기서 바로 refreshCounts()를 부르면 최초 emit을 아무도 못 듣는다. 다음 이벤트
+    // 루프 턴으로 미뤄서 연결이 끝난 뒤 발행되게 한다.
+    QTimer::singleShot(0, this, &P2EventPage::refreshCounts);
+}
+
+QWidget* P2EventPage::buildFilterBar() {
+    auto* bar = new QWidget(this);
+    auto* layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+
+    const QDate today = QDate::currentDate();
+
+    layout->addWidget(makeMutedLabel(QStringLiteral("기간"), bar));
+
+    // 기간 세그먼트 (gui/wireframe/v1/p2_filter_bar_period_segment_wireframe.html).
+    // "직접" 전에는 세그먼트가 날짜를 계산해서 쓰기만 하고, 날짜 칸은 그 결과를
+    // 읽기 전용으로 보여준다.
+    auto* periodSeg = new QWidget(bar);
+    auto* periodSegLayout = new QHBoxLayout(periodSeg);
+    periodSegLayout->setContentsMargins(0, 0, 0, 0);
+    periodSegLayout->setSpacing(0);
+
+    auto* periodTodayBtn = new QPushButton(QStringLiteral("오늘"), periodSeg);
+    auto* periodWeekBtn = new QPushButton(QStringLiteral("7일"), periodSeg);
+    auto* periodMonthBtn = new QPushButton(QStringLiteral("30일"), periodSeg);
+    periodCustomBtn_ = new QPushButton(QStringLiteral("직접"), periodSeg);
+    periodTodayBtn->setProperty("pos", "first");
+    periodCustomBtn_->setProperty("pos", "last");
+
+    periodGroup_ = new QButtonGroup(this);
+    periodGroup_->setExclusive(true);
+    for (auto* btn : {periodTodayBtn, periodWeekBtn, periodMonthBtn, periodCustomBtn_}) {
+        btn->setObjectName("segBtn");
+        btn->setCheckable(true);
+        periodSegLayout->addWidget(btn);
+        periodGroup_->addButton(btn);
+    }
+    periodTodayBtn->setChecked(true);
+    layout->addWidget(periodSeg);
+
+    connect(periodTodayBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(0); });
+    connect(periodWeekBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(6); });
+    connect(periodMonthBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(29); });
+    connect(periodCustomBtn_, &QPushButton::clicked, this, [this] { applyPeriodPreset(-1); });
+
+    startDateEdit_ = new CareGuardDateEdit(today, bar);
+    CareGuard::applyCareGuardDateEdit(startDateEdit_);
+    layout->addWidget(startDateEdit_);
+
+    layout->addWidget(makeMutedLabel(QStringLiteral("~"), bar));
+    endDateEdit_ = new CareGuardDateEdit(today, bar);
+    CareGuard::applyCareGuardDateEdit(endDateEdit_);
+    layout->addWidget(endDateEdit_);
+
+    connect(startDateEdit_, &QDateEdit::dateChanged, this, &P2EventPage::onDateRangeChanged);
+    connect(endDateEdit_, &QDateEdit::dateChanged, this, &P2EventPage::onDateRangeChanged);
+    // 읽기 전용 칸은 클릭이 편집으로 이어지지 않으니, 클릭 자체를 잡아 "직접"로 전환한다.
+    startDateEdit_->installEventFilter(this);
+    endDateEdit_->installEventFilter(this);
+
+    applyPeriodPreset(0);  // 초기 상태: 오늘 ~ 오늘, 읽기 전용
+
+    searchEdit_ = new LiveSearchLineEdit(bar);
+    searchEdit_->setPlaceholderText(QStringLiteral("로봇·대상자·담당자 검색"));
+    connect(searchEdit_, &LiveSearchLineEdit::liveTextChanged, proxy_,
+            &EventFilterProxyModel::setSearchKeyword);
+    layout->addWidget(searchEdit_, /*stretch=*/1);
+
+    unresolvedOnlyChip_ = new QPushButton(QStringLiteral("미처리만 ✓"), bar);
+    unresolvedOnlyChip_->setObjectName("routeChip");
+    unresolvedOnlyChip_->setProperty("size", "s");
+    unresolvedOnlyChip_->setCheckable(true);
+    unresolvedOnlyChip_->setChecked(true);
+    connect(unresolvedOnlyChip_, &QPushButton::toggled, this, [this](bool checked) {
+        unresolvedOnlyChip_->setText(checked ? QStringLiteral("미처리만 ✓") : QStringLiteral("미처리만"));
+        proxy_->setUnresolvedOnly(checked);
+    });
+    layout->addWidget(unresolvedOnlyChip_);
+
+    filterCountLabel_ = makeMutedLabel(QString(), bar);
+    layout->addWidget(filterCountLabel_);
+
+    return bar;
+}
+
+QWidget* P2EventPage::buildBulkBar() {
+    auto* bar = new QWidget(this);
+    bar->setObjectName("banner");
+    bar->setProperty("level", "info");
+    auto* layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(10, 7, 10, 7);
+    layout->setSpacing(8);
+
+    bulkCountLabel_ = new QLabel(bar);
+    layout->addWidget(bulkCountLabel_);
+
+    auto* completeBtn = new QPushButton(QStringLiteral("일괄 완료 처리"), bar);
+    completeBtn->setProperty("variant", "primary");
+    completeBtn->setProperty("size", "s");
+    connect(completeBtn, &QPushButton::clicked, this, &P2EventPage::onBulkComplete);
+    layout->addWidget(completeBtn);
+
+    auto* assignBtn = new QPushButton(QStringLiteral("담당자 배정"), bar);
+    assignBtn->setProperty("variant", "secondary");
+    assignBtn->setProperty("size", "s");
+    connect(assignBtn, &QPushButton::clicked, this,
+            [this] { showComingSoon(QStringLiteral("담당자 배정")); });
+    layout->addWidget(assignBtn);
+
     layout->addStretch();
+
+    auto* clearBtn = new QPushButton(QStringLiteral("선택 해제"), bar);
+    clearBtn->setObjectName("linkBtn");
+    connect(clearBtn, &QPushButton::clicked, model_, &EventTableModel::clearAllChecks);
+    layout->addWidget(clearBtn);
+
+    bar->setVisible(false);
+    return bar;
+}
+
+QWidget* P2EventPage::buildTable() {
+    tableView_ = new QTableView(this);
+    tableView_->setModel(proxy_);
+    delegate_ = new EventRowDelegate(&pulseOn_, &hoveredRow_, this);
+    tableView_->setItemDelegate(delegate_);
+
+    tableView_->setSelectionMode(QAbstractItemView::NoSelection);
+    tableView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    tableView_->setFocusPolicy(Qt::NoFocus);
+    tableView_->setMouseTracking(true);
+    tableView_->viewport()->installEventFilter(this);
+    tableView_->setShowGrid(false);
+    tableView_->setAlternatingRowColors(false);
+    tableView_->verticalHeader()->setVisible(false);
+    tableView_->verticalHeader()->setDefaultSectionSize(Tokens::Layout::TABLE_ROW_H);
+    tableView_->horizontalHeader()->setHighlightSections(false);
+    tableView_->horizontalHeader()->setStretchLastSection(false);
+
+    tableView_->setColumnWidth(EventTableModel::ColCheck, 32);
+    tableView_->setColumnWidth(EventTableModel::ColSeverity, 90);
+    tableView_->setColumnWidth(EventTableModel::ColEventId, 130);
+    tableView_->setColumnWidth(EventTableModel::ColTime, 70);
+    tableView_->setColumnWidth(EventTableModel::ColRobot, 60);
+    tableView_->setColumnWidth(EventTableModel::ColRecipient, 70);
+    tableView_->setColumnWidth(EventTableModel::ColType, 100);
+    tableView_->setColumnWidth(EventTableModel::ColStatus, 80);
+    tableView_->setColumnWidth(EventTableModel::ColAssignee, 70);
+    tableView_->setColumnWidth(EventTableModel::ColElapsed, 80);
+    tableView_->horizontalHeader()->setSectionResizeMode(EventTableModel::ColSummary,
+                                                          QHeaderView::Stretch);
+
+    proxy_->sort(0);
+
+    connect(tableView_, &QTableView::clicked, this, &P2EventPage::onCellClicked);
+
+    return tableView_;
+}
+
+QWidget* P2EventPage::buildPagination() {
+    auto* row = new QWidget(this);
+    auto* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+    layout->addStretch();
+
+    auto* prev = new QPushButton(SimpleIcons::chevronLeft(Tokens::TEXT_SECONDARY, 11), QString(), row);
+    prev->setObjectName("segBtn");
+    prev->setProperty("pos", "first");
+    layout->addWidget(prev);
+
+    auto* page1 = new QPushButton(QStringLiteral("1"), row);
+    page1->setObjectName("segBtn");
+    page1->setCheckable(true);
+    page1->setChecked(true);
+    layout->addWidget(page1);
+
+    auto* next = new QPushButton(SimpleIcons::chevronRight(Tokens::TEXT_SECONDARY, 11), QString(), row);
+    next->setObjectName("segBtn");
+    next->setProperty("pos", "last");
+    layout->addWidget(next);
+
+    layout->addStretch();
+    return row;
+}
+
+void P2EventPage::seedMockData() {
+    using Row = EventTableModel::EventRow;
+    using Sev = EventTableModel::Severity;
+
+    const QDate today = QDate::currentDate();
+    const QDate yesterday = today.addDays(-1);
+
+    QVector<Row> rows;
+    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260826-014"), today, QStringLiteral("14:29"),
+                     QStringLiteral("R-01"), QStringLiteral("김순자"), QStringLiteral("안부 무응답"),
+                     QStringLiteral("안부 질문 2회 무응답 → 출동 · 음성 확인 대기"),
+                     QStringLiteral("도희정"), false, 192, false});
+    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-011"), today, QStringLiteral("12:41"),
+                     QStringLiteral("R-02"), QStringLiteral("박영호"), QStringLiteral("복약 미수령"),
+                     QStringLiteral("아침 약 미수령 (대상자 미발견) · 보호자 문자 발송"), QString(),
+                     false, 6667, false});
+    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-012"), today, QStringLiteral("13:58"),
+                     QStringLiteral("R-04"), QStringLiteral("최금례"), QStringLiteral("통신 단절"),
+                     QStringLiteral("관제 연결 끊김 · 30초 주기 재시도 · 로컬 기록 유지"), QString(),
+                     false, 2042, false});
+    rows.append(Row{Sev::Info, QStringLiteral("EV-260826-010"), today, QStringLiteral("12:34"),
+                     QStringLiteral("R-03"), QStringLiteral("이말순"), QStringLiteral("복약 완료"),
+                     QStringLiteral("점심 약 수령 확인 · event_logger 기록"), QStringLiteral("자동"),
+                     true, 0, false});
+    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260825-041"), yesterday, QStringLiteral("어제"),
+                     QStringLiteral("R-03"), QStringLiteral("이말순"), QStringLiteral("음성 무응답"),
+                     QStringLiteral("2회 무응답 → 보호자 통화 연결 · 정상 확인 후 종료"),
+                     QStringLiteral("김예은"), true, 0, false});
+
+    model_->setRows(rows);
+}
+
+void P2EventPage::refreshCounts() {
+    const int checked = model_->checkedCount();
+    bulkBar_->setVisible(checked > 0);
+    bulkCountLabel_->setText(QStringLiteral("%1건 선택됨").arg(checked));
+
+    filterCountLabel_->setText(QStringLiteral("전체 %1건 중 미처리 %2건")
+                                    .arg(model_->totalCount())
+                                    .arg(model_->unresolvedCount()));
+
+    emit unresolvedCountsChanged(model_->emergencyUnresolvedCount(), model_->attentionUnresolvedCount());
+}
+
+void P2EventPage::onCellClicked(const QModelIndex& index) {
+    if (!index.isValid() || index.column() == EventTableModel::ColCheck) return;
+
+    const QModelIndex sourceIndex = proxy_->mapToSource(index);
+    if (!sourceIndex.isValid()) return;
+
+    const EventTableModel::EventRow row = model_->rowAt(sourceIndex.row());
+    auto* modal = new EventDetailModal(row, this);
+    modal->setAttribute(Qt::WA_DeleteOnClose);
+    connect(modal, &EventDetailModal::eventResolved, model_, &EventTableModel::resolveByEventId);
+    modal->exec();
+}
+
+void P2EventPage::onBulkComplete() {
+    const bool excludedEmergency = model_->bulkCompleteChecked();
+    if (excludedEmergency) {
+        QMessageBox::information(
+            this, QStringLiteral("CareGuard"),
+            QStringLiteral("긴급 이벤트는 일괄 완료 처리에서 제외됩니다. 개별로 확인해 주세요."));
+    }
+}
+
+void P2EventPage::onDateRangeChanged() {
+    // 시작이 끝보다 늦으면 끝을 시작에 맞춰 밀어준다 (반대 방향은 두지 않음 — 사용자가
+    // 마지막으로 조작한 쪽 의도를 존중).
+    if (startDateEdit_->date() > endDateEdit_->date()) {
+        endDateEdit_->setDate(startDateEdit_->date());
+        return;  // setDate가 다시 dateChanged를 내서 아래 setDateRange까지 이어진다.
+    }
+    proxy_->setDateRange(startDateEdit_->date(), endDateEdit_->date());
+}
+
+void P2EventPage::applyPeriodPreset(int spanDays) {
+    if (spanDays >= 0) {
+        const QDate today = QDate::currentDate();
+        startDateEdit_->setDate(today.addDays(-spanDays));
+        endDateEdit_->setDate(today);
+        setDateEditsReadOnly(true);
+    } else {
+        setDateEditsReadOnly(false);
+        if (!periodCustomBtn_->isChecked()) {
+            periodCustomBtn_->setChecked(true);  // 날짜 칸을 직접 클릭해 진입한 경우
+        }
+    }
+}
+
+void P2EventPage::setDateEditsReadOnly(bool readOnly) {
+    for (auto* edit : {startDateEdit_, endDateEdit_}) {
+        edit->setReadOnly(readOnly);
+        edit->setProperty("state", readOnly ? QStringLiteral("off") : QVariant());
+        repolish(edit);
+    }
+}
+
+bool P2EventPage::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonPress &&
+        (watched == startDateEdit_ || watched == endDateEdit_) && startDateEdit_->isReadOnly()) {
+        applyPeriodPreset(-1);  // "직접"로 전환 — 이 클릭 자체는 그대로 통과시켜 캘린더가 열리게 둔다
+    }
+
+    // Qt 기본 State_MouseOver는 셀 단위라 마우스 아래 셀만 칠해진다. 행 전체를 칠하려면
+    // 뷰포트에서 직접 마우스 위치의 행을 추적해 델리게이트에 전달해야 한다.
+    if (tableView_ && watched == tableView_->viewport()) {
+        if (event->type() == QEvent::MouseMove) {
+            const auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            const int row = tableView_->indexAt(mouseEvent->pos()).row();
+            if (row != hoveredRow_) {
+                hoveredRow_ = row;
+                tableView_->viewport()->update();
+            }
+        } else if (event->type() == QEvent::Leave) {
+            if (hoveredRow_ != -1) {
+                hoveredRow_ = -1;
+                tableView_->viewport()->update();
+            }
+        }
+    }
+
+    return QWidget::eventFilter(watched, event);
+}
+
+void P2EventPage::showComingSoon(const QString& feature) {
+    QMessageBox::information(this, QStringLiteral("CareGuard"),
+                              QStringLiteral("추후 구현: %1").arg(feature));
 }

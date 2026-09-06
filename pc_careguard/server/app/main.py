@@ -4,6 +4,7 @@ import bcrypt
 from fastapi import FastAPI, HTTPException
 
 from . import db
+from .accounts import router as accounts_router
 from .api.v1 import map as map_api
 from .api.v1 import patrol as patrol_api
 from .api.v1 import teleop as teleop_api
@@ -16,6 +17,7 @@ from .ws import dashboard_ws, robot_ws
 app = FastAPI(title="CareGuard Server")
 app.include_router(media_router)
 app.include_router(video_events_router)
+app.include_router(accounts_router)
 app.include_router(map_api.router)
 app.include_router(map_api.waypoints_router)
 app.include_router(map_api.slam_jobs_router)

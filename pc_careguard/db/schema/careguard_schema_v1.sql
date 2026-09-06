@@ -1,9 +1,12 @@
 -- =========================================================
--- CareGuard Central Server DB Schema  v3
+-- CareGuard Central Server DB Schema  v4
 -- PostgreSQL 16 (Docker, 로컬 운영)
 --
 -- - 모든 FK(REFERENCES) 제약 제거. 참조 정합성은 애플리케이션 코드의
 --   JOIN으로 관리한다 (컬럼 자체와 값의 의미는 v2와 동일, 제약만 제거)
+-- - v4: recipient.operator_id 추가 — 계정 관리 화면의 "담당(대상자·로봇)"을
+--   저장할 곳이 없어서(로봇은 recipient.robot_id로 이미 연결) 신설. 담당
+--   로봇은 recipient.robot_id를 통해 간접적으로 따라온다
 --
 -- 시간 처리
 -- - 컬럼 타입은 TIMESTAMPTZ 유지. 운영 DB에 아래를 1회 실행할 것:
@@ -43,6 +46,7 @@ CREATE TABLE careguard_user (
     id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     login_id      VARCHAR(64) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
+    display_name  VARCHAR(64) NOT NULL,
     role_id       INTEGER NOT NULL,
     is_active     BOOLEAN NOT NULL DEFAULT TRUE,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -59,6 +63,7 @@ COMMENT ON TABLE careguard_user IS '관제 대시보드 로그인 계정';
 COMMENT ON COLUMN careguard_user.id IS '계정 PK, 자동 증가';
 COMMENT ON COLUMN careguard_user.login_id IS '로그인 ID. 활성 계정끼리만 유니크';
 COMMENT ON COLUMN careguard_user.password_hash IS '비밀번호 해시';
+COMMENT ON COLUMN careguard_user.display_name IS '화면 표시용 이름. 상단바 담당자, 계정 목록, 감사 로그, 이벤트 처리자 표시에 사용';
 COMMENT ON COLUMN careguard_user.role_id IS '역할 id (role.id). FK 제약 없음, 조회 시 애플리케이션에서 JOIN';
 COMMENT ON COLUMN careguard_user.is_active IS '계정 사용 가능 여부';
 COMMENT ON COLUMN careguard_user.created_at IS '계정 생성 시간';
@@ -293,6 +298,7 @@ CREATE TABLE recipient (
     id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     code            VARCHAR(16) NOT NULL,
     robot_id        INTEGER,
+    operator_id     INTEGER,
     name            VARCHAR(64) NOT NULL,
     gender          VARCHAR(8) CHECK (gender IS NULL OR gender IN ('male', 'female', 'other')),
     birth_date      DATE,
@@ -312,10 +318,13 @@ ON recipient (code) WHERE deregistered_at IS NULL;
 
 CREATE INDEX idx_recipient_robot ON recipient (robot_id) WHERE deregistered_at IS NULL;
 
+CREATE INDEX idx_recipient_operator ON recipient (operator_id) WHERE deregistered_at IS NULL;
+
 COMMENT ON TABLE recipient IS '돌봄 대상자. 컬럼 구성은 위험 상황 문자 항목(시나리오서 §6.3)과 1:1 대응한다';
 COMMENT ON COLUMN recipient.id IS '대상자 PK, 자동 증가';
 COMMENT ON COLUMN recipient.code IS '대상자 코드, 예: C-002';
 COMMENT ON COLUMN recipient.robot_id IS '담당 로봇 id. 미배정 상태는 NULL';
+COMMENT ON COLUMN recipient.operator_id IS '담당 계정 id (careguard_user.id, role=operator). FK 제약 없음 — 조회 시 애플리케이션에서 JOIN. NULL이면 미배정. 담당 로봇은 robot_id로 함께 조회';
 COMMENT ON COLUMN recipient.name IS '이름 (문자 항목)';
 COMMENT ON COLUMN recipient.gender IS '성별 (문자 항목)';
 COMMENT ON COLUMN recipient.birth_date IS '생년월일. 나이는 조회 시 계산해 문자에 포함';
@@ -998,6 +1007,7 @@ CREATE TABLE user_action_log (
             'login', 'login_failed', 'login_locked', 'logout',
             'estop', 'estop_release',
             'robot_command',
+            'robot_create', 'robot_update', 'robot_deregister',
             'view_live', 'view_video', 'download_video',
             'recipient_create', 'recipient_update', 'recipient_delete',
             'guardian_create', 'guardian_update', 'guardian_delete',
@@ -1009,7 +1019,9 @@ CREATE TABLE user_action_log (
             'call_button_register', 'call_button_update', 'call_button_delete',
             'map_save', 'map_activate', 'map_delete',
             'guardian_message_create', 'guardian_message_cancel',
-            'account_create', 'account_update', 'account_delete', 'role_update'
+            'account_create', 'account_update', 'account_delete',
+            'account_activate', 'account_deactivate', 'password_change',
+            'role_update'
         )
     ),
     target_table  VARCHAR(40),

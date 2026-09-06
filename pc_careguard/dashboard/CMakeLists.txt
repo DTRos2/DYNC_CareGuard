@@ -12,15 +12,16 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets Multimedia Multimedi
 
 add_executable(careguard_dashboard
     src/main.cpp
-    src/mainwindow.h
-    src/mainwindow.cpp
-    src/loginwindow.h
-    src/loginwindow.cpp
+    src/windows/mainwindow.h
+    src/windows/mainwindow.cpp
+    src/windows/loginwindow.h
+    src/windows/loginwindow.cpp
     src/net/api_client.h
     src/net/api_client.cpp
     src/net/ws_client.h
     src/net/ws_client.cpp
     src/theme/tokens.h
+    src/theme/calendar_style.h
     src/widgets/simple_icons.h
     src/widgets/simple_icons.cpp
     src/widgets/icon_line_edit.h
@@ -53,10 +54,26 @@ add_executable(careguard_dashboard
     src/widgets/waypoint_canvas.cpp
     src/widgets/waypoint_popover.h
     src/widgets/waypoint_popover.cpp
+    src/widgets/event_table_model.h
+    src/widgets/event_table_model.cpp
+    src/widgets/event_filter_proxy_model.h
+    src/widgets/event_filter_proxy_model.cpp
+    src/widgets/event_row_delegate.h
+    src/widgets/event_row_delegate.cpp
+    src/widgets/live_search_line_edit.h
+    src/widgets/live_search_line_edit.cpp
+    src/widgets/careguard_date_edit.h
+    src/widgets/careguard_date_edit.cpp
+    src/dialogs/event_detail_modal.h
+    src/dialogs/event_detail_modal.cpp
     src/dialogs/map_file_register_dialog.h
     src/dialogs/map_file_register_dialog.cpp
     src/dialogs/map_preview_dialog.h
     src/dialogs/map_preview_dialog.cpp
+    src/dialogs/p7_robot_dialog.h
+    src/dialogs/p7_robot_dialog.cpp
+    src/dialogs/p7_account_dialog.h
+    src/dialogs/p7_account_dialog.cpp
     src/pages/p1_overview_page.h
     src/pages/p1_overview_page.cpp
     src/pages/p2_event_page.h
