@@ -7,6 +7,7 @@ class QButtonGroup;
 class QTimer;
 class QIcon;
 class P4VideoPage;
+class P7SettingsPage;
 
 // 공통 셸: TopBar + Sidebar + QStackedWidget.
 // CareGuard_DESIGN_SYSTEM.md §3(공통 셸 구조), §4-2(objectName), §6(페이지 인벤토리) 참고.
@@ -31,6 +32,7 @@ private:
 
     QStackedWidget* pageStack_;
     P4VideoPage* videoPage_ = nullptr;
+    P7SettingsPage* settingsPage_ = nullptr;
     QLabel* clockLabel_;
     QLabel* userLabel_;
     QLabel* emergencyBadge_;

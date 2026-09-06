@@ -1,19 +1,57 @@
 #include "p7_account_dialog.h"
 
+#include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QInputMethodEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QStyle>
 #include <QVBoxLayout>
+#include <algorithm>
 
 #include "theme/tokens.h"
+#include "widgets/icon_line_edit.h"
 #include "widgets/simple_icons.h"
 
 namespace {
+// 8자 이상 · 영문/숫자 조합 — 계정등록·비밀번호 변경 양쪽에서 공유하는 정책.
+bool isPasswordStrongEnough(const QString& password) {
+    if (password.size() < 8) return false;
+    const bool hasLetter = std::any_of(password.begin(), password.end(), [](QChar c) { return c.isLetter(); });
+    const bool hasDigit = std::any_of(password.begin(), password.end(), [](QChar c) { return c.isDigit(); });
+    return hasLetter && hasDigit;
+}
+
+// 한글 음절의 초성만 뽑아낸 문자열로 바꾼다. 한글이 아닌 문자(코드, 로봇 번호 등)는 그대로 둔다.
+QString hangulChoseong(const QString& text) {
+    static const QString kChoseong = QStringLiteral("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ");
+    QString result;
+    result.reserve(text.size());
+    for (const QChar& ch : text) {
+        const ushort code = ch.unicode();
+        if (code >= 0xAC00 && code <= 0xD7A3) {
+            const int choseongIndex = (code - 0xAC00) / (21 * 28);
+            result.append(kChoseong.at(choseongIndex));
+        } else {
+            result.append(ch);
+        }
+    }
+    return result;
+}
+
+// "담당 대상자" 검색 — 일반 부분일치 우선, 안 걸리면 초성만으로도 대조한다("ㄱㅇㅇ" → "김예은").
+bool matchesRecipientSearch(const QString& text, const QString& query) {
+    if (query.isEmpty()) return true;
+    if (text.contains(query, Qt::CaseInsensitive)) return true;
+    return hangulChoseong(text).contains(query, Qt::CaseInsensitive);
+}
+
 QString roleLabel(AccountDialog::Role role) {
     switch (role) {
         case AccountDialog::Role::Admin: return QStringLiteral("관리자");
@@ -25,9 +63,15 @@ QString roleLabel(AccountDialog::Role role) {
 }  // namespace
 
 AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringList& existingLoginIds,
-                              QWidget* parent)
-    : QDialog(parent), mode_(mode), data_(data), existingLoginIds_(existingLoginIds) {
+                              const QVector<RecipientOption>& recipients, QWidget* parent)
+    : QDialog(parent),
+      mode_(mode),
+      data_(data),
+      existingLoginIds_(existingLoginIds),
+      recipients_(recipients) {
     setModal(true);
+    // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     setFixedWidth(Tokens::Layout::MODAL_W_S);
     const bool isEdit = (mode_ == Mode::Edit);
     const QString title =
@@ -43,9 +87,7 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
     body->setContentsMargins(16, 14, 16, 14);
     body->setSpacing(12);
 
-    // 로그인 ID / 표시 이름
-    auto* row1 = new QHBoxLayout();
-    row1->setSpacing(8);
+    // 로그인 ID
     {
         auto* col = new QVBoxLayout();
         col->setSpacing(5);
@@ -75,39 +117,21 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
             QStringLiteral("font-size:11px; color:%1;").arg(Tokens::EMERGENCY.main.name()));
         loginIdErrorHint_->setVisible(false);
         col->addWidget(loginIdErrorHint_);
-        row1->addLayout(col, 1);
+        body->addLayout(col);
     }
+
+    // 표시 이름
     {
         auto* col = new QVBoxLayout();
         col->setSpacing(5);
-        auto* labelRow = new QHBoxLayout();
-        labelRow->setSpacing(5);
         auto* label = new QLabel(QStringLiteral("표시 이름*"), this);
         label->setProperty("role", "label");
-        labelRow->addWidget(label);
-        auto* tag = new QLabel(QStringLiteral("컬럼 필요"), this);
-        tag->setStyleSheet(QStringLiteral("font-size:10px; font-weight:500; padding:1px 5px; "
-                                            "border-radius:4px; background:%1; color:%2; border:1px solid %3;")
-                                .arg(Tokens::ATTENTION.soft.name(), Tokens::ATTENTION.main.name(),
-                                     Tokens::ATTENTION.border.name()));
-        labelRow->addWidget(tag);
-        labelRow->addStretch();
-        col->addLayout(labelRow);
+        col->addWidget(label);
         nameEdit_ = new QLineEdit(data.displayName, this);
+        nameEdit_->setPlaceholderText(QStringLiteral("예) 홍길동"));
         col->addWidget(nameEdit_);
-        auto* hint = new QLabel(
-            QStringLiteral("v2에서 <span style=\"font-family:'JetBrains Mono'\">display_name</span> 이 "
-                            "빠졌습니다 — 스키마 갭 확인 필요"),
-            this);
-        hint->setTextFormat(Qt::RichText);
-        hint->setWordWrap(true);
-        hint->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
-        col->addWidget(hint);
-        row1->addLayout(col, 1);
+        body->addLayout(col);
     }
-    body->addLayout(row1);
-
-    buildRoleSelector(body, data.role);
 
     // 비밀번호
     if (!isEdit) {
@@ -119,8 +143,11 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
             auto* label = new QLabel(QStringLiteral("비밀번호*"), this);
             label->setProperty("role", "label");
             col->addWidget(label);
-            passwordEdit_ = new QLineEdit(this);
+            passwordEdit_ = new IconLineEdit(this);
             passwordEdit_->setEchoMode(QLineEdit::Password);
+            passwordEdit_->setTrailingIcon(SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
+            connect(passwordEdit_, &IconLineEdit::trailingIconClicked, this,
+                    &AccountDialog::togglePasswordVisibility);
             col->addWidget(passwordEdit_);
             row2->addLayout(col, 1);
         }
@@ -130,8 +157,11 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
             auto* label = new QLabel(QStringLiteral("비밀번호 확인*"), this);
             label->setProperty("role", "label");
             col->addWidget(label);
-            passwordConfirmEdit_ = new QLineEdit(this);
+            passwordConfirmEdit_ = new IconLineEdit(this);
             passwordConfirmEdit_->setEchoMode(QLineEdit::Password);
+            passwordConfirmEdit_->setTrailingIcon(SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
+            connect(passwordConfirmEdit_, &IconLineEdit::trailingIconClicked, this,
+                    &AccountDialog::togglePasswordConfirmVisibility);
             col->addWidget(passwordConfirmEdit_);
             row2->addLayout(col, 1);
         }
@@ -139,52 +169,184 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
         auto* pwHint = new QLabel(QStringLiteral("8자 이상 · 영문/숫자 조합"), this);
         pwHint->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
         body->addWidget(pwHint);
+
+        auto updatePasswordMatchHint = [this, pwHint] {
+            const QString pw = passwordEdit_->text();
+            const QString confirm = passwordConfirmEdit_->text();
+            if (confirm.isEmpty()) {
+                pwHint->setText(QStringLiteral("8자 이상 · 영문/숫자 조합"));
+                pwHint->setStyleSheet(
+                    QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
+            } else if (pw == confirm) {
+                pwHint->setText(QStringLiteral("비밀번호가 일치합니다"));
+                pwHint->setStyleSheet(
+                    QStringLiteral("font-size:11px; color:%1;").arg(Tokens::OK.main.name()));
+            } else {
+                pwHint->setText(QStringLiteral("비밀번호가 일치하지 않습니다"));
+                pwHint->setStyleSheet(
+                    QStringLiteral("font-size:11px; color:%1;").arg(Tokens::EMERGENCY.main.name()));
+            }
+        };
+        connect(passwordEdit_, &QLineEdit::textChanged, this, updatePasswordMatchHint);
+        connect(passwordConfirmEdit_, &QLineEdit::textChanged, this, updatePasswordMatchHint);
     } else {
-        passwordEdit_ = nullptr;
-        passwordConfirmEdit_ = nullptr;
-        auto* label = new QLabel(QStringLiteral("비밀번호"), this);
-        label->setProperty("role", "label");
-        body->addWidget(label);
-        auto* pwRow = new QHBoxLayout();
-        pwRow->setSpacing(8);
-        auto* maskedField = new QLineEdit(QStringLiteral("••••••••"), this);
-        maskedField->setReadOnly(true);
-        maskedField->setEnabled(false);
-        pwRow->addWidget(maskedField, 1);
-        auto* resetBtn = new QPushButton(QStringLiteral("초기화"), this);
-        resetBtn->setProperty("variant", "secondary");
-        resetBtn->setProperty("size", "s");
-        connect(resetBtn, &QPushButton::clicked, this,
-                [this] { emit passwordResetRequested(data_.loginId); });
-        pwRow->addWidget(resetBtn);
-        body->addLayout(pwRow);
-        auto* pwHint = new QLabel(QStringLiteral("임시 비밀번호가 발급되고 다음 로그인 시 변경을 요구합니다"), this);
+        auto* changeBtn = new QPushButton(QStringLiteral("변경"), this);
+        changeBtn->setProperty("variant", "secondary");
+        changeBtn->setProperty("size", "s");
+
+        // 1번째 줄 입력창 폭을 2번째 줄(입력창+버튼)의 입력창 폭과 맞추기 위해,
+        // 실제 버튼과 동일한 크기의 투명 자리표시자를 같은 위치에 둔다.
+        auto* btnSpacer = new QPushButton(QStringLiteral("변경"), this);
+        btnSpacer->setProperty("variant", "secondary");
+        btnSpacer->setProperty("size", "s");
+        QSizePolicy spacerPolicy = btnSpacer->sizePolicy();
+        spacerPolicy.setRetainSizeWhenHidden(true);
+        btnSpacer->setSizePolicy(spacerPolicy);
+        btnSpacer->hide();
+
+        auto* pwLabel = new QLabel(QStringLiteral("비밀번호"), this);
+        pwLabel->setProperty("role", "label");
+        body->addWidget(pwLabel);
+
+        auto* newPwRow = new QHBoxLayout();
+        newPwRow->setSpacing(8);
+        passwordEdit_ = new IconLineEdit(this);
+        passwordEdit_->setEchoMode(QLineEdit::Password);
+        passwordEdit_->setTrailingIcon(SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
+        connect(passwordEdit_, &IconLineEdit::trailingIconClicked, this,
+                &AccountDialog::togglePasswordVisibility);
+        newPwRow->addWidget(passwordEdit_, 1);
+        newPwRow->addWidget(btnSpacer);
+        body->addLayout(newPwRow);
+
+        auto* pwConfirmLabel = new QLabel(QStringLiteral("비밀번호 확인"), this);
+        pwConfirmLabel->setProperty("role", "label");
+        body->addWidget(pwConfirmLabel);
+
+        auto* confirmRow = new QHBoxLayout();
+        confirmRow->setSpacing(8);
+        passwordConfirmEdit_ = new IconLineEdit(this);
+        passwordConfirmEdit_->setEchoMode(QLineEdit::Password);
+        passwordConfirmEdit_->setTrailingIcon(SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
+        connect(passwordConfirmEdit_, &IconLineEdit::trailingIconClicked, this,
+                &AccountDialog::togglePasswordConfirmVisibility);
+        confirmRow->addWidget(passwordConfirmEdit_, 1);
+        confirmRow->addWidget(changeBtn);
+        body->addLayout(confirmRow);
+
+        auto* pwHint = new QLabel(QStringLiteral("8자 이상 · 영문/숫자 조합"), this);
         pwHint->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
         body->addWidget(pwHint);
+
+        auto updateEditPasswordMatchHint = [this, pwHint] {
+            const QString pw = passwordEdit_->text();
+            const QString confirm = passwordConfirmEdit_->text();
+            if (confirm.isEmpty()) {
+                pwHint->setText(QStringLiteral("8자 이상 · 영문/숫자 조합"));
+                pwHint->setStyleSheet(
+                    QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
+            } else if (pw == confirm) {
+                pwHint->setText(QStringLiteral("비밀번호가 일치합니다"));
+                pwHint->setStyleSheet(
+                    QStringLiteral("font-size:11px; color:%1;").arg(Tokens::OK.main.name()));
+            } else {
+                pwHint->setText(QStringLiteral("비밀번호가 일치하지 않습니다"));
+                pwHint->setStyleSheet(
+                    QStringLiteral("font-size:11px; color:%1;").arg(Tokens::EMERGENCY.main.name()));
+            }
+        };
+        connect(passwordEdit_, &QLineEdit::textChanged, this, updateEditPasswordMatchHint);
+        connect(passwordConfirmEdit_, &QLineEdit::textChanged, this, updateEditPasswordMatchHint);
+
+        connect(changeBtn, &QPushButton::clicked, this, [this] {
+            if (passwordEdit_->text().isEmpty() || passwordEdit_->text() != passwordConfirmEdit_->text()) {
+                passwordConfirmEdit_->setProperty("state", "error");
+                passwordConfirmEdit_->style()->unpolish(passwordConfirmEdit_);
+                passwordConfirmEdit_->style()->polish(passwordConfirmEdit_);
+                return;
+            }
+            passwordConfirmEdit_->setProperty("state", QVariant());
+            passwordConfirmEdit_->style()->unpolish(passwordConfirmEdit_);
+            passwordConfirmEdit_->style()->polish(passwordConfirmEdit_);
+
+            if (!isPasswordStrongEnough(passwordEdit_->text())) {
+                QMessageBox::warning(this, QStringLiteral("비밀번호 변경 불가"),
+                                      QStringLiteral("비밀번호는 8자 이상이며 영문과 숫자를 모두 포함해야 합니다."));
+                return;
+            }
+
+            // 실제 변경 성공/실패 알림은 서버 응답을 아는 P7SettingsPage 쪽에서 띄운다.
+            emit passwordChangeRequested(data_.loginId, passwordEdit_->text());
+            passwordEdit_->clear();
+            passwordConfirmEdit_->clear();
+        });
     }
 
-    // 계정 상태
-    auto* statusLabel = new QLabel(QStringLiteral("계정 상태"), this);
-    statusLabel->setStyleSheet(QStringLiteral("font-size:12px; font-weight:600; color:%1; "
-                                                "border-top:1px solid %2; padding-top:12px;")
-                                    .arg(Tokens::TEXT_PRIMARY.name(), Tokens::BORDER.name()));
-    body->addWidget(statusLabel);
+    buildRoleSelector(body, data.role);
 
-    auto* statusRow = new QHBoxLayout();
-    statusRow->setSpacing(7);
-    activeCheck_ = new QCheckBox(isEdit ? QStringLiteral("활성") : QStringLiteral("등록 즉시 활성화"), this);
-    activeCheck_->setChecked(data.active);
-    statusRow->addWidget(activeCheck_);
-    if (isEdit && !data.lastLogin.isEmpty()) {
-        statusRow->addStretch();
-        auto* lastLoginLabel = new QLabel(QStringLiteral("최종 로그인 %1").arg(data.lastLogin), this);
-        lastLoginLabel->setFont(QFont(Tokens::Font::MONO));
-        lastLoginLabel->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
-        statusRow->addWidget(lastLoginLabel);
+    // 계정 상태 — 등록 모드는 항상 활성으로 등록되므로 이 섹션을 노출하지 않는다.
+    activeCheck_ = new QCheckBox(QStringLiteral("활성"), this);
+    if (isEdit) {
+        auto* statusLabel = new QLabel(QStringLiteral("계정 상태"), this);
+        statusLabel->setStyleSheet(QStringLiteral("font-size:12px; font-weight:600; color:%1; "
+                                                    "border-top:1px solid %2; padding-top:12px;")
+                                        .arg(Tokens::TEXT_PRIMARY.name(), Tokens::BORDER.name()));
+        body->addWidget(statusLabel);
+
+        auto* statusRow = new QHBoxLayout();
+        statusRow->setSpacing(7);
+        activeCheck_->setChecked(data.active);
+        statusRow->addWidget(activeCheck_);
+        if (!data.lastLogin.isEmpty()) {
+            statusRow->addStretch();
+            auto* lastLoginLabel = new QLabel(QStringLiteral("최종 로그인 %1").arg(data.lastLogin), this);
+            lastLoginLabel->setFont(QFont(Tokens::Font::MONO));
+            lastLoginLabel->setStyleSheet(
+                QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
+            statusRow->addWidget(lastLoginLabel);
+        } else {
+            statusRow->addStretch();
+        }
+        body->addLayout(statusRow);
     } else {
-        statusRow->addStretch();
+        activeCheck_->setChecked(true);
+        activeCheck_->hide();
     }
-    body->addLayout(statusRow);
+
+    // 담당 대상자 — 검색으로 좁혀서 목록에서 체크로 고른다. 하나도 안 고르면 미배정으로 저장된다.
+    {
+        auto* chargeLabel = new QLabel(QStringLiteral("담당 대상자"), this);
+        chargeLabel->setStyleSheet(QStringLiteral("font-size:12px; font-weight:600; color:%1; "
+                                                    "border-top:1px solid %2; padding-top:12px;")
+                                        .arg(Tokens::TEXT_PRIMARY.name(), Tokens::BORDER.name()));
+        body->addWidget(chargeLabel);
+
+        recipientSearchEdit_ = new QLineEdit(this);
+        recipientSearchEdit_->setPlaceholderText(QStringLiteral("이름 또는 코드로 검색"));
+        body->addWidget(recipientSearchEdit_);
+
+        recipientListWidget_ = new QListWidget(this);
+        recipientListWidget_->setFixedHeight(120);
+        recipientListWidget_->setSelectionMode(QAbstractItemView::NoSelection);
+        recipientListWidget_->setFocusPolicy(Qt::NoFocus);
+        for (const RecipientOption& option : recipients) {
+            auto* item = new QListWidgetItem(option.label, recipientListWidget_);
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState(option.assigned ? Qt::Checked : Qt::Unchecked);
+            item->setData(Qt::UserRole, option.id);
+        }
+        body->addWidget(recipientListWidget_);
+
+        connect(recipientSearchEdit_, &QLineEdit::textChanged, this, &AccountDialog::applyRecipientFilter);
+        // 한글 조합 중(커밋 전) preedit 문자열도 잡아서 실시간으로 반영한다 — 아래 eventFilter() 참고.
+        recipientSearchEdit_->installEventFilter(this);
+
+        if (recipients.isEmpty()) {
+            auto* emptyHint = new QLabel(QStringLiteral("등록된 대상자가 없습니다"), this);
+            emptyHint->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
+            body->addWidget(emptyHint);
+        }
+    }
 
     // 관리자 관련 배너 3종 (기본 숨김, updateAdminBanners에서 상태에 맞춰 하나만 표시)
     adminWarnBanner_ = new QFrame(this);
@@ -315,6 +477,38 @@ void AccountDialog::updateAdminBanners() {
     activeCheck_->setEnabled(!(data_.isSelf || data_.isLastActiveAdmin));
 }
 
+void AccountDialog::togglePasswordVisibility() {
+    passwordVisible_ = !passwordVisible_;
+    passwordEdit_->setEchoMode(passwordVisible_ ? QLineEdit::Normal : QLineEdit::Password);
+    passwordEdit_->setTrailingIcon(passwordVisible_ ? SimpleIcons::eyeOff(Tokens::TEXT_MUTED, 14)
+                                                     : SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
+}
+
+void AccountDialog::togglePasswordConfirmVisibility() {
+    passwordConfirmVisible_ = !passwordConfirmVisible_;
+    passwordConfirmEdit_->setEchoMode(passwordConfirmVisible_ ? QLineEdit::Normal : QLineEdit::Password);
+    passwordConfirmEdit_->setTrailingIcon(passwordConfirmVisible_
+                                               ? SimpleIcons::eyeOff(Tokens::TEXT_MUTED, 14)
+                                               : SimpleIcons::eye(Tokens::TEXT_MUTED, 14));
+}
+
+void AccountDialog::applyRecipientFilter(const QString& query) {
+    for (int i = 0; i < recipientListWidget_->count(); ++i) {
+        auto* item = recipientListWidget_->item(i);
+        item->setHidden(!matchesRecipientSearch(item->text(), query));
+    }
+}
+
+bool AccountDialog::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == recipientSearchEdit_ && event->type() == QEvent::InputMethod) {
+        auto* imEvent = static_cast<QInputMethodEvent*>(event);
+        // 아직 커밋 안 된 조합 중 글자(밑줄로 표시되는 부분)까지 합쳐서 걸러야
+        // "박" 입력 직후(조합 완료 전)에도 바로 검색된다.
+        applyRecipientFilter(recipientSearchEdit_->text() + imEvent->preeditString());
+    }
+    return QDialog::eventFilter(watched, event);
+}
+
 void AccountDialog::handleActiveToggled(bool) {
     // 관리자 계정 비활성화에 별도 확인 팝업은 없다(범위 제외 — 사용자 지시).
     // 본인 계정/마지막 활성 관리자는 updateAdminBanners()가 체크박스 자체를
@@ -373,10 +567,16 @@ void AccountDialog::handleSaveClicked() {
         loginIdEdit_->style()->polish(loginIdEdit_);
     }
 
-    // 표시 이름 필드 상태 갱신
     nameEdit_->setProperty("state", name.isEmpty() ? "error" : QVariant());
     nameEdit_->style()->unpolish(nameEdit_);
     nameEdit_->style()->polish(nameEdit_);
+
+    // 담당 대상자 — 목록에서 체크된 항목만 모은다. 선택식이라 잘못된 값이 있을 수 없다.
+    QVector<int> matchedRecipientIds;
+    for (int i = 0; i < recipientListWidget_->count(); ++i) {
+        const QListWidgetItem* item = recipientListWidget_->item(i);
+        if (item->checkState() == Qt::Checked) matchedRecipientIds.append(item->data(Qt::UserRole).toInt());
+    }
 
     if (loginId.isEmpty() || name.isEmpty()) return;
     if (!isEdit && existingLoginIds_.contains(loginId)) return;
@@ -390,13 +590,21 @@ void AccountDialog::handleSaveClicked() {
         passwordConfirmEdit_->setProperty("state", QVariant());
         passwordConfirmEdit_->style()->unpolish(passwordConfirmEdit_);
         passwordConfirmEdit_->style()->polish(passwordConfirmEdit_);
+
+        if (!isPasswordStrongEnough(passwordEdit_->text())) {
+            QMessageBox::warning(this, QStringLiteral("계정 등록 불가"),
+                                  QStringLiteral("비밀번호는 8자 이상이며 영문과 숫자를 모두 포함해야 합니다."));
+            return;
+        }
     }
 
     AccountData result = data_;
     result.loginId = loginId;
     result.displayName = name;
+    if (!isEdit) result.password = passwordEdit_->text();
     result.role = selectedRole();
     result.active = activeCheck_->isChecked();
+    result.assignedRecipientIds = matchedRecipientIds;
     emit accountSaved(result);
     accept();
 }
