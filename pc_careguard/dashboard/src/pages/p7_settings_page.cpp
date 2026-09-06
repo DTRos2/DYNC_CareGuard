@@ -1,12 +1,22 @@
 #include "p7_settings_page.h"
 
 #include <QAbstractItemView>
+#include <QCheckBox>
+#include <QDateTime>
 #include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -120,6 +130,11 @@ QWidget* thresholdRow(const QString& label, QLineEdit* field, const QString& uni
 
 }  // namespace
 
+void P7SettingsPage::setCurrentUserLoginId(const QString& loginId) {
+    currentUserLoginId_ = loginId;
+    if (accountTable_ != nullptr) refreshAccountTable();
+}
+
 P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     robots_ = {
         {QStringLiteral("R-01"), QStringLiteral("192.168.0.11"), QStringLiteral("/limo_01"),
@@ -150,16 +165,7 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
         {QStringLiteral("wearable_bridge"), false, QStringLiteral("up 1d 6h")},
     };
 
-    accounts_ = {
-        {QStringLiteral("admin"), QStringLiteral("도희정"), QStringLiteral("관리자"),
-         QStringLiteral("전체"), QStringLiteral("오늘 09:02"), true},
-        {QStringLiteral("op_kang"), QStringLiteral("강유나"), QStringLiteral("관제"),
-         QStringLiteral("김순자 R-01 · 박영호 R-02"), QStringLiteral("오늘 08:55"), true},
-        {QStringLiteral("op_kim"), QStringLiteral("김예은"), QStringLiteral("관제"),
-         QStringLiteral("이말순 R-03 · 최금례 R-04"), QStringLiteral("어제 18:10"), true},
-        {QStringLiteral("g_park"), QStringLiteral("박민수"), QStringLiteral("보호자"),
-         QStringLiteral("박영호 (읽기 전용 — 추후 확장)"), Tokens::Format::EMPTY, false},
-    };
+    // 계정 목록은 하드코딩하지 않고 DB에서 불러온다 (fetchAccounts(), 생성자 마지막에서 호출).
 
     auditLog_ = {
         {QStringLiteral("08.26 14:30"), QStringLiteral("도희정"), QStringLiteral("영상 열람"),
@@ -187,6 +193,12 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     tabs->addTab(buildThresholdTab(), QStringLiteral("임계값 · 알림"));
     tabs->addTab(buildAuditTab(), QStringLiteral("감사 로그"));
     layout->addWidget(tabs);
+
+    serverUrl_ = QProcessEnvironment::systemEnvironment().value(
+        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    netManager_ = new QNetworkAccessManager(this);
+    fetchAccounts();
+    fetchRecipients();
 }
 
 QWidget* P7SettingsPage::buildRobotTab() {
@@ -355,12 +367,20 @@ QWidget* P7SettingsPage::buildAccountTab() {
     if (headerBtn != nullptr) {
         connect(headerBtn, &QPushButton::clicked, this, [this] { openAccountDialog(-1); });
     }
+    // 삭제는 관리자 권한 계정만 가능 — 실제 표시 여부는 계정 목록을 불러온 뒤
+    // refreshAccountTable()에서 isCurrentUserAdmin()으로 판단해 갱신한다.
+    deleteAccountBtn_ = new QPushButton(QStringLiteral("삭제"), headerRow);
+    deleteAccountBtn_->setProperty("variant", "secondary");
+    deleteAccountBtn_->setVisible(false);
+    connect(deleteAccountBtn_, &QPushButton::clicked, this, &P7SettingsPage::handleDeleteAccountsClicked);
+    headerRow->layout()->addWidget(deleteAccountBtn_);
     layout->addWidget(headerRow);
 
     accountTable_ = new QTableWidget(tab);
-    const QStringList headers = {QStringLiteral("ID"), QStringLiteral("이름"), QStringLiteral("역할"),
-                                  QStringLiteral("담당 (대상자·로봇)"), QStringLiteral("최종 로그인"),
-                                  QStringLiteral("상태"), QStringLiteral("액션")};
+    const QStringList headers = {QStringLiteral("ID"),   QStringLiteral("이름"),
+                                  QStringLiteral("역할"), QStringLiteral("담당 (대상자·로봇)"),
+                                  QStringLiteral("최종 로그인"), QStringLiteral("상태"),
+                                  QStringLiteral("액션"), QStringLiteral("선택")};
     accountTable_->setColumnCount(headers.size());
     accountTable_->setHorizontalHeaderLabels(headers);
     accountTable_->verticalHeader()->setVisible(false);
@@ -379,6 +399,8 @@ QWidget* P7SettingsPage::buildAccountTab() {
     accountTable_->setColumnWidth(4, 130);  // 최종 로그인
     accountTable_->setColumnWidth(5, 90);   // 상태
     accountTable_->setColumnWidth(6, 150);  // 액션
+    accountTable_->setColumnWidth(7, 60);   // 선택(삭제용 체크박스)
+    accountTable_->setColumnHidden(7, true);  // 관리자가 아니면 refreshAccountTable()에서도 숨김 유지
 
     accountTable_->setRowCount(static_cast<int>(accounts_.size()));
     for (int r = 0; r < static_cast<int>(accounts_.size()); ++r) {
@@ -696,13 +718,27 @@ AccountDialog::Role koreanRoleToEnum(const QString& role) {
     return AccountDialog::Role::Operator;
 }
 
-QString roleEnumToKorean(AccountDialog::Role role) {
+QString roleEnumToCode(AccountDialog::Role role) {
     switch (role) {
-        case AccountDialog::Role::Admin: return QStringLiteral("관리자");
-        case AccountDialog::Role::Guardian: return QStringLiteral("보호자");
-        case AccountDialog::Role::Operator: return QStringLiteral("관제");
+        case AccountDialog::Role::Admin: return QStringLiteral("admin");
+        case AccountDialog::Role::Guardian: return QStringLiteral("guardian");
+        case AccountDialog::Role::Operator: return QStringLiteral("operator");
     }
     return QString();
+}
+
+// role.name(예: "관제 담당자")이 아니라 화면 표에서 그대로 쓰는 짧은 표기로 맞춘다.
+QString roleCodeToKorean(const QString& code) {
+    if (code == QStringLiteral("admin")) return QStringLiteral("관리자");
+    if (code == QStringLiteral("guardian")) return QStringLiteral("보호자");
+    return QStringLiteral("관제");
+}
+
+QString formatServerTimestamp(const QString& iso) {
+    if (iso.isEmpty()) return QString();
+    const QDateTime dt = QDateTime::fromString(iso, Qt::ISODateWithMs);
+    if (!dt.isValid()) return QString();
+    return dt.toString(QStringLiteral("MM.dd HH:mm"));
 }
 }  // namespace
 
@@ -763,14 +799,34 @@ void P7SettingsPage::populateAccountRow(int r) {
                         rowBg));
 
     if (acc.active) {
-        auto* editBtn = new QPushButton(QStringLiteral("수정 · PW 초기화"));
+        const bool canEdit = isCurrentUserAdmin();
+        auto* editBtn = new QPushButton(QStringLiteral("수정 · 비밀번호 변경"));
         editBtn->setObjectName("linkBtn");
-        editBtn->setCursor(Qt::PointingHandCursor);
+        editBtn->setEnabled(canEdit);
+        editBtn->setCursor(canEdit ? Qt::PointingHandCursor : Qt::ArrowCursor);
         connect(editBtn, &QPushButton::clicked, this, [this, r] { openAccountDialog(r); });
         accountTable_->setCellWidget(r, 6, wrapCellWidget(editBtn, rowBg));
     } else {
-        accountTable_->setCellWidget(r, 6, wrapCellWidget(linkText(QStringLiteral("활성화")), rowBg));
+        auto* activateBtn = new QPushButton(QStringLiteral("활성화"));
+        activateBtn->setObjectName("linkBtn");
+        activateBtn->setCursor(Qt::PointingHandCursor);
+        connect(activateBtn, &QPushButton::clicked, this, [this, r] {
+            const AccountRow& target = accounts_[static_cast<size_t>(r)];
+            QMessageBox box(this);
+            box.setWindowTitle(QStringLiteral("계정 활성화"));
+            box.setText(QStringLiteral("%1(%2) 계정을 다시 활성화하시겠습니까?").arg(target.name, target.id));
+            box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+            box.setDefaultButton(QMessageBox::Cancel);
+            box.button(QMessageBox::Ok)->setText(QStringLiteral("확인"));
+            box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+            if (box.exec() == QMessageBox::Ok) activateAccount(r);
+        });
+        accountTable_->setCellWidget(r, 6, wrapCellWidget(activateBtn, rowBg));
     }
+
+    // 삭제용 체크박스 — 관리자 권한이 아니면 컬럼 자체가 숨겨져 있어 보이지 않는다.
+    auto* selectCheck = new QCheckBox();
+    accountTable_->setCellWidget(r, 7, wrapCellWidget(selectCheck, rowBg));
 }
 
 void P7SettingsPage::refreshAccountTable() {
@@ -783,6 +839,267 @@ void P7SettingsPage::refreshAccountTable() {
     for (int r = 0; r < static_cast<int>(accounts_.size()); ++r) {
         populateAccountRow(r);
     }
+
+    // 계정 삭제는 관리자 권한 계정만 — 로그인 세션 연동 전이라 currentUserLoginId_로
+    // 본인 계정을 찾아 그 역할로 판단한다.
+    const bool canDelete = isCurrentUserAdmin();
+    accountTable_->setColumnHidden(7, !canDelete);
+    if (deleteAccountBtn_ != nullptr) deleteAccountBtn_->setVisible(canDelete);
+}
+
+void P7SettingsPage::fetchAccounts() {
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/accounts")));
+    QNetworkReply* reply = netManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        handleAccountsReply(reply);
+        reply->deleteLater();
+    });
+}
+
+void P7SettingsPage::handleAccountsReply(QNetworkReply* reply) {
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode != 200) {
+        // 서버 연결 실패 시 목록을 비운 채로 둔다 — P4 영상 목록과 동일한 방침.
+        accounts_.clear();
+        if (accountTable_ != nullptr) refreshAccountTable();
+        return;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    std::vector<AccountRow> rows;
+    for (const QJsonValue& value : doc.array()) {
+        const QJsonObject obj = value.toObject();
+        AccountRow row;
+        row.dbId = obj.value("id").toInt();
+        row.id = obj.value("login_id").toString();
+        row.name = obj.value("display_name").toString();
+        row.role = roleCodeToKorean(obj.value("role_code").toString());
+        const QString chargeSummary = obj.value("charge_summary").toString();
+        row.charge = chargeSummary.isEmpty() ? QStringLiteral("미배정") : chargeSummary;
+        row.lastLogin = formatServerTimestamp(obj.value("last_login_at").toString());
+        row.active = obj.value("is_active").toBool();
+        rows.push_back(row);
+    }
+    accounts_ = rows;
+    if (accountTable_ != nullptr) refreshAccountTable();
+}
+
+void P7SettingsPage::registerAccount(const AccountDialog::AccountData& data) {
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/accounts")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    const QJsonObject body{
+        {"login_id", data.loginId},
+        {"password", data.password},
+        {"display_name", data.displayName},
+        {"role_code", roleEnumToCode(data.role)},
+        {"is_active", data.active},
+    };
+    QNetworkReply* reply = netManager_->post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, assignedRecipientIds = data.assignedRecipientIds] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusCode != 200 && statusCode != 201) {
+            const QJsonObject err = QJsonDocument::fromJson(reply->readAll()).object();
+            const QString detail = err.value("detail").toString();
+            reply->deleteLater();
+            QMessageBox::warning(this, QStringLiteral("계정 등록 실패"),
+                                  detail.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다") : detail);
+            return;
+        }
+        const QJsonObject created = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        if (assignedRecipientIds.isEmpty()) {
+            fetchAccounts();  // 등록 결과를 DB 기준으로 다시 불러와 반영한다.
+        } else {
+            // 등록과 동시에 담당 대상자를 골랐으면 이어서 배정한다. assignRecipients()가
+            // 성공 시 fetchAccounts()/fetchRecipients()까지 처리한다.
+            assignRecipients(created.value("id").toInt(), assignedRecipientIds);
+        }
+    });
+}
+
+void P7SettingsPage::updateAccount(int rowIndex, const AccountDialog::AccountData& data) {
+    const int dbId = accounts_[static_cast<size_t>(rowIndex)].dbId;
+    QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2").arg(serverUrl_).arg(dbId)));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    const QJsonObject body{
+        {"display_name", data.displayName},
+        {"role_code", roleEnumToCode(data.role)},
+        {"is_active", data.active},
+    };
+    QNetworkReply* reply = netManager_->sendCustomRequest(request, "PATCH", QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, dbId, assignedRecipientIds = data.assignedRecipientIds] {
+                const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                if (statusCode != 200) {
+                    const QJsonObject err = QJsonDocument::fromJson(reply->readAll()).object();
+                    const QString detail = err.value("detail").toString();
+                    reply->deleteLater();
+                    QMessageBox::warning(this, QStringLiteral("계정 수정 실패"),
+                                          detail.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다") : detail);
+                    return;
+                }
+                reply->deleteLater();
+                // assignRecipients()가 성공 시 fetchAccounts()까지 다시 불러와 반영한다.
+                assignRecipients(dbId, assignedRecipientIds);
+            });
+}
+
+void P7SettingsPage::changePassword(int userId, const QString& newPassword) {
+    QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2/password").arg(serverUrl_).arg(userId)));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    const QJsonObject body{{"new_password", newPassword}};
+    QNetworkReply* reply = netManager_->sendCustomRequest(request, "PATCH", QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+        if (statusCode != 204) {
+            QMessageBox::warning(this, QStringLiteral("비밀번호 변경 실패"),
+                                  QStringLiteral("서버에 연결할 수 없습니다"));
+            return;
+        }
+        QMessageBox::information(this, QStringLiteral("비밀번호 변경"), QStringLiteral("비밀번호가 변경되었습니다."));
+    });
+}
+
+void P7SettingsPage::activateAccount(int rowIndex) {
+    const AccountRow& acc = accounts_[static_cast<size_t>(rowIndex)];
+    QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2").arg(serverUrl_).arg(acc.dbId)));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    const QJsonObject body{
+        {"display_name", acc.name},
+        {"role_code", roleEnumToCode(koreanRoleToEnum(acc.role))},
+        {"is_active", true},
+    };
+    QNetworkReply* reply = netManager_->sendCustomRequest(request, "PATCH", QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusCode != 200) {
+            const QJsonObject err = QJsonDocument::fromJson(reply->readAll()).object();
+            const QString detail = err.value("detail").toString();
+            reply->deleteLater();
+            QMessageBox::warning(this, QStringLiteral("계정 활성화 실패"),
+                                  detail.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다") : detail);
+            return;
+        }
+        reply->deleteLater();
+        fetchAccounts();
+    });
+}
+
+bool P7SettingsPage::isCurrentUserAdmin() const {
+    for (const auto& acc : accounts_) {
+        if (acc.id == currentUserLoginId_) return acc.role == QStringLiteral("관리자");
+    }
+    return false;
+}
+
+void P7SettingsPage::handleDeleteAccountsClicked() {
+    QVector<int> ids;
+    QStringList labels;
+    for (int r = 0; r < accountTable_->rowCount(); ++r) {
+        auto* wrap = accountTable_->cellWidget(r, 7);
+        auto* checkbox = (wrap != nullptr) ? wrap->findChild<QCheckBox*>() : nullptr;
+        if (checkbox != nullptr && checkbox->isChecked()) {
+            const AccountRow& acc = accounts_[static_cast<size_t>(r)];
+            ids.append(acc.dbId);
+            labels.append(QStringLiteral("%1(%2)").arg(acc.name, acc.id));
+        }
+    }
+    if (ids.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("계정 삭제"), QStringLiteral("삭제할 계정을 먼저 선택하세요"));
+        return;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("계정 삭제"));
+    box.setText(QStringLiteral("%1 계정을 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.").arg(labels.join(QStringLiteral(", "))));
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(QStringLiteral("확인"));
+    box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+    if (box.exec() != QMessageBox::Ok) return;
+
+    deleteAccounts(ids);
+}
+
+void P7SettingsPage::deleteAccounts(const QVector<int>& userIds) {
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/accounts/delete")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QJsonArray idsArray;
+    for (int id : userIds) idsArray.append(id);
+    const QJsonObject body{{"user_ids", idsArray}};
+
+    QNetworkReply* reply = netManager_->post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+        if (statusCode != 204) {
+            QMessageBox::warning(this, QStringLiteral("계정 삭제 실패"), QStringLiteral("서버에 연결할 수 없습니다"));
+            return;
+        }
+        fetchAccounts();
+    });
+}
+
+void P7SettingsPage::fetchRecipients() {
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/accounts/recipients")));
+    QNetworkReply* reply = netManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        handleRecipientsReply(reply);
+        reply->deleteLater();
+    });
+}
+
+void P7SettingsPage::handleRecipientsReply(QNetworkReply* reply) {
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode != 200) {
+        recipients_.clear();
+        return;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    std::vector<RecipientRow> rows;
+    for (const QJsonValue& value : doc.array()) {
+        const QJsonObject obj = value.toObject();
+        RecipientRow row;
+        row.id = obj.value("id").toInt();
+        row.code = obj.value("code").toString();
+        const QString robotCode = obj.value("robot_code").toString();
+        row.label = robotCode.isEmpty()
+                        ? QStringLiteral("%1 (%2)").arg(obj.value("name").toString(), obj.value("code").toString())
+                        : QStringLiteral("%1 (%2) · %3")
+                              .arg(obj.value("name").toString(), obj.value("code").toString(), robotCode);
+        row.operatorId = obj.value("operator_id").isNull() ? -1 : obj.value("operator_id").toInt();
+        rows.push_back(row);
+    }
+    recipients_ = rows;
+}
+
+void P7SettingsPage::assignRecipients(int userId, const QVector<int>& recipientIds) {
+    QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2/recipients").arg(serverUrl_).arg(userId)));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QJsonArray idsArray;
+    for (int id : recipientIds) idsArray.append(id);
+    const QJsonObject body{{"recipient_ids", idsArray}};
+
+    QNetworkReply* reply = netManager_->sendCustomRequest(request, "PUT", QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+        if (statusCode != 204) {
+            QMessageBox::warning(this, QStringLiteral("담당 배정 실패"),
+                                  QStringLiteral("계정 정보는 저장됐지만 담당 대상자 배정에는 실패했습니다"));
+            return;
+        }
+        fetchAccounts();
+        fetchRecipients();
+    });
 }
 
 void P7SettingsPage::openAccountDialog(int rowIndex) {
@@ -790,6 +1107,18 @@ void P7SettingsPage::openAccountDialog(int rowIndex) {
     AccountDialog::AccountData data;
     QStringList existingIds;
     for (const auto& acc : accounts_) existingIds << acc.id;
+
+    // 신규 등록은 아직 dbId가 없으니 전부 미체크로 보여준다 — 등록과 동시에 담당을
+    // 고를 수 있게 하되(공백으로 두면 미배정), 기존 배정 여부는 수정 모드에서만 따진다.
+    QVector<AccountDialog::RecipientOption> recipientOptions;
+    for (const RecipientRow& rc : recipients_) {
+        AccountDialog::RecipientOption option;
+        option.id = rc.id;
+        option.code = rc.code;
+        option.label = rc.label;
+        option.assigned = !isNew && rc.operatorId == accounts_[static_cast<size_t>(rowIndex)].dbId;
+        recipientOptions.push_back(option);
+    }
 
     if (!isNew) {
         const AccountRow& acc = accounts_[static_cast<size_t>(rowIndex)];
@@ -803,29 +1132,23 @@ void P7SettingsPage::openAccountDialog(int rowIndex) {
     }
 
     auto* dialog = new AccountDialog(isNew ? AccountDialog::Mode::Register : AccountDialog::Mode::Edit, data,
-                                      existingIds, this);
+                                      existingIds, recipientOptions, this);
     connect(dialog, &AccountDialog::accountSaved, this,
             [this, rowIndex, isNew](const AccountDialog::AccountData& saved) {
-                AccountRow row;
                 if (isNew) {
-                    row.charge = QStringLiteral("미배정");
-                } else {
-                    row = accounts_[static_cast<size_t>(rowIndex)];
+                    // 신규 등록은 서버(DB)에 저장하고, 응답 후 목록을 다시 불러와 반영한다.
+                    registerAccount(saved);
+                    return;
                 }
-                row.id = saved.loginId;
-                row.name = saved.displayName;
-                row.role = roleEnumToKorean(saved.role);
-                row.active = saved.active;
-                if (isNew) {
-                    accounts_.push_back(row);
-                } else {
-                    accounts_[static_cast<size_t>(rowIndex)] = row;
-                }
-                refreshAccountTable();
+                // 기존 계정 수정도 서버(DB)에 반영한다. 성공 시 updateAccount()가
+                // assignRecipients()를 거쳐 fetchAccounts()까지 다시 불러와 반영한다.
+                updateAccount(rowIndex, saved);
             });
-    connect(dialog, &AccountDialog::passwordResetRequested, this, [](const QString&) {
-        // 실제 초기화 API 연동은 범위 밖 — 이 목업 단계에서는 요청만 흘려보낸다.
-    });
+    connect(dialog, &AccountDialog::passwordChangeRequested, this,
+            [this, rowIndex](const QString&, const QString& newPassword) {
+                const int dbId = accounts_[static_cast<size_t>(rowIndex)].dbId;
+                changePassword(dbId, newPassword);
+            });
     dialog->exec();
     dialog->deleteLater();
 }

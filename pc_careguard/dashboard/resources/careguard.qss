@@ -105,6 +105,7 @@ QPushButton#linkBtn {
     font-weight: 500; min-height: 0; padding: 2px 4px;
 }
 QPushButton#linkBtn:hover { text-decoration: underline; }
+QPushButton#linkBtn:disabled { background: transparent; border: none; color: #93A0AC; }
 
 /* ---------- 상태 배지 (QLabel#badge) ---------- */
 QLabel#badge {
@@ -312,7 +313,10 @@ QCheckBox::indicator {
     width: 14px; height: 14px; border: 1px solid #CDD5DD;
     border-radius: 4px; background: #FFFFFF;
 }
-QCheckBox::indicator:checked { background: #0E9384; border-color: #0E9384; }
+QCheckBox::indicator:checked {
+    background: #0E9384; border-color: #0E9384;
+    image: url(:/icons/check.svg);
+}
 QCheckBox::indicator:hover { border-color: #0E9384; }
 
 /* 요일 칩 (checkable QPushButton#dayChip) */
