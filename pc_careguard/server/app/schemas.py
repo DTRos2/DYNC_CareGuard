@@ -15,6 +15,55 @@ class LoginResponse(BaseModel):
     role: str
 
 
+class AccountItem(BaseModel):
+    id: int
+    login_id: str
+    display_name: str  # careguard_user.display_name (NOT NULL)
+    role_code: str  # role.code: admin / operator / guardian
+    role_name: str  # role.name (한글 표시용)
+    is_active: bool
+    last_login_at: Optional[datetime] = None
+    charge_summary: Optional[str] = None  # "김순자 R-01 · 박영호 R-02" 형태. 담당 대상자 없으면 None
+
+
+class RegisterAccountRequest(BaseModel):
+    login_id: str
+    password: str
+    display_name: str
+    role_code: str  # admin / operator / guardian
+    is_active: bool = True
+
+
+class RegisterAccountResponse(AccountItem):
+    pass
+
+
+class UpdateAccountRequest(BaseModel):
+    display_name: str
+    role_code: str  # admin / operator / guardian
+    is_active: bool
+
+
+class ChangePasswordRequest(BaseModel):
+    new_password: str
+
+
+class DeleteAccountsRequest(BaseModel):
+    user_ids: List[int]  # 계정 관리 탭에서 체크박스로 선택한 계정 id 목록
+
+
+class RecipientOption(BaseModel):
+    id: int
+    code: str
+    name: str
+    robot_code: Optional[str] = None
+    operator_id: Optional[int] = None  # 현재 담당 계정 id. 계정 수정 모달의 담당 배정 체크리스트용
+
+
+class AssignRecipientsRequest(BaseModel):
+    recipient_ids: List[int]  # 이 계정이 담당할 대상자 id 전체 목록(교체 방식)
+
+
 class MediaUploadResponse(BaseModel):
     file_id: int
     camera_recording_id: int
