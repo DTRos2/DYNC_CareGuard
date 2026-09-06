@@ -99,19 +99,21 @@ class DownlinkNode(Node):
         self._patrol_client.send_goal_async(goal)
 
     def _start_slam(self, message: dict):
-        # SLAM 백엔드: Cartographer, wego 패키지가 이미 검증해둔 설정을 그대로 쓴다
-        # (careguard_bringup/launch/slam.launch.py의 slam_toolbox 가정은 이 로봇 실제
-        # 구성과 달라 폐기 — .bash_history에 남은 실사용 명령이 정확히 이 launch였다:
-        # `ros2 launch wego cartographer_launch.py`).
+        # SLAM 백엔드: Cartographer. 원래 실사용 검증된 명령은 `ros2 launch wego
+        # cartographer_launch.py`였는데(.bash_history 확인), 프로젝트 요구사항상
+        # wego_ws를 참조하지 않고 이 저장소 안에서 자체 완결되어야 해서 wego 패키지의
+        # launch/config/rviz를 careguard_bringup으로 그대로 옮겨왔다(출처는
+        # careguard_bringup/THIRD_PARTY_LICENSE_wego.Apache-2.0.txt 참고). 로직은
+        # 원본과 동일하므로 검증 결과도 그대로 유효하다.
         #
-        # 베이스 구동(limo_base+ydlidar+robot_localization, `wego teleop_launch.py`에
-        # 해당)은 이 노드가 새로 띄우지 않는다 — 이미 켜져 있다고 가정한다. 안 켜진
-        # 상태에서 limo_base를 중복 실행하면 시리얼 포트 충돌이 날 수 있어서, 여기서
-        # 자동으로 다시 띄우는 대신 사전에 별도로 켜져 있어야 한다.
+        # 베이스 구동(limo_base+ydlidar+robot_localization, careguard_bringup
+        # teleop_launch.py에 해당)은 이 노드가 새로 띄우지 않는다 — 이미 켜져 있다고
+        # 가정한다. 안 켜진 상태에서 limo_base를 중복 실행하면 시리얼 포트 충돌이 날
+        # 수 있어서, 여기서 자동으로 다시 띄우는 대신 사전에 별도로 켜져 있어야 한다.
         if self._slam_process is not None and self._slam_process.poll() is None:
             self.get_logger().warn('이미 SLAM 작업이 진행 중입니다')
             return
-        self._slam_process = subprocess.Popen(['ros2', 'launch', 'wego', 'cartographer_launch.py'])
+        self._slam_process = subprocess.Popen(['ros2', 'launch', 'careguard_bringup', 'cartographer_launch.py'])
 
 
 def main(args=None):
