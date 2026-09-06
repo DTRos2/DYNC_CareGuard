@@ -194,12 +194,56 @@ void P5MapPage::openFileRegisterDialog() {
 
     MapFileRegisterDialog dialog(this);
     connect(&dialog, &MapFileRegisterDialog::mapRegistered, this,
-            [this](const QImage& image, const QString& mapName, const QString& robotId,
-                   const QString& recipientName) {
-                slamCard_->applyRegisteredMap(image, mapName, robotId);
-                statusOverlay_->markMapDeployed(robotId, mapName, recipientName);
-                registeredMaps_[robotId] = RegisteredMapInfo{image, mapName, recipientName};
-                emit mapRegistered(image, mapName, robotId, recipientName);
+            [this, &dialog](const QImage& image, const QString& mapName, const QString& robotId,
+                            const QString& recipientName) {
+                // 예전엔 여기서 로컬 화면만 갱신하고 서버엔 아무 것도 안 보냈다 — "파일로
+                // 등록"이 SLAM 저장·배포와 달리 앱을 재시작하면 사라지는 가짜 등록이었다.
+                // 이제 실제로 업로드(POST /media/upload-map) -> 맵 확정(POST /maps)까지
+                // 끝내야만 화면(SlamMapView·매핑 현황)을 갱신한다.
+                const QString pgmPath = dialog.pgmFilePath();
+                const double resolution = dialog.resolution();
+                const double originX = dialog.originX();
+                const double originY = dialog.originY();
+                const double originYaw = dialog.originYaw();
+                const QJsonObject rawYaml = dialog.rawYaml();
+
+                apiClient_->uploadMapFile(
+                    robotId, pgmPath,
+                    [this, image, mapName, robotId, recipientName, resolution, originX, originY, originYaw,
+                     rawYaml](bool uploadOk, int fileId, const QString& uploadErr) {
+                        if (!uploadOk) {
+                            QMessageBox::warning(this, QStringLiteral("맵 등록 실패"),
+                                                  uploadErr.isEmpty() ? QStringLiteral("파일 업로드에 실패했습니다.")
+                                                                       : uploadErr);
+                            return;
+                        }
+                        ApiClient::MapCreateParams params;
+                        params.robotCode = robotId;
+                        params.mapName = mapName;
+                        params.fileId = fileId;
+                        params.resolution = resolution;
+                        params.originX = originX;
+                        params.originY = originY;
+                        params.originYaw = originYaw;
+                        params.widthPx = image.width();
+                        params.heightPx = image.height();
+                        params.rawYaml = rawYaml;
+                        apiClient_->createMap(
+                            params, [this, image, mapName, robotId, recipientName](
+                                        bool createOk, const ApiClient::MapInfo&, const QString& createErr) {
+                                if (!createOk) {
+                                    QMessageBox::warning(this, QStringLiteral("맵 등록 실패"),
+                                                          createErr.isEmpty()
+                                                              ? QStringLiteral("서버에 맵을 저장하지 못했습니다.")
+                                                              : createErr);
+                                    return;
+                                }
+                                slamCard_->applyRegisteredMap(image, mapName, robotId);
+                                statusOverlay_->markMapDeployed(robotId, mapName, recipientName);
+                                registeredMaps_[robotId] = RegisteredMapInfo{image, mapName, recipientName};
+                                emit mapRegistered(image, mapName, robotId, recipientName);
+                            });
+                    });
             });
     dialog.exec();
 

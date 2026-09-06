@@ -114,21 +114,35 @@ def upload_video(
 
 @router.post("/upload-map", response_model=MapImageUploadResponse)
 def upload_map_image(
-    robot_id: int = Form(..., description="매핑을 수행한 로봇 id"),
+    robot_code: str = Form(..., description="매핑을 수행한 로봇 code (예: R-04)"),
     file: UploadFile = File(..., description="업로드할 맵 이미지(.pgm 등) 파일"),
 ):
-    """SLAM으로 완성한 맵 이미지를 업로드해 files에 entity_type='map_image'로 기록한다.
+    """SLAM으로 완성한(또는 파일로 직접 등록하는) 맵 이미지를 업로드해 files에
+    entity_type='map_image'로 기록한다.
 
     /media/upload(영상용)를 재사용하면 entity_type이 'event_clip'으로 고정되고
-    camera_recording에도 불필요한 행이 생겨, 이후 ws/robot_ws.py::_save_slam_result의
-    "UPDATE files ... WHERE entity_type = 'map_image'" 재연결이 아무 행도 못 찾고
-    조용히 실패한다 — 그래서 맵 전용 엔드포인트를 따로 둔다.
+    camera_recording에도 불필요한 행이 생겨, 이후 map 행 재연결("UPDATE files ...
+    WHERE entity_type = 'map_image'")이 아무 행도 못 찾고 조용히 실패한다 — 그래서
+    맵 전용 엔드포인트를 따로 둔다.
+
+    다른 곳(POST /slam-jobs 등)과 마찬가지로 robot_id가 아니라 robot_code로 받는다 —
+    robots.py(로봇 목록 API)가 이번 스코프 밖이라 대시보드가 robot_id를 알 방법이
+    없다. downlink_node.py도 이미 알고 있는 자기 ROBOT_CODE를 그대로 쓰면 되므로
+    서버가 알려주는 robot_id를 따로 안 받아도 된다.
 
     업로드 시점엔 아직 map.id가 없으므로 entity_id는 임시로 robot_id를 담아 두고,
-    slam_saved 처리 시 _save_slam_result가 새로 만든 map.id로 다시 연결한다.
+    나중에 map 행이 만들어질 때(_save_slam_result 또는 POST /maps) 그 map.id로
+    다시 연결한다.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="파일이 비어 있습니다")
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
+        robot = cur.fetchone()
+    if robot is None:
+        raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+    robot_id = robot["id"]
 
     robot_dir = MAP_DIR / str(robot_id)
     robot_dir.mkdir(parents=True, exist_ok=True)

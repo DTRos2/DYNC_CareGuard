@@ -1,5 +1,9 @@
 #include "net/api_client.h"
 
+#include <QFile>
+#include <QFileInfo>
+#include <QHttpMultiPart>
+#include <QHttpPart>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -82,6 +86,19 @@ void ApiClient::sendDelete(const QString& path, SimpleCallback callback) {
     });
 }
 
+ApiClient::MapInfo ApiClient::parseMap(const QJsonObject& o) {
+    MapInfo m;
+    m.id = o.value(QStringLiteral("id")).toInt();
+    m.robotId = o.value(QStringLiteral("robot_id")).toInt();
+    m.robotCode = o.value(QStringLiteral("robot_code")).toString();
+    m.name = o.value(QStringLiteral("name")).toString();
+    m.recipientName = o.value(QStringLiteral("recipient_name")).toString();
+    m.isActive = o.value(QStringLiteral("is_active")).toBool();
+    m.imageFileId = o.value(QStringLiteral("image_file_id")).toInt();
+    m.imageUrl = o.value(QStringLiteral("image_url")).toString();
+    return m;
+}
+
 void ApiClient::fetchActiveMaps(ListCallback<MapInfo> callback) {
     getJsonArray(QStringLiteral("/maps/active"), [callback](bool ok, const QByteArray& body) {
         QVector<MapInfo> maps;
@@ -90,17 +107,7 @@ void ApiClient::fetchActiveMaps(ListCallback<MapInfo> callback) {
             return;
         }
         for (const QJsonValue& v : QJsonDocument::fromJson(body).array()) {
-            const QJsonObject o = v.toObject();
-            MapInfo m;
-            m.id = o.value(QStringLiteral("id")).toInt();
-            m.robotId = o.value(QStringLiteral("robot_id")).toInt();
-            m.robotCode = o.value(QStringLiteral("robot_code")).toString();
-            m.name = o.value(QStringLiteral("name")).toString();
-            m.recipientName = o.value(QStringLiteral("recipient_name")).toString();
-            m.isActive = o.value(QStringLiteral("is_active")).toBool();
-            m.imageFileId = o.value(QStringLiteral("image_file_id")).toInt();
-            m.imageUrl = o.value(QStringLiteral("image_url")).toString();
-            maps.append(m);
+            maps.append(parseMap(v.toObject()));
         }
         callback(true, maps);
     });
@@ -319,6 +326,73 @@ void ApiClient::saveSlamJob(int jobId, ItemCallback<SlamJobInfo> callback) {
                  job.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
                  callback(true, job, err);
              });
+}
+
+void ApiClient::uploadMapFile(const QString& robotCode, const QString& pgmFilePath, ItemCallback<int> callback) {
+    auto* file = new QFile(pgmFilePath);
+    if (!file->open(QIODevice::ReadOnly)) {
+        delete file;
+        callback(false, 0, QStringLiteral("파일을 열 수 없습니다: %1").arg(pgmFilePath));
+        return;
+    }
+
+    auto* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+
+    QHttpPart robotCodePart;
+    robotCodePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                             QVariant(QStringLiteral("form-data; name=\"robot_code\"")));
+    robotCodePart.setBody(robotCode.toUtf8());
+    multiPart->append(robotCodePart);
+
+    QHttpPart filePart;
+    filePart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant(QStringLiteral("application/octet-stream")));
+    filePart.setHeader(
+        QNetworkRequest::ContentDispositionHeader,
+        QVariant(QStringLiteral("form-data; name=\"file\"; filename=\"%1\"").arg(QFileInfo(pgmFilePath).fileName())));
+    file->setParent(multiPart);
+    filePart.setBodyDevice(file);
+    multiPart->append(filePart);
+
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/media/upload-map")));
+    QNetworkReply* reply = netManager_->post(request, multiPart);
+    multiPart->setParent(reply);
+    connect(reply, &QNetworkReply::finished, this, [reply, callback] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray respBody = reply->readAll();
+        const bool ok = statusCode >= 200 && statusCode < 300;
+        if (!ok) {
+            const QJsonObject o = QJsonDocument::fromJson(respBody).object();
+            const QString detail = o.contains(QStringLiteral("detail")) ? o.value(QStringLiteral("detail")).toString()
+                                                                          : QString::fromUtf8(respBody);
+            callback(false, 0, detail);
+        } else {
+            const QJsonObject o = QJsonDocument::fromJson(respBody).object();
+            callback(true, o.value(QStringLiteral("file_id")).toInt(), QString());
+        }
+        reply->deleteLater();
+    });
+}
+
+void ApiClient::createMap(const MapCreateParams& params, ItemCallback<MapInfo> callback) {
+    const QJsonObject body{
+        {QStringLiteral("robot_code"), params.robotCode},
+        {QStringLiteral("map_name"), params.mapName},
+        {QStringLiteral("file_id"), params.fileId},
+        {QStringLiteral("resolution"), params.resolution},
+        {QStringLiteral("origin_x"), params.originX},
+        {QStringLiteral("origin_y"), params.originY},
+        {QStringLiteral("origin_yaw"), params.originYaw},
+        {QStringLiteral("width_px"), params.widthPx},
+        {QStringLiteral("height_px"), params.heightPx},
+        {QStringLiteral("raw_yaml"), params.rawYaml},
+    };
+    postJson(QStringLiteral("/maps"), body, [callback](bool ok, const QByteArray& respBody, const QString& err) {
+        if (!ok) {
+            callback(false, MapInfo{}, err);
+            return;
+        }
+        callback(true, parseMap(QJsonDocument::fromJson(respBody).object()), err);
+    });
 }
 
 void ApiClient::startPatrolRun(int robotId, int routeId, const QString& trigger,

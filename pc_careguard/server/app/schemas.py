@@ -1,5 +1,5 @@
 from datetime import datetime, time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -112,6 +112,21 @@ class VideoEventItem(BaseModel):
     retention_until: Optional[datetime] = None
     view_count: int = 0
     view_history: List[ViewHistoryEntry] = []
+
+
+class MapCreate(BaseModel):
+    # "파일로 등록" 모달이 쓴다 — SLAM 저장(POST /slam-jobs/{id}/save)과 달리 slam_job이
+    # 없으므로 메타데이터(해상도·원점·크기)를 .yaml에서 직접 읽어 그대로 실어 보낸다.
+    robot_code: str
+    map_name: str
+    file_id: int  # POST /media/upload-map 응답의 file_id
+    resolution: float
+    origin_x: float = 0.0
+    origin_y: float = 0.0
+    origin_yaw: float = 0.0
+    width_px: int
+    height_px: int
+    raw_yaml: Dict[str, Any] = {}
 
 
 class MapItem(BaseModel):

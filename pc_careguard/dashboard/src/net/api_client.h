@@ -118,6 +118,26 @@ public:
     // 뜻이지 저장이 끝났다는 뜻이 아니다 — 실제 완료는 나중에 WS로 오는 slam_done을 봐야 한다.
     void saveSlamJob(int jobId, ItemCallback<SlamJobInfo> callback);
 
+    // POST /media/upload-map(멀티파트) — "파일로 등록" 모달이 로컬에서 고른 .pgm을
+    // 실제로 서버에 올린다. 성공하면 files.id(file_id)를 콜백에 넘긴다.
+    void uploadMapFile(const QString& robotCode, const QString& pgmFilePath, ItemCallback<int> callback);
+
+    // POST /maps — 위 업로드로 받은 file_id + .yaml에서 읽은 메타데이터로 맵을 확정한다.
+    // server/app/schemas.py::MapCreate 대응.
+    struct MapCreateParams {
+        QString robotCode;
+        QString mapName;
+        int fileId = 0;
+        double resolution = 0.0;
+        double originX = 0.0;
+        double originY = 0.0;
+        double originYaw = 0.0;
+        int widthPx = 0;
+        int heightPx = 0;
+        QJsonObject rawYaml;
+    };
+    void createMap(const MapCreateParams& params, ItemCallback<MapInfo> callback);
+
     // POST /patrol-runs — 순찰 시작.
     void startPatrolRun(int robotId, int routeId, const QString& trigger, ItemCallback<PatrolRunInfo> callback);
 
@@ -133,6 +153,7 @@ private:
     void sendDelete(const QString& path, SimpleCallback callback);
 
     static WaypointInfo parseWaypoint(const QJsonObject& o);
+    static MapInfo parseMap(const QJsonObject& o);
     static PatrolRouteInfo parsePatrolRoute(const QJsonObject& o);
     static PatrolScheduleInfo parsePatrolSchedule(const QJsonObject& o);
 

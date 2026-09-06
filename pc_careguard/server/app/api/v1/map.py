@@ -2,8 +2,10 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
 
+import psycopg2.extras
+
 from ... import db
-from ...schemas import MapItem, SlamJobCreate, SlamJobItem, WaypointCreate, WaypointItem, WaypointUpdate
+from ...schemas import MapCreate, MapItem, SlamJobCreate, SlamJobItem, WaypointCreate, WaypointItem, WaypointUpdate
 from ...ws import robot_ws
 
 router = APIRouter(prefix="/maps", tags=["map"])
@@ -57,6 +59,72 @@ def list_active_maps():
             )
         )
     return items
+
+
+@router.post("", response_model=MapItem, status_code=201)
+def create_map(payload: MapCreate):
+    """"파일로 맵 등록" 모달 — POST /media/upload-map으로 이미 올려둔 파일(file_id)을
+    맵으로 확정한다. SLAM 저장(ws/robot_ws.py::_save_slam_result)과 흐름이 같다
+    (기존 활성 맵 비활성화 -> map 행 생성 -> files.entity_id 재연결) — slam_job이
+    없다는 것과, 로봇이 아니라 대시보드가 직접 부른다는 점만 다르다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (payload.robot_code,))
+        robot = cur.fetchone()
+        if robot is None:
+            raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+        robot_id = robot["id"]
+
+        cur.execute("UPDATE map SET is_active = FALSE WHERE robot_id = %s", (robot_id,))
+        cur.execute(
+            """
+            INSERT INTO map (robot_id, name, raw_yaml, resolution, origin_x, origin_y, origin_yaw,
+                              width_px, height_px, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            RETURNING id
+            """,
+            (
+                robot_id,
+                payload.map_name,
+                psycopg2.extras.Json(payload.raw_yaml),
+                payload.resolution,
+                payload.origin_x,
+                payload.origin_y,
+                payload.origin_yaw,
+                payload.width_px,
+                payload.height_px,
+            ),
+        )
+        map_id = cur.fetchone()["id"]
+
+        cur.execute(
+            "UPDATE files SET entity_id = %s WHERE id = %s AND entity_type = 'map_image'",
+            (str(map_id), payload.file_id),
+        )
+        conn.commit()
+
+        cur.execute(
+            """
+            SELECT
+                m.id, m.robot_id, r.code AS robot_code, m.name,
+                rc.name AS recipient_name,
+                m.resolution, m.origin_x, m.origin_y, m.origin_yaw,
+                m.width_px, m.height_px, m.is_active, m.created_at,
+                f.id AS image_file_id
+            FROM map m
+            JOIN robot r ON r.id = m.robot_id
+            LEFT JOIN recipient rc
+                ON rc.robot_id = m.robot_id AND rc.deregistered_at IS NULL
+            LEFT JOIN files f
+                ON f.entity_type = 'map_image' AND f.entity_id = m.id::text AND f.deleted_at IS NULL
+            WHERE m.id = %s
+            """,
+            (map_id,),
+        )
+        row = cur.fetchone()
+
+    image_file_id = row["image_file_id"]
+    return MapItem(**row, image_url=f"/media/files/{image_file_id}" if image_file_id else None)
 
 
 @waypoints_router.get("", response_model=List[WaypointItem])
@@ -257,7 +325,6 @@ async def save_slam_job(job_id: int):
             "type": "save_map",
             "job_id": job_id,
             "map_name": row["map_name"],
-            "robot_id": row["robot_id"],
         },
     )
     if not connected:

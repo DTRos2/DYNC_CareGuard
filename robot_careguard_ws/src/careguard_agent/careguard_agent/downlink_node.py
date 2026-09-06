@@ -160,7 +160,6 @@ class DownlinkNode(Node):
         # 지금까지 그린 지도를 저장할 수 있다 — 그래서 slam_stop보다 먼저 이걸 부르는
         # 순서를 대시보드/서버 쪽에서 지켜야 한다(이 노드는 순서를 강제하지 않는다).
         job_id = message.get('job_id')
-        robot_id = message.get('robot_id')
         out_prefix = f'/tmp/careguard_map_job{job_id}'
 
         try:
@@ -187,7 +186,7 @@ class DownlinkNode(Node):
             return
 
         try:
-            file_id = media_uploader.upload_map_image(image_path, robot_id)
+            file_id = media_uploader.upload_map_image(image_path)
         except Exception as exc:  # noqa: BLE001 - 업로드 실패해도 프로세스는 계속 떠 있어야 한다
             self.get_logger().error(f'맵 이미지 업로드 실패: {exc}')
             return

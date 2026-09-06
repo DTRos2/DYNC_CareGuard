@@ -1,7 +1,7 @@
 """careguard_agent/media_uploader.py
 
 완성된 SLAM 맵 이미지를 서버에 업로드한다. POST /media/upload-map(멀티파트:
-robot_id/file)로 files 행을 entity_type='map_image'로 만든 뒤, 그 file_id를
+robot_code/file)로 files 행을 entity_type='map_image'로 만든 뒤, 그 file_id를
 slam_saved WS 메시지에 실어 보낸다. app/ws/robot_ws.py::_save_slam_result가
 그 file_id로 files.entity_id를 새 map.id로 다시 연결한다.
 
@@ -17,12 +17,17 @@ import requests
 from . import ws_config
 
 
-def upload_map_image(image_path: str, robot_id: int) -> int:
-    """map.pgm(또는 png)을 업로드하고 files.id를 반환한다."""
+def upload_map_image(image_path: str, robot_code: str = None) -> int:
+    """map.pgm(또는 png)을 업로드하고 files.id를 반환한다.
+
+    robot_code를 안 넘기면 이 로봇 자신의 ws_config.ROBOT_CODE를 쓴다 — 서버가
+    robot_id를 따로 알려줄 필요가 없다(대시보드도 robot_id를 모르는 채로 같은
+    엔드포인트를 쓸 수 있게 하려고 robot_id 대신 robot_code를 받도록 맞췄다).
+    """
     with open(image_path, 'rb') as f:
         response = requests.post(
             f'{ws_config.SERVER_HTTP_URL}/media/upload-map',
-            data={'robot_id': robot_id},
+            data={'robot_code': robot_code or ws_config.ROBOT_CODE},
             files={'file': f},
             timeout=30,
         )
