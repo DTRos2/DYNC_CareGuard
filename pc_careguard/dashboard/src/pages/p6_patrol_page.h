@@ -19,6 +19,7 @@ class QHBoxLayout;
 class QStackedLayout;
 class WaypointPopover;
 class QKeyEvent;
+class QShowEvent;
 class QMenu;
 class QFrame;
 class WsClient;
@@ -42,6 +43,11 @@ protected:
     // 연다. p6_patrol_route_wireframe.html의 목록 행에는 별도 액션 아이콘이 없어서,
     // 대신 행 전체를 눌러 편집으로 들어가는 방식으로 그 상호작용을 유지한다.
     bool eventFilter(QObject* watched, QEvent* event) override;
+    // 이 페이지가 QStackedWidget에서 현재 화면으로 뜰 때마다 호출된다(MainWindow가
+    // 페이지를 전환할 때, 즉 사용자가 P6 탭으로 넘어올 때). "순찰 시작"/"이동"을
+    // 누르기 전에도 로봇 현재 위치를 먼저 보고 싶다는 요청 — 여기서 Nav2를 미리
+    // 준비시킨다(순찰 명령은 안 보냄).
+    void showEvent(QShowEvent* event) override;
 
 private:
     struct Schedule {
@@ -74,6 +80,12 @@ private:
     };
 
     QWidget* buildHeaderRow();
+    // WsClient가 끊기면(체크리스트 ⑩) 보여줄 배너 — P5MapPage::buildConnectionBanner()와
+    // 같은 패턴(QFrame#banner, level="attention"). 재연결 시도 중임을 알린다.
+    QFrame* buildConnectionBanner();
+    // 로봇(downlink_node)이 서버와 끊겼을 때 보여줄 배너 — connectionBanner_와 달리
+    // "PC는 서버에 붙어있는데 로봇만 명령을 못 받는" 상황을 알린다.
+    QFrame* buildRobotOfflineBanner();
     QWidget* buildCanvasCard();
     QWidget* buildRightColumn();
     QWidget* buildWpListCard();
@@ -92,6 +104,9 @@ private:
 
     void handleCanvasAddRequested(QPointF pos);
     void handleCanvasEditRequested(const QString& id);
+    // popover_를 anchor 근처(오른쪽 아래)에 띄우되, 창 오른쪽·아래 경계를 넘지 않게
+    // clamp한다 — handleCanvasAddRequested/handleCanvasEditRequested가 공유한다.
+    void movePopoverNear(const QPoint& anchor);
     void handleCanvasDeleteRequested(const QString& id);
     void handleCanvasMoved(const QString& id, QPointF pos);
     void handlePopoverSave(const QString& id, const QString& name, bool charging, qreal yaw, QPointF pos);
@@ -125,6 +140,15 @@ private:
     // 순서대로 채운다. 다 채우면 다음 맵(index+1)으로 넘어간다.
     void loadServerRouteSchedules(std::shared_ptr<QVector<MapData>> maps, int mapIndex,
                                    QVector<ApiClient::PatrolRouteInfo> routes, int routeIndex);
+    // slam_done(다른 화면에서 SLAM 맵 저장이 끝남) 수신 시 이 robotCode의 맵 하나만
+    // 새로 조회해 upsertMap()으로 병합한다. loadMapsFromServer()를 통째로 다시 부르면
+    // maps_ 전체가 서버 스냅샷으로 교체되면서 사용자가 지금 편집 중인 다른 맵의
+    // 웨이포인트·경로가 날아가므로 쓰지 않는다.
+    void refreshMapForRobot(const QString& robotCode);
+    // 지금 보고 있는 맵(currentMapIndex_)의 로봇에 nav_prepare를 보낸다 —
+    // showEvent(페이지 전환)와 loadMapData(맵 전환) 둘 다에서 부른다. serverMapId가
+    // 아직 없는(서버 미동기화) 맵이면 조용히 아무 것도 안 한다.
+    void prepareNavigationForCurrentMap();
 
     // "저장 · 로봇에 배포" 버튼 — 현재 맵의 웨이포인트·경로를 서버에 반영한다. 서버에
     // 등록된 맵(serverMapId > 0)에서만 동작한다. 기존에 동기화된 경로·웨이포인트를 모두
@@ -141,7 +165,8 @@ private:
     void finishDeploy(bool hadError);
 
     // /ws/dashboard로 들어온 메시지 처리 — robot_position이 현재 맵의 로봇이면 캔버스의
-    // "현재 위치" 마커를 실시간으로 갱신한다(체크리스트 ⑤).
+    // "현재 위치" 마커를 실시간으로 갱신한다(체크리스트 ⑤). slam_done이면 해당 로봇의
+    // 맵을 새로 조회해 드롭다운(맵 메뉴)에 반영한다.
     void handleWsMessage(const QJsonObject& message);
 
     QPushButton* mapChipBtn_;
@@ -169,6 +194,11 @@ private:
     WaypointPopover* popover_;
     QWidget* canvasToolbarRow_;
     QFrame* routeEditBanner_;
+    QFrame* connectionBanner_;
+    QFrame* robotOfflineBanner_;
+    // 서버로부터 이 로봇의 robot_status를 아직 못 받았으면 안전하게 오프라인으로
+    // 간주한다 — 그래서 기본값이 false다.
+    bool robotOnline_ = false;
 
     QVector<WaypointCanvas::Waypoint> waypoints_;
     QMap<QString, QVector<QString>> routes_;

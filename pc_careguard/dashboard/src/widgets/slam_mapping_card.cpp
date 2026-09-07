@@ -428,13 +428,21 @@ void SlamMappingCard::setVelocity(qreal linearMps, qreal angularRadps) {
 }
 
 void SlamMappingCard::tickElapsed() {
+    // 서버(slam_progress)가 아직 한 번도 안 왔거나 다음 갱신 사이를 메우는 로컬
+    // 보간용 카운트업 — applyProgress()가 오면 그 값으로 덮어써 드리프트를 바로잡는다.
     ++elapsedSeconds_;
+    updateStatsLabel();
+}
+
+void SlamMappingCard::applyProgress(int elapsedSec, qreal areaM2) {
+    elapsedSeconds_ = elapsedSec;
+    areaM2_ = areaM2;
+    updateStatsLabel();
+}
+
+void SlamMappingCard::updateStatsLabel() {
     const int m = elapsedSeconds_ / 60;
     const int s = elapsedSeconds_ % 60;
-    // 탐색 면적(areaM2_)은 실제 점유격자를 세지 않는 자리표시자다 — 예전엔 텔레옵
-    // 속도를 픽셀 단위로 적분한 가짜 이동거리로 늘렸는데, 그 가짜 시뮬레이션 자체를
-    // 제거하면서 값이 늘어날 방법이 없어졌다. 실제 탐색 면적 계산(점유격자 셀 카운트)은
-    // 이번 스코프 밖이라 0에서 시작해 "매핑 재시작"에 맞춰 리셋만 한다.
     elapsedLabel_->setText(QStringLiteral("경과 %1:%2 · %3 m²")
                                 .arg(m, 2, 10, QChar('0'))
                                 .arg(s, 2, 10, QChar('0'))

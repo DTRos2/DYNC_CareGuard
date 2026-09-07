@@ -1,4 +1,4 @@
-#include "map_preview_dialog.h"
+#include "p5_map_preview_dialog.h"
 
 #include <QFrame>
 #include <QHBoxLayout>

@@ -15,8 +15,8 @@
 #include <QJsonArray>
 #include <QJsonObject>
 
-#include "dialogs/map_file_register_dialog.h"
-#include "dialogs/map_preview_dialog.h"
+#include "dialogs/p5_map_file_register_dialog.h"
+#include "dialogs/p5_map_preview_dialog.h"
 #include "net/api_client.h"
 #include "net/ws_client.h"
 #include "theme/tokens.h"
@@ -35,6 +35,12 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
     layout->setSpacing(Tokens::Layout::CARD_GAP);
 
     layout->addWidget(buildHeaderRow());
+
+    connectionBanner_ = buildConnectionBanner();
+    layout->addWidget(connectionBanner_);
+
+    robotOfflineBanner_ = buildRobotOfflineBanner();
+    layout->addWidget(robotOfflineBanner_);
 
     statusOverlay_ = new MappingStatusOverlay(this);
     connect(statusOverlay_, &MappingStatusOverlay::mapPreviewRequested, this,
@@ -78,7 +84,53 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
 
     wsClient_ = new WsClient(this);
     connect(wsClient_, &WsClient::messageReceived, this, &P5MapPage::handleWsMessage);
+    connect(wsClient_, &WsClient::connectionStateChanged, this,
+            [this](bool connected) { connectionBanner_->setVisible(!connected); });
     wsClient_->connectToServer();
+}
+
+QFrame* P5MapPage::buildRobotOfflineBanner() {
+    // connectionBanner_(PC<->서버)와 별개 — 이건 로봇(downlink_node)<->서버 연결
+    // 상태다. 카메라(uplink)는 계속 잘 보이는데 명령만 조용히 안 먹히는 상황이 실제로
+    // 있었어서 level="emergency"(빨강)로 더 눈에 띄게 한다. 서버에서 아직 아무
+    // robot_status도 못 받은 시작 시점엔 "안전하게" 오프라인으로 간주해 처음부터
+    // 보이는 상태로 둔다(hide() 안 함) — handleWsMessage가 online:true를 받으면 숨긴다.
+    auto* banner = new QFrame(this);
+    banner->setObjectName("banner");
+    banner->setProperty("level", "emergency");
+    auto* bannerLayout = new QHBoxLayout(banner);
+    bannerLayout->setContentsMargins(10, 7, 10, 7);
+    bannerLayout->setSpacing(6);
+    auto* icon = new QLabel(banner);
+    icon->setPixmap(SimpleIcons::alertCircle(Tokens::EMERGENCY.main, 12).pixmap(12, 12));
+    bannerLayout->addWidget(icon);
+    auto* text = new QLabel(
+        QStringLiteral("로봇 오프라인 · 명령(텔레옵·저장 등)이 전달되지 않습니다"), banner);
+    text->setStyleSheet(QStringLiteral("font-weight:500;"));
+    bannerLayout->addWidget(text);
+    bannerLayout->addStretch();
+    return banner;
+}
+
+QFrame* P5MapPage::buildConnectionBanner() {
+    // WsClient는 끊기면 내부적으로 3초 간격 재연결을 이미 하고 있었지만(체크리스트 ⑩),
+    // 그 상태를 화면에 보여주는 곳이 어디에도 없어서 "화면이 멈췄는데 이유를 모르겠다"는
+    // 증상으로만 보였다 — routeEditBanner_(P6)와 같은 QFrame#banner 패턴을 재사용한다.
+    auto* banner = new QFrame(this);
+    banner->setObjectName("banner");
+    banner->setProperty("level", "attention");
+    auto* bannerLayout = new QHBoxLayout(banner);
+    bannerLayout->setContentsMargins(10, 7, 10, 7);
+    bannerLayout->setSpacing(6);
+    auto* icon = new QLabel(banner);
+    icon->setPixmap(SimpleIcons::plugOff(Tokens::ATTENTION.main, 12).pixmap(12, 12));
+    bannerLayout->addWidget(icon);
+    auto* text = new QLabel(QStringLiteral("서버 연결 끊김 · 재연결 시도 중…"), banner);
+    text->setStyleSheet(QStringLiteral("font-weight:500;"));
+    bannerLayout->addWidget(text);
+    bannerLayout->addStretch();
+    banner->hide();
+    return banner;
 }
 
 QWidget* P5MapPage::buildHeaderRow() {
@@ -362,6 +414,17 @@ void P5MapPage::restartMappingOnServer() {
 void P5MapPage::handleWsMessage(const QJsonObject& message) {
     const QString type = message.value(QStringLiteral("type")).toString();
 
+    if (type == QStringLiteral("robot_status")) {
+        // 로봇(downlink_node)이 서버와 실제로 붙어있는지 — connectionBanner_(PC<->서버)와
+        // 별개다. 이게 없으면 와이파이가 불안정할 때 카메라(uplink)는 계속 잘 보이는데
+        // teleop 명령은 조용히 무시되는 상황(실제로 겪음)에서 사용자가 끊긴 줄 모른 채
+        // 화살표를 누르며 "왜 안 움직이지"만 반복하게 된다 — 안전 문제라 반드시 표시한다.
+        if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
+        robotOnline_ = message.value(QStringLiteral("online")).toBool();
+        robotOfflineBanner_->setVisible(!robotOnline_);
+        return;
+    }
+
     if (type == QStringLiteral("slam_map_update")) {
         // SLAM 도중 실시간 지도 미리보기 — uplink_node.py가 /map(OccupancyGrid)을 PGM
         // 바이트로 인코딩해 base64로 보낸 것을 디코딩해 SlamMapView 배경으로 그대로
@@ -438,9 +501,13 @@ void P5MapPage::handleWsMessage(const QJsonObject& message) {
                                       QStringLiteral("SLAM 맵이 저장되고 %1에 배포되었습니다.")
                                           .arg(currentRobotCode_));
         }
+    } else {
+        // slam_progress: 로봇의 slam_progress_publisher가 1Hz로 보낸 실제 경과시간·
+        // occupancy grid 탐색면적. SlamMappingCard의 "경과 MM:SS · 면적 m²" 표시란에
+        // 그대로 반영한다.
+        slamCard_->applyProgress(message.value(QStringLiteral("elapsed_sec")).toInt(),
+                                  message.value(QStringLiteral("area_m2")).toDouble());
     }
-    // slam_progress는 지금은 별도 진행률 라벨이 없어 무시한다 — SlamMappingCard가 이미
-    // 텔레옵 기반 경과시간·탐색면적을 자체적으로 보여주고 있다(로컬 시각 피드백 유지).
 }
 
 void P5MapPage::handleEmergencyStop() {
