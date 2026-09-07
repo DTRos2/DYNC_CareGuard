@@ -4,7 +4,8 @@ import psycopg2.extras
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from . import dashboard_ws
-from .. import db, media
+from .. import db
+from ..api.v1 import media
 
 router = APIRouter()
 
