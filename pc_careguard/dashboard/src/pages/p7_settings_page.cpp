@@ -1,8 +1,12 @@
 #include "p7_settings_page.h"
 
 #include <QAbstractItemView>
+#include <QButtonGroup>
 #include <QCheckBox>
+#include <QDate>
+#include <QDateEdit>
 #include <QDateTime>
+#include <QEvent>
 #include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -20,12 +24,16 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QUrlQuery>
 #include <QVBoxLayout>
 #include <algorithm>
 
 #include "dialogs/p7_account_dialog.h"
 #include "dialogs/p7_robot_dialog.h"
+#include "theme/calendar_style.h"
 #include "theme/tokens.h"
+#include "widgets/careguard_date_edit.h"
+#include "widgets/live_search_line_edit.h"
 #include "widgets/simple_icons.h"
 
 namespace {
@@ -65,6 +73,17 @@ QLabel* linkText(const QString& text, const QColor& color = Tokens::ACCENT_HOVER
     label->setStyleSheet(QStringLiteral("color:%1;font-weight:500;").arg(color.name()));
     label->setAlignment(Qt::AlignCenter);
     return label;
+}
+
+QLabel* makeMutedLabel(const QString& text, QWidget* parent) {
+    auto* label = new QLabel(text, parent);
+    label->setProperty("role", "muted");
+    return label;
+}
+
+void repolish(QWidget* widget) {
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
 }
 
 QFrame* card(QWidget* parent = nullptr) {
@@ -135,6 +154,16 @@ void P7SettingsPage::setCurrentUserLoginId(const QString& loginId) {
     if (accountTable_ != nullptr) refreshAccountTable();
 }
 
+bool P7SettingsPage::eventFilter(QObject* watched, QEvent* event) {
+    // P2EventPage::eventFilter와 동일한 패턴 — 읽기 전용 날짜 칸 클릭을 "직접"로 전환.
+    if (event->type() == QEvent::MouseButtonPress &&
+        (watched == auditStartDateEdit_ || watched == auditEndDateEdit_) &&
+        auditStartDateEdit_->isReadOnly()) {
+        applyAuditPeriodPreset(-1);
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     robots_ = {
         {QStringLiteral("R-01"), QStringLiteral("192.168.0.11"), QStringLiteral("/limo_01"),
@@ -167,16 +196,9 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
 
     // 계정 목록은 하드코딩하지 않고 DB에서 불러온다 (fetchAccounts(), 생성자 마지막에서 호출).
 
-    auditLog_ = {
-        {QStringLiteral("08.26 14:30"), QStringLiteral("도희정"), QStringLiteral("영상 열람"),
-         QStringLiteral("EV-260826-014 · 사유: 긴급 경보 초기 상황 확인"), true},
-        {QStringLiteral("08.26 12:45"), QStringLiteral("강유나"), QStringLiteral("보호자 문자"),
-         QStringLiteral("박영호 · 아침 약 미수령 알림 발송"), false},
-        {QStringLiteral("08.25 16:20"), QStringLiteral("김예은"), QStringLiteral("이벤트 완료"),
-         QStringLiteral("EV-260825-041 · 메모: 보호자 통화로 정상 확인"), true},
-        {QStringLiteral("08.24 17:20"), QStringLiteral("admin"), QStringLiteral("맵 배포"),
-         QStringLiteral("솔마을 7호 → R-03 · 웨이포인트 4개"), false},
-    };
+    // 감사 로그도 하드코딩된 목업을 걷어냈다 — 아직 실제 조회 API가 없어서 당장은
+    // 빈 목록으로 시작한다. user_action_log(+ care_action의 119/112 신고) 조회 API가
+    // 생기면 여기서 fetchAuditLog() 등으로 채우면 된다.
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(Tokens::Layout::PAGE_PADDING, Tokens::Layout::PAGE_PADDING,
@@ -191,7 +213,7 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     tabs->addTab(buildRobotTab(), QStringLiteral("로봇 관리"));
     tabs->addTab(buildAccountTab(), QStringLiteral("계정 관리"));
     tabs->addTab(buildThresholdTab(), QStringLiteral("임계값 · 알림"));
-    tabs->addTab(buildAuditTab(), QStringLiteral("감사 로그"));
+    tabs->addTab(buildAuditTab(), QStringLiteral("로그"));
     layout->addWidget(tabs);
 
     serverUrl_ = QProcessEnvironment::systemEnvironment().value(
@@ -199,6 +221,7 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     netManager_ = new QNetworkAccessManager(this);
     fetchAccounts();
     fetchRecipients();
+    fetchAuditLog();
 }
 
 QWidget* P7SettingsPage::buildRobotTab() {
@@ -448,10 +471,6 @@ QWidget* P7SettingsPage::buildThresholdTab() {
         thresholdRow(QStringLiteral("미수령 판정 시간"), thresholdField("10"), QStringLiteral("분")));
     medLayout->addWidget(
         thresholdRow(QStringLiteral("재안내 횟수"), thresholdField("2"), QStringLiteral("회")));
-    auto* medNote = new QLabel(QStringLiteral("심박 임계값은 대상자별 설정(대상자 관리)이 우선합니다"), medCard);
-    medNote->setProperty("role", "muted");
-    medNote->setWordWrap(true);
-    medLayout->addWidget(medNote);
     cardsLayout->addWidget(medCard);
 
     layout->addWidget(cardsRow);
@@ -497,38 +516,173 @@ QWidget* P7SettingsPage::buildAuditTab() {
     auto* filterLayout = new QHBoxLayout(filterRow);
     filterLayout->setContentsMargins(0, 0, 0, 0);
     filterLayout->setSpacing(6);
-    const QString filterLabels[] = {QStringLiteral("계정 전체"), QStringLiteral("행위 전체"),
-                                     QStringLiteral("최근 7일")};
-    for (const auto& text : filterLabels) {
-        auto* chip = new QPushButton(SimpleIcons::chevronDown(Tokens::TEXT_SECONDARY, 11), text, filterRow);
-        chip->setProperty("variant", "secondary");
-        chip->setIconSize(QSize(11, 11));
-        chip->setLayoutDirection(Qt::RightToLeft);
-        filterLayout->addWidget(chip);
+
+    // 기간 세그먼트 + 날짜 범위 + 검색 — P2EventPage::buildFilterBar()와 동일한 구성을 그대로 가져왔다.
+    const QDate today = QDate::currentDate();
+
+    auto* periodSeg = new QWidget(filterRow);
+    auto* periodSegLayout = new QHBoxLayout(periodSeg);
+    periodSegLayout->setContentsMargins(0, 0, 0, 0);
+    periodSegLayout->setSpacing(0);
+
+    auto* periodTodayBtn = new QPushButton(QStringLiteral("오늘"), periodSeg);
+    auto* periodWeekBtn = new QPushButton(QStringLiteral("7일"), periodSeg);
+    auto* periodMonthBtn = new QPushButton(QStringLiteral("30일"), periodSeg);
+    auditPeriodCustomBtn_ = new QPushButton(QStringLiteral("직접"), periodSeg);
+    periodTodayBtn->setProperty("pos", "first");
+    auditPeriodCustomBtn_->setProperty("pos", "last");
+
+    auto* periodGroup = new QButtonGroup(this);
+    periodGroup->setExclusive(true);
+    for (auto* btn : {periodTodayBtn, periodWeekBtn, periodMonthBtn, auditPeriodCustomBtn_}) {
+        btn->setObjectName("segBtn");
+        btn->setCheckable(true);
+        periodSegLayout->addWidget(btn);
+        periodGroup->addButton(btn);
     }
-    filterLayout->addStretch();
+    periodWeekBtn->setChecked(true);  // 기존 "최근 7일" 기본값을 그대로 유지
+    filterLayout->addWidget(periodSeg);
+
+    connect(periodTodayBtn, &QPushButton::clicked, this, [this] { applyAuditPeriodPreset(0); });
+    connect(periodWeekBtn, &QPushButton::clicked, this, [this] { applyAuditPeriodPreset(6); });
+    connect(periodMonthBtn, &QPushButton::clicked, this, [this] { applyAuditPeriodPreset(29); });
+    connect(auditPeriodCustomBtn_, &QPushButton::clicked, this, [this] { applyAuditPeriodPreset(-1); });
+
+    auditStartDateEdit_ = new CareGuardDateEdit(today, filterRow);
+    CareGuard::applyCareGuardDateEdit(auditStartDateEdit_);
+    filterLayout->addWidget(auditStartDateEdit_);
+
+    filterLayout->addWidget(makeMutedLabel(QStringLiteral("~"), filterRow));
+    auditEndDateEdit_ = new CareGuardDateEdit(today, filterRow);
+    CareGuard::applyCareGuardDateEdit(auditEndDateEdit_);
+    filterLayout->addWidget(auditEndDateEdit_);
+
+    connect(auditStartDateEdit_, &QDateEdit::dateChanged, this, &P7SettingsPage::onAuditDateRangeChanged);
+    connect(auditEndDateEdit_, &QDateEdit::dateChanged, this, &P7SettingsPage::onAuditDateRangeChanged);
+    // 읽기 전용 칸은 클릭이 편집으로 이어지지 않으니, 클릭 자체를 잡아 "직접"로 전환한다.
+    auditStartDateEdit_->installEventFilter(this);
+    auditEndDateEdit_->installEventFilter(this);
+
+    applyAuditPeriodPreset(6);  // 초기 상태: 최근 7일, 읽기 전용
+
+    auditSearchEdit_ = new LiveSearchLineEdit(filterRow);
+    auditSearchEdit_->setPlaceholderText(QStringLiteral("계정·행위·대상 검색"));
+    connect(auditSearchEdit_, &LiveSearchLineEdit::liveTextChanged, this, [this](const QString& text) {
+        auditSearchText_ = text;
+        fetchAuditLog();
+    });
+    filterLayout->addWidget(auditSearchEdit_, /*stretch=*/1);
     layout->addWidget(filterRow);
 
-    auto* table = new QTableWidget(tab);
+    auditTable_ = new QTableWidget(tab);
     const QStringList headers = {QStringLiteral("시각"), QStringLiteral("계정"), QStringLiteral("행위"),
                                   QStringLiteral("대상 · 상세")};
-    table->setColumnCount(headers.size());
-    table->setHorizontalHeaderLabels(headers);
-    table->verticalHeader()->setVisible(false);
-    table->verticalHeader()->setDefaultSectionSize(Tokens::Layout::TABLE_ROW_H);
-    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    table->setSelectionMode(QAbstractItemView::NoSelection);
-    table->setFocusPolicy(Qt::NoFocus);
-    table->setShowGrid(false);
+    auditTable_->setColumnCount(headers.size());
+    auditTable_->setHorizontalHeaderLabels(headers);
+    auditTable_->verticalHeader()->setVisible(false);
+    auditTable_->verticalHeader()->setDefaultSectionSize(Tokens::Layout::TABLE_ROW_H);
+    auditTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    auditTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    auditTable_->setFocusPolicy(Qt::NoFocus);
+    auditTable_->setShowGrid(false);
 
-    auto* header = table->horizontalHeader();
+    auto* header = auditTable_->horizontalHeader();
     header->setSectionResizeMode(QHeaderView::Interactive);
     header->setSectionResizeMode(3, QHeaderView::Stretch);
-    table->setColumnWidth(0, 110);
-    table->setColumnWidth(1, 80);
-    table->setColumnWidth(2, 110);
+    auditTable_->setColumnWidth(0, 200);
+    auditTable_->setColumnWidth(1, 220);
+    auditTable_->setColumnWidth(2, 260);
+    layout->addWidget(auditTable_, /*stretch=*/1);
 
-    table->setRowCount(static_cast<int>(auditLog_.size()));
+    // netManager_는 생성자 맨 마지막에 초기화되므로, 최초 조회는 여기서 바로 하지 않고
+    // 생성자 끝에서 한다(fetchAccounts()/fetchRecipients()와 동일한 순서 규칙).
+
+    return tab;
+}
+
+void P7SettingsPage::onAuditDateRangeChanged() {
+    // 시작이 끝보다 늦으면 끝을 시작에 맞춰 밀어준다 (P2EventPage::onDateRangeChanged와 동일 규칙).
+    if (auditStartDateEdit_->date() > auditEndDateEdit_->date()) {
+        auditEndDateEdit_->setDate(auditStartDateEdit_->date());
+        return;  // setDate가 다시 dateChanged를 내서 아래 fetchAuditLog()까지 이어진다.
+    }
+    fetchAuditLog();
+}
+
+void P7SettingsPage::applyAuditPeriodPreset(int spanDays) {
+    if (spanDays >= 0) {
+        const QDate today = QDate::currentDate();
+        auditStartDateEdit_->setDate(today.addDays(-spanDays));
+        auditEndDateEdit_->setDate(today);
+        setAuditDateEditsReadOnly(true);
+    } else {
+        setAuditDateEditsReadOnly(false);
+        if (!auditPeriodCustomBtn_->isChecked()) {
+            auditPeriodCustomBtn_->setChecked(true);  // 날짜 칸을 직접 클릭해 진입한 경우
+        }
+    }
+}
+
+void P7SettingsPage::setAuditDateEditsReadOnly(bool readOnly) {
+    for (auto* edit : {auditStartDateEdit_, auditEndDateEdit_}) {
+        edit->setReadOnly(readOnly);
+        edit->setProperty("state", readOnly ? QStringLiteral("off") : QVariant());
+        repolish(edit);
+    }
+}
+
+void P7SettingsPage::fetchAuditLog() {
+    // 생성자에서 탭을 먼저 만들고 netManager_는 맨 마지막에 초기화한다(계정 탭도 동일 순서).
+    // 날짜 칸 초기값 설정(applyAuditPeriodPreset)이 dateChanged를 통해 이 함수를 이 시점에
+    // 먼저 불러버리므로, 아직 준비 안 된 상태면 조용히 넘어가고 생성자 마지막의 명시적
+    // 호출이 실제 최초 조회를 담당한다.
+    if (auditStartDateEdit_ == nullptr || netManager_ == nullptr) return;
+
+    QUrl url(serverUrl_ + QStringLiteral("/audit-log"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("start"), auditStartDateEdit_->date().toString(Qt::ISODate));
+    query.addQueryItem(QStringLiteral("end"), auditEndDateEdit_->date().toString(Qt::ISODate));
+    if (!auditSearchText_.trimmed().isEmpty()) {
+        query.addQueryItem(QStringLiteral("q"), auditSearchText_.trimmed());
+    }
+    url.setQuery(query);
+
+    QNetworkReply* reply = netManager_->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        handleAuditLogReply(reply);
+        reply->deleteLater();
+    });
+}
+
+void P7SettingsPage::handleAuditLogReply(QNetworkReply* reply) {
+    auditLog_.clear();
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode == 200) {
+        for (const QJsonValue& value : QJsonDocument::fromJson(reply->readAll()).array()) {
+            const QJsonObject obj = value.toObject();
+
+            // occurred_at은 ISO 8601("...+09:00")로 온다. 초 이하 자릿수가 서버·행마다
+            // 다를 수 있어(마이크로초 vs 없음) 두 포맷을 순서대로 시도한다.
+            const QString iso = obj.value("occurred_at").toString();
+            QDateTime occurredAt = QDateTime::fromString(iso, Qt::ISODateWithMs);
+            if (!occurredAt.isValid()) occurredAt = QDateTime::fromString(iso, Qt::ISODate);
+
+            AuditRow row;
+            row.time = occurredAt.toString(QStringLiteral("MM.dd HH:mm"));
+            row.account = obj.value("account").toString(QStringLiteral("-"));
+            row.action = obj.value("action").toString();
+            row.detail = obj.value("detail").toString();
+            row.highlight = obj.value("highlight").toBool();
+            auditLog_.push_back(row);
+        }
+    }
+    refreshAuditTable();
+}
+
+void P7SettingsPage::refreshAuditTable() {
+    if (auditTable_ == nullptr) return;
+
+    auditTable_->setRowCount(static_cast<int>(auditLog_.size()));
     for (int r = 0; r < static_cast<int>(auditLog_.size()); ++r) {
         const AuditRow& log = auditLog_[static_cast<size_t>(r)];
 
@@ -536,11 +690,11 @@ QWidget* P7SettingsPage::buildAuditTab() {
         timeItem->setFont(QFont(Tokens::Font::MONO));
         timeItem->setTextAlignment(Qt::AlignCenter);
         timeItem->setForeground(Tokens::TEXT_SECONDARY);
-        table->setItem(r, 0, timeItem);
+        auditTable_->setItem(r, 0, timeItem);
 
         auto* accountItem = new QTableWidgetItem(log.account);
         accountItem->setTextAlignment(Qt::AlignCenter);
-        table->setItem(r, 1, accountItem);
+        auditTable_->setItem(r, 1, accountItem);
 
         auto* actionItem = new QTableWidgetItem(log.action);
         actionItem->setTextAlignment(Qt::AlignCenter);
@@ -550,20 +704,12 @@ QWidget* P7SettingsPage::buildAuditTab() {
             f.setWeight(QFont::DemiBold);
             actionItem->setFont(f);
         }
-        table->setItem(r, 2, actionItem);
+        auditTable_->setItem(r, 2, actionItem);
 
         auto* detailItem = new QTableWidgetItem(log.detail);
-        detailItem->setTextAlignment(Qt::AlignVCenter | Qt::AlignLeft);
-        table->setItem(r, 3, detailItem);
+        detailItem->setTextAlignment(Qt::AlignCenter);
+        auditTable_->setItem(r, 3, detailItem);
     }
-    layout->addWidget(table, /*stretch=*/1);
-
-    auto* footnote = new QLabel(
-        QStringLiteral("영상 열람 · 이벤트 완료 · E-STOP · 119 모의 신고는 빨간 강조 — 책임 추적 대상 행위"), tab);
-    footnote->setProperty("role", "muted");
-    layout->addWidget(footnote);
-
-    return tab;
 }
 
 void P7SettingsPage::populateRobotRow(int r) {

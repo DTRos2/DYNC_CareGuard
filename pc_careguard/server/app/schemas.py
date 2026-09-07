@@ -52,6 +52,14 @@ class DeleteAccountsRequest(BaseModel):
     user_ids: List[int]  # 계정 관리 탭에서 체크박스로 선택한 계정 id 목록
 
 
+class AuditLogEntry(BaseModel):
+    occurred_at: datetime
+    account: Optional[str] = None  # 조치한 계정의 표시 이름(없으면 로그인 ID, 그마저 없으면 None)
+    action: str        # 한글 라벨 — audit.py의 라벨 표에서 변환
+    detail: str        # "대상 · 상세" 컬럼에 그대로 표시
+    highlight: bool    # 영상 열람·이벤트 완료·E-STOP·119/112 신고 등 책임 추적 대상 여부
+
+
 class RecipientOption(BaseModel):
     id: int
     code: str

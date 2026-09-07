@@ -8,6 +8,7 @@ from .accounts import router as accounts_router
 from .api.v1 import map as map_api
 from .api.v1 import patrol as patrol_api
 from .api.v1 import teleop as teleop_api
+from .audit import router as audit_router
 from .media import router as media_router
 from .media import video_events_router
 from .schemas import LoginRequest, LoginResponse
@@ -27,6 +28,7 @@ app.include_router(patrol_api.runs_router)
 app.include_router(teleop_api.router)
 app.include_router(robot_ws.router)
 app.include_router(dashboard_ws.router)
+app.include_router(audit_router)
 
 INVALID_CREDENTIALS = "아이디 또는 비밀번호가 올바르지 않습니다"
 

@@ -10,8 +10,10 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QStyle>
+#include <QStyleOptionViewItem>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -336,6 +338,10 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
             item->setData(Qt::UserRole, option.id);
         }
         body->addWidget(recipientListWidget_);
+        // 체크박스 자체를 정확히 클릭하지 않아도 행 어디를 눌러도 선택되게 한다 — 아래
+        // eventFilter()에서 체크박스 영역 바깥 클릭만 대신 토글해준다(정확히 체크박스를
+        // 클릭한 경우는 Qt 기본 토글에 맡겨 이중 토글을 피한다).
+        recipientListWidget_->viewport()->installEventFilter(this);
 
         connect(recipientSearchEdit_, &QLineEdit::textChanged, this, &AccountDialog::applyRecipientFilter);
         // 한글 조합 중(커밋 전) preedit 문자열도 잡아서 실시간으로 반영한다 — 아래 eventFilter() 참고.
@@ -506,6 +512,27 @@ bool AccountDialog::eventFilter(QObject* watched, QEvent* event) {
         // "박" 입력 직후(조합 완료 전)에도 바로 검색된다.
         applyRecipientFilter(recipientSearchEdit_->text() + imEvent->preeditString());
     }
+
+    if (watched == recipientListWidget_->viewport() && event->type() == QEvent::MouseButtonRelease) {
+        auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            QListWidgetItem* item = recipientListWidget_->itemAt(mouseEvent->pos());
+            if (item != nullptr) {
+                QStyleOptionViewItem opt;
+                opt.initFrom(recipientListWidget_);
+                opt.rect = recipientListWidget_->visualItemRect(item);
+                const QRect checkRect = recipientListWidget_->style()->subElementRect(
+                    QStyle::SE_ItemViewItemCheckIndicator, &opt, recipientListWidget_);
+                // 체크박스 자체를 클릭했으면 Qt 기본 토글에 맡긴다(여기서 또 토글하면
+                // 두 번 토글되어 원상태로 되돌아가 버린다). 그 외 행 어디를 클릭해도
+                // 같은 효과를 내도록 여기서 대신 토글해준다.
+                if (!checkRect.contains(mouseEvent->pos())) {
+                    item->setCheckState(item->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+                }
+            }
+        }
+    }
+
     return QDialog::eventFilter(watched, event);
 }
 

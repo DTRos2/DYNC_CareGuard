@@ -12,6 +12,9 @@ class QLabel;
 class QPushButton;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QDateEdit;
+class QEvent;
+class LiveSearchLineEdit;
 
 // P7 시스템 설정 — 로봇 관리 / 계정 관리 / 임계값·알림 / 감사 로그 4탭.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 6), §7 참고.
@@ -23,6 +26,13 @@ public:
     // 로그인 성공 시 main.cpp -> MainWindow를 거쳐 실제 로그인 ID를 전달받는다.
     // 계정 삭제 체크박스/버튼 노출(isCurrentUserAdmin()) 판단의 기준이 된다.
     void setCurrentUserLoginId(const QString& loginId);
+
+protected:
+    // 감사 로그 탭 기간 세그먼트가 "직접"이 아닐 때 날짜 칸은 읽기 전용으로 계산된
+    // 범위만 보여준다. 그 상태에서 칸을 클릭하면 "직접"로 전환해야 하는데, 읽기 전용
+    // 위젯은 클릭을 그대로 통과시키므로(=편집 불가만 막힘) 여기서 잡아서 처리한다.
+    // (P2EventPage::eventFilter와 동일한 패턴)
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     struct RobotRow {
@@ -79,6 +89,13 @@ private:
     QWidget* buildThresholdTab();
     QWidget* buildAuditTab();
 
+    void onAuditDateRangeChanged();
+    void applyAuditPeriodPreset(int spanDays);  // -1 = 직접, 0/6/29 = 오늘/7일/30일
+    void setAuditDateEditsReadOnly(bool readOnly);
+    void fetchAuditLog();  // GET /audit-log?start=&end=&q= — 기간/검색 바뀔 때마다 다시 호출
+    void handleAuditLogReply(QNetworkReply* reply);
+    void refreshAuditTable();  // auditLog_ 내용을 auditTable_에 그린다
+
     void openRobotDialog(int rowIndex);  // -1이면 신규 등록
     void populateRobotRow(int r);
     void refreshRobotTable();
@@ -107,6 +124,13 @@ private:
     QTableWidget* accountTable_ = nullptr;
     QLabel* accountCountLabel_ = nullptr;
     QPushButton* deleteAccountBtn_ = nullptr;
+
+    QTableWidget* auditTable_ = nullptr;
+    QDateEdit* auditStartDateEdit_ = nullptr;
+    QDateEdit* auditEndDateEdit_ = nullptr;
+    QPushButton* auditPeriodCustomBtn_ = nullptr;
+    LiveSearchLineEdit* auditSearchEdit_ = nullptr;
+    QString auditSearchText_;
     // setCurrentUserLoginId()로 실제 로그인 ID가 들어오기 전까지의 기본값.
     QString currentUserLoginId_ = QStringLiteral("admin");
 
