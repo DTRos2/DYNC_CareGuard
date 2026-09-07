@@ -419,6 +419,23 @@ void ApiClient::startPatrolRun(int robotId, int routeId, const QString& trigger,
              });
 }
 
+void ApiClient::startMedicationMission(const QString& robotCode, ItemCallback<MissionInfo> callback) {
+    QJsonObject body{{"robot_code", robotCode}, {"kind", QStringLiteral("medication")}};
+    postJson(QStringLiteral("/missions"), body,
+             [callback](bool ok, const QByteArray& respBody, const QString& err) {
+                 if (!ok) {
+                     callback(false, MissionInfo{}, err);
+                     return;
+                 }
+                 const QJsonObject o = QJsonDocument::fromJson(respBody).object();
+                 MissionInfo mission;
+                 mission.id = o.value(QStringLiteral("id")).toInt();
+                 mission.status = o.value(QStringLiteral("status")).toString();
+                 mission.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
+                 callback(true, mission, err);
+             });
+}
+
 void ApiClient::driveToPoint(const QString& robotCode, int mapId, const QString& code, double xMeters,
                               double yMeters, double yawRad, SimpleCallback callback) {
     QJsonObject body{{"robot_code", robotCode}, {"map_id", mapId},   {"code", code},

@@ -10,6 +10,7 @@
 #include <QGraphicsOpacityEffect>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -22,6 +23,8 @@
 
 #include "dialogs/p3_recipient_create_dialog.h"
 #include "dialogs/p3_recipient_detail_dialog.h"
+#include "net/api_client.h"
+#include "net/ws_client.h"
 #include "theme/tokens.h"
 #include "widgets/live_search_line_edit.h"
 #include "widgets/simple_icons.h"
@@ -169,38 +172,42 @@ QPushButton* makeActionButton(const QString& text, const QString& variant, QWidg
     return btn;
 }
 
-// §7-2 상태별 퀵액션 ("지금 할 일이 첫 버튼"). 조치 기능은 아직 없어 전부 안내 메시지로 대체한다.
+// §7-2 상태별 퀵액션 ("지금 할 일이 첫 버튼"). NORMAL은 카드 클릭 자체가 상세 진입이라
+// 중복되는 "상세 보기" 버튼을 두지 않는다(호출부 rebuildGrid()에서 이 함수 자체를 건너뜀).
+// OFFLINE도 버튼이 없다 — "재연결 시도"는 로봇이 서버로 다이얼하는 구조라 대시보드가
+// 재연결을 강제로 트리거할 방법이 없고, 대신 서버가 push하는 robot_status를 구독해
+// 로봇이 실제로 다시 붙으면 자동으로 NORMAL로 바뀐다(handleWsMessage() 참고).
+// EMERGENCY의 "이벤트 확인"(P2로 이동 + 필터)과 ATTENTION의 "복약 재안내"(POST /missions로
+// 실제 mission 생성 + 로봇 다운링크 전송)만 실동작이고, "보호자 연락"은 실제 연락 수단이
+// 없어 제거했다.
 QWidget* makeCardActions(const RecipientCard& rc, QWidget* parent,
-                          const std::function<void(const QString&)>& comingSoon) {
+                          const std::function<void(const QString&)>& onEventCheck,
+                          const std::function<void(const QString&, const QString&)>& onMedReannounce) {
     auto* row = new QWidget(parent);
     auto* layout = new QHBoxLayout(row);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(6);
 
-    QPushButton* primary = nullptr;
     switch (rc.level) {
-        case Tokens::Level::Emergency:
-            primary = makeActionButton(QStringLiteral("이벤트 확인"), "danger", row);
+        case Tokens::Level::Emergency: {
+            auto* btn = makeActionButton(QStringLiteral("이벤트 확인"), "danger", row);
+            QObject::connect(btn, &QPushButton::clicked, row,
+                              [onEventCheck, name = rc.name] { onEventCheck(name); });
+            layout->addWidget(btn);
             break;
-        case Tokens::Level::Attention:
-            primary = makeActionButton(QStringLiteral("복약 재안내"), "primary", row);
+        }
+        case Tokens::Level::Attention: {
+            auto* btn = makeActionButton(QStringLiteral("복약 재안내"), "primary", row);
+            QObject::connect(btn, &QPushButton::clicked, row,
+                              [onMedReannounce, robotCode = rc.robotCode, name = rc.name] {
+                                  onMedReannounce(robotCode, name);
+                              });
+            layout->addWidget(btn);
             break;
+        }
         case Tokens::Level::Offline:
-            primary = makeActionButton(QStringLiteral("재연결 시도"), "primary", row);
-            break;
         case Tokens::Level::Normal:
-            primary = makeActionButton(QStringLiteral("상세 보기"), "secondary", row);
             break;
-    }
-    QObject::connect(primary, &QPushButton::clicked, row,
-                      [comingSoon, text = primary->text()] { comingSoon(text); });
-    layout->addWidget(primary);
-
-    if (rc.level != Tokens::Level::Normal) {
-        auto* contactBtn = makeActionButton(QStringLiteral("보호자 연락"), "secondary", row);
-        QObject::connect(contactBtn, &QPushButton::clicked, row,
-                          [comingSoon] { comingSoon(QStringLiteral("보호자 연락")); });
-        layout->addWidget(contactBtn);
     }
 
     layout->addStretch();
@@ -351,6 +358,7 @@ RecipientDetail mockRecipientDetail(const RecipientCard& card) {
 }
 
 P3RecipientPage::P3RecipientPage(QWidget* parent) : QWidget(parent) {
+    apiClient_ = new ApiClient(this);
     recipients_ = mockRecipients();
 
     auto* layout = new QVBoxLayout(this);
@@ -375,6 +383,12 @@ P3RecipientPage::P3RecipientPage(QWidget* parent) : QWidget(parent) {
         }
     });
     pulseTimer_->start(Tokens::Motion::PULSE_PERIOD_MS);
+
+    // robot_status(로봇 연결/해제) push를 구독해 OFFLINE 카드를 자동으로 갱신한다
+    // (P5/P6와 같은 패턴 — 페이지마다 자기 WsClient를 따로 둔다).
+    wsClient_ = new WsClient(this);
+    connect(wsClient_, &WsClient::messageReceived, this, &P3RecipientPage::handleWsMessage);
+    wsClient_->connectToServer();
 
     rebuildGrid();
 }
@@ -473,8 +487,8 @@ void P3RecipientPage::rebuildGrid() {
     // takeAt()으로 먼저 위젯을 떼어 delete해야 한다 — 레이아웃만 delete하면 이전 카드가
     // gridPage_의 자식으로 남아 다음 그리드 위에 겹쳐 보인다. P4 rebuildCardGrid()는 카드 자신의
     // 클릭 콜스택 안에서 재호출될 수 있어 deleteLater()를 쓰지만(§use-after-free 회피), 여기
-    // 카드 버튼은 showComingSoon()만 호출해 재진입 위험이 없으므로 즉시 delete로 유령 위젯이
-    // 다음 grab()/repaint 전에 남지 않게 한다.
+    // 카드 버튼들은 클릭 콜스택 안에서 rebuildGrid()를 재호출하지 않으므로(신호 emit이나
+    // 비동기 API 콜백뿐) 즉시 delete로 유령 위젯이 다음 grab()/repaint 전에 남지 않게 한다.
     QLayoutItem* item;
     while ((item = grid_->takeAt(0)) != nullptr) {
         delete item->widget();
@@ -567,8 +581,13 @@ void P3RecipientPage::rebuildGrid() {
         cardLayout->addWidget(summaryLabel);
 
         cardLayout->addWidget(makeMedRow(rc, card));
-        cardLayout->addWidget(
-            makeCardActions(rc, card, [this](const QString& f) { showComingSoon(f); }));
+        if (rc.level != Tokens::Level::Normal && rc.level != Tokens::Level::Offline) {
+            cardLayout->addWidget(makeCardActions(
+                rc, card, [this](const QString& name) { emit eventCheckRequested(name); },
+                [this](const QString& robotCode, const QString& name) {
+                    requestMedicationReannounce(robotCode, name);
+                }));
+        }
 
         grid_->addWidget(card, row, col);
         if (rc.level == Tokens::Level::Emergency) {
@@ -604,9 +623,55 @@ void P3RecipientPage::resizeEvent(QResizeEvent* event) {
     }
 }
 
-void P3RecipientPage::showComingSoon(const QString& feature) {
-    QMessageBox::information(this, QStringLiteral("CareGuard"),
-                              QStringLiteral("추후 구현: %1").arg(feature));
+void P3RecipientPage::requestMedicationReannounce(const QString& robotCode, const QString& recipientName) {
+    // medication_scheduler가 없어(스케줄러는 patrol_schedule만 폴링) 스케줄을 거치지 않고
+    // 버튼 클릭 즉시 POST /missions로 mission을 만들고 로봇에 바로 다운링크를 보낸다.
+    // 로봇(downlink_node)은 아직 이 명령 타입을 몰라 조용히 무시한다 — 실제 주행·음성
+    // 안내·약통 개방은 로봇 쪽 구현이 붙기 전까지는 일어나지 않는다.
+    apiClient_->startMedicationMission(
+        robotCode, [this, recipientName](bool ok, const ApiClient::MissionInfo& mission, const QString& err) {
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("복약 재안내 실패"),
+                                      QStringLiteral("서버에 명령을 전달하지 못했습니다: %1").arg(err));
+                return;
+            }
+            if (!mission.robotConnected) {
+                QMessageBox::information(
+                    this, QStringLiteral("복약 재안내"),
+                    QStringLiteral("%1 대상자 미션(#%2)은 기록했지만, 로봇이 아직 연결되어 있지 "
+                                    "않습니다.")
+                        .arg(recipientName)
+                        .arg(mission.id));
+                return;
+            }
+            QMessageBox::information(
+                this, QStringLiteral("복약 재안내"),
+                QStringLiteral("%1 대상자에게 복약 재안내 미션(#%2)을 로봇에 전송했습니다.")
+                    .arg(recipientName)
+                    .arg(mission.id));
+        });
+}
+
+void P3RecipientPage::handleWsMessage(const QJsonObject& message) {
+    if (message.value(QStringLiteral("type")).toString() != QStringLiteral("robot_status")) return;
+
+    const QString robotCode = message.value(QStringLiteral("robot_code")).toString();
+    const bool online = message.value(QStringLiteral("online")).toBool();
+
+    bool changed = false;
+    for (RecipientCard& rc : recipients_) {
+        if (rc.robotCode != robotCode) continue;
+        // 재연결(온라인)은 OFFLINE 카드만 NORMAL로 되돌린다. 연결 해제(오프라인)는 로봇
+        // 상태를 확인할 수 없다는 뜻이라 현재 레벨과 무관하게 OFFLINE으로 덮어쓴다.
+        if (online && rc.level == Tokens::Level::Offline) {
+            rc.level = Tokens::Level::Normal;
+            changed = true;
+        } else if (!online && rc.level != Tokens::Level::Offline) {
+            rc.level = Tokens::Level::Offline;
+            changed = true;
+        }
+    }
+    if (changed) rebuildGrid();
 }
 
 void P3RecipientPage::openDetail(int recipientIndex) {

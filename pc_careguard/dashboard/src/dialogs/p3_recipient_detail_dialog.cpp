@@ -138,6 +138,8 @@ PillboxStyle pillboxStyle(MedSlotState state) {
 P3RecipientDetailDialog::P3RecipientDetailDialog(const RecipientDetail& detail, QWidget* parent)
     : QDialog(parent), detail_(detail) {
     setModal(true);
+    // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     setFixedWidth(Tokens::Layout::MODAL_W_M);
     setWindowTitle(QStringLiteral("대상자 상세 — %1").arg(detail_.card.name));
 
