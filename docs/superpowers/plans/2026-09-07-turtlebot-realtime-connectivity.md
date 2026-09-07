@@ -4,21 +4,22 @@
 
 **Goal:** 터틀봇을 켜면 서버에 WebSocket으로 실제 연결되고, 대시보드 "로봇 관리" 탭에 온라인/오프라인 상태가 폴링 없이 실시간으로 반영되게 만든다.
 
-**Architecture:** 로봇(라즈베리파이의 ROS2 노드) → FastAPI 서버는 WebSocket(`/ws/robot/{code}`, heartbeat). 대시보드 등록/최초 조회는 REST(`GET`/`POST /robots`). 서버 → 대시보드는 WebSocket(`/ws/dashboard`)으로 상태 변화를 push. 온라인 여부는 서버 프로세스 메모리(`connected_robots` 집합)로만 판단하고 DB 컬럼은 추가하지 않는다.
+**Architecture (2026-09-07 Task 2 리뷰 중 수정됨 — 아래 "PIVOT" 참고):** REST 등록은 `GET`/`POST /robots`(Task 2, 완료). 실시간 온라인/오프라인은 **이미 `origin/develop`에 병합돼 있던 LIMO용 `/ws/robot?robot_code=`(`pc_careguard/server/app/ws/robot_ws.py`) + `/ws/dashboard`(`app/ws/dashboard_ws.py`)를 그대로 재사용**한다 — 새 WebSocket 엔드포인트를 서버에 만들지 않는다. 로봇 쪽은 `robot_careguard_ws/src/careguard_agent`(LIMO용, 이미 존재)와 같은 연결 패턴을 새 최상위 폴더 `careguard_turtlebot_agent/`에 이식한다. 대시보드도 이미 존재하는 `pc_careguard/dashboard/src/net/ws_client.{h,cpp}`(`WsClient`)를 그대로 재사용한다 — 새 WebSocket 클라이언트 클래스를 만들지 않는다.
 
-**Tech Stack:** FastAPI + psycopg2 (서버, 기존과 동일), ROS2 Humble ament_python + `websocket-client` (로봇 에이전트), Qt6 Widgets + Qt6::WebSockets (대시보드).
+**PIVOT (2026-09-07):** 이 계획은 원래 `feature/p7-log-tab` 기준으로 설계됐다. 실행 중(Task 2 리뷰) `origin/develop`에 이미 PR #24(`feature/p5-p6-map-patrol-pages`)로 로봇 WebSocket 연동 전체가 들어와 있다는 걸 발견했다 — 서버(`app/ws/robot_ws.py`, `app/ws/dashboard_ws.py`, 둘 다 `main.py`에 이미 등록됨), 로봇 에이전트(`robot_careguard_ws/src/careguard_agent/uplink_node.py` 등, `/map` 구독은 2026-09-04 실제 LIMO 하드웨어로 검증됨), 대시보드(`ws_client.{h,cpp}`, P5/P6 페이지가 이미 사용 중)까지 전부. 사용자 확인 결과 "기존 코드 재사용 + 터틀봇 전용 폴더는 최상단에 별도로" 방향으로 확정. 원래 Task 3(서버 WS 신규 엔드포인트)·Task 4~6(자체 HeartbeatWorker 설계)·Task 7(신규 RobotWsClient)은 전부 기존 시스템과 충돌하거나 중복이라 **Task 3을 기존 시스템 재사용 버전으로 갈아엎고, Task 4/5/6/7은 스킵, Task 8은 기존 `WsClient` 재사용으로 갈아엎었다.** 아래 각 태스크 제목에 표시.
 
-**Spec:** `docs/superpowers/specs/2026-09-07-turtlebot-realtime-connectivity-design.md`
+**Tech Stack:** FastAPI + psycopg2 (서버, 기존과 동일), ROS2 Humble ament_python + `websockets`(async, LIMO agent와 동일 라이브러리) (로봇 에이전트), Qt6 Widgets + 기존 `Qt6::WebSockets`/`WsClient` (대시보드 — 새로 추가하는 것 없음).
+
+**Spec:** `docs/superpowers/specs/2026-09-07-turtlebot-realtime-connectivity-design.md` (PIVOT 이후 서버/대시보드 WS 부분은 이 계획 파일이 스펙보다 최신 — 아래 각 태스크 본문이 우선한다)
 
 ## Global Constraints
 
 - 대시보드는 실시간 상태에 REST 폴링을 쓰지 않는다 — WebSocket push만 사용한다 (스펙 "아키텍처")
-- 온라인 판정은 서버 프로세스 메모리로만 하고 DB 스키마는 변경하지 않는다 (스펙 "아키텍처")
-- 미등록 `code`로 들어오는 `/ws/robot/{code}` 접속은 서버가 즉시 거부한다 (스펙 "서버")
-- heartbeat 주기 5초, 서버 타임아웃 15초 (스펙 "서버")
-- `careguard_turtlebot_agent/`는 리포 최상위에 `src/` 없이 바로 둔다. `robot_careguard_ws/`, `pc_careguard/`, `shared/`, `docs/`, `deploy/`는 구조·내용 그대로 둔다 (스펙 "리포 구조 변경")
-- 로봇 IP·네임스페이스·노드 상태·담당 대상자 배정은 이번 범위 밖 — 대시보드 표의 해당 칸은 빈 값/placeholder로 남는다. "상태" 칸만 실제 `is_online`을 반영한다 (스펙 "범위")
-- 이 저장소에는 기존 자동 테스트가 전혀 없다(서버 Python 쪽, 대시보드 C++ 쪽 모두). 서버 쪽은 이번에 `pytest`를 새로 들여오되(순수 신규 로직이라 가치가 큼), 대시보드(Qt/C++)와 ROS2 노드는 기존 관례대로 빌드 성공 + 수동 스모크 테스트로 검증한다 — 새 C++/ROS2 테스트 프레임워크를 이번에 들여오지 않는다
+- 온라인 판정은 서버 프로세스 메모리로만 하고 DB 스키마는 변경하지 않는다 (스펙 "아키텍처") — 이미 존재하는 `robot_ws.py`의 `_connections: Dict[str, WebSocket]`이 이 역할을 한다. Task 2의 `robot_registry.connected_robots`는 REST `GET /robots`의 `is_online` 계산에만 쓰던 것인데, **PIVOT 이후엔 실시간 연결 여부의 진짜 출처가 아니다** — `robot_ws.py`의 `is_connected(robot_code)`가 진짜 출처. Task 3(신규)에서 이 불일치를 바로잡는다.
+- `careguard_turtlebot_agent/`는 리포 최상위에 `src/` 없이 바로 둔다. `robot_careguard_ws/`, `pc_careguard/`, `shared/`, `docs/`, `deploy/`는 구조·내용 그대로 둔다 (스펙 "리포 구조 변경") — 특히 `robot_careguard_ws/src/careguard_agent`(LIMO용, 이미 존재)는 이번 작업에서 절대 건드리지 않는다. 참고만 하고 새 폴더에 이식한다.
+- 로봇 IP·네임스페이스·노드 상태·담당 대상자 배정은 이번 범위 밖 — 대시보드 표의 해당 칸은 빈 값/placeholder로 남는다. "상태" 칸만 실제 온라인 여부를 반영한다 (스펙 "범위")
+- 이 저장소에는 기존 자동 테스트가 전혀 없다(서버 Python 쪽 Task 1 이전, 대시보드 C++ 쪽, ROS2 노드 쪽 전부). 서버 쪽은 Task 1에서 `pytest`를 새로 들여왔고, 대시보드(Qt/C++)와 ROS2 노드는 기존 관례(`careguard_agent`도 "빌드/실행 미검증" 상태로 존재)대로 빌드 성공 + 수동 스모크 테스트로 검증한다 — 새 C++/ROS2 테스트 프레임워크를 이번에 들여오지 않는다
+- 서버 쪽 기존 WS 코드(`app/ws/robot_ws.py`, `app/ws/dashboard_ws.py`)와 대시보드 쪽 기존 `ws_client.{h,cpp}`는 **이번 작업에서 수정하지 않는다** — LIMO에서 이미 쓰고 있는 코드라 건드리면 그쪽이 깨질 위험이 있다. 순수하게 "같은 프로토콜로 접속하는 새 클라이언트(터틀봇)"만 추가한다.
 
 ---
 
@@ -53,7 +54,7 @@ httpx
 - [ ] **Step 3: venv에 설치**
 
 ```bash
-cd /home/cce/twomainProject/pc_careguard/server
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
 .venv/bin/pip install -r requirements-dev.txt
 ```
 
@@ -109,7 +110,7 @@ def test_health_endpoint_returns_ok(client):
 - [ ] **Step 7: 실행해서 통과 확인**
 
 ```bash
-cd /home/cce/twomainProject/pc_careguard/server
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/ -v
 ```
 Expected: `test_health_endpoint_returns_ok` PASS. (`/health`은 이미 `main.py`에 있는 기존 엔드포인트 — 새로 만들 필요 없음)
@@ -273,7 +274,7 @@ def test_list_robots_is_online_reflects_connected_registry(client, cleanup_robot
 - [ ] **Step 4: 실행해서 실패 확인 (라우터가 아직 없음)**
 
 ```bash
-cd /home/cce/twomainProject/pc_careguard/server
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/test_robots.py -v
 ```
 Expected: FAIL — `404 Not Found` (아직 `/robots` 라우트가 없음)
@@ -387,7 +388,7 @@ app.include_router(robots_router)
 - [ ] **Step 7: 테스트 통과 확인**
 
 ```bash
-cd /home/cce/twomainProject/pc_careguard/server
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/test_robots.py -v
 ```
 Expected: 4개 테스트 모두 PASS
@@ -403,239 +404,165 @@ git commit -m "feat(server): 로봇 등록·조회 REST API 추가"
 
 ---
 
-## Task 3: 서버 — WebSocket (`/ws/robot/{code}`, `/ws/dashboard`)
+## Task 3 (PIVOT — Task 2 사후 수정): 서버 — `is_online`을 기존 `robot_ws.is_connected`로 재배선
+
+Task 2가 승인된 뒤, `origin/develop`에 이미 병합돼 있던 LIMO용 로봇 WebSocket 시스템
+(`pc_careguard/server/app/ws/robot_ws.py`)의 존재를 발견했다. 원래 계획은 온라인 여부를
+새로 만들 `robot_ws.py`(Task 3)의 `connected_robots` 집합으로 판단할 생각이었는데, 그
+새 엔드포인트를 이제 만들지 않기로 했으니(아래 Task 5/6/7 SKIPPED 참고) `robots.py`가
+지금 보고 있는 `robot_registry.connected_robots`는 **아무도 채워주지 않는 죽은 상태**다
+— 즉 `GET /robots`의 `is_online`이 항상 `false`로 나온다. 이미 존재하는
+`app/ws/robot_ws.py`의 `is_connected(robot_code: str) -> bool`(코드 확인함, 이미 공개
+함수로 존재)가 진짜 연결 상태의 출처이니 여기로 다시 연결한다.
 
 **Files:**
-- Create: `pc_careguard/server/app/robot_ws.py`
-- Modify: `pc_careguard/server/app/main.py` (import + include_router 한 줄 추가)
-- Test: `pc_careguard/server/tests/test_robot_ws.py`
+- Modify: `pc_careguard/server/app/robots.py`
+- Delete: `pc_careguard/server/app/robot_registry.py` (이제 아무도 안 씀 — 죽은 코드로 남기지 않는다)
+- Modify: `pc_careguard/server/tests/test_robots.py`
 
 **Interfaces:**
-- Consumes: Task 2의 `app.robot_registry.connected_robots`, `dashboard_sockets`, `broadcast_status`; `client`/`cleanup_robot` fixture
-- Produces: `/ws/robot/{code}` (등록 안 된 code는 close code 4404로 거부, 등록된 code는 accept 후 5초 heartbeat 기준 15초 타임아웃), `/ws/dashboard` (accept 직후 `{"type":"snapshot","online_codes":[...]}` 전송, 이후 `{"type":"robot_status","code":...,"online":...}` push).모듈 상수 `robot_ws.HEARTBEAT_TIMEOUT`(기본 15) — 테스트에서 `monkeypatch`로 줄여서 씀
+- Consumes: `pc_careguard/server/app/ws/robot_ws.py`의 `is_connected(robot_code: str) -> bool` (기존 함수, 이번에 수정하지 않음 — import만 해서 씀)
+- Produces: `GET /robots`의 `is_online` 필드가 실제 `/ws/robot?robot_code=...` 연결 여부를 정확히 반영
 
-> **WebSocket 테스트 시 주의**: `TestClient.websocket_connect()`를 같은 스레드에서 두 개 이상 동시에 열어놓고 서로 메시지를 주고받게 하면(예: 대시보드 소켓을 연 채로 로봇 소켓을 열고 닫는 걸 같은 `with` 블록 흐름 안에서 순서대로 하는 식) 교착 상태에 빠질 수 있다(브로드캐스트가 상대방이 받아줄 때까지 블로킹되는데, 그 상대방을 읽어야 할 메인 스레드가 다른 소켓의 `with` 종료를 기다리며 멈춰 있는 경우). 아래 테스트들은 이 문제를 피하려고 **로봇 소켓 하나만 열어두고 `connected_robots`/`broadcast_status` 같은 서버 쪽 전역 상태를 직접 확인하는 방식**으로 작성돼 있다 — 이 패턴을 그대로 따른다.
+- [ ] **Step 1: 실패하는 테스트로 교체**
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+`pc_careguard/server/tests/test_robots.py`에서 기존
+`test_list_robots_is_online_reflects_connected_registry` 함수 전체를 아래로
+교체한다(이 함수만 교체, 나머지 3개 테스트는 그대로 둔다):
 
-`pc_careguard/server/tests/test_robot_ws.py`:
 ```python
-import time
-import uuid
-from unittest.mock import AsyncMock
-
-import pytest
-from starlette.websockets import WebSocketDisconnect
-
-from app import robot_ws
-from app.robot_registry import connected_robots
-
-
-def _unique_code():
-    return f"TEST-{uuid.uuid4().hex[:8]}"
-
-
-def test_unregistered_code_is_rejected(client):
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/robot/{_unique_code()}"):
-            pass
-    assert exc_info.value.code == 4404
-
-
-def test_registered_robot_connect_and_disconnect_updates_registry(client, cleanup_robot):
+def test_list_robots_is_online_reflects_real_ws_connection(client, cleanup_robot):
     code = _unique_code()
     cleanup_robot.append(code)
-    client.post("/robots", json={"code": code, "name": "로봇", "model": "turtlebot", "ros_domain_id": 11})
+    client.post("/robots", json={"code": code, "name": "로봇3", "model": "turtlebot"})
 
-    assert code not in connected_robots
-    with client.websocket_connect(f"/ws/robot/{code}"):
-        assert code in connected_robots
+    response_before = client.get("/robots")
+    body_before = {r["code"]: r["is_online"] for r in response_before.json()}
+    assert body_before[code] is False
 
-        response = client.get("/robots")
-        body = {r["code"]: r["is_online"] for r in response.json()}
-        assert body[code] is True
-    assert code not in connected_robots
+    with client.websocket_connect(f"/ws/robot?robot_code={code}"):
+        response_during = client.get("/robots")
+        body_during = {r["code"]: r["is_online"] for r in response_during.json()}
+        assert body_during[code] is True
 
-
-def test_robot_connect_and_disconnect_broadcasts_status(client, cleanup_robot, monkeypatch):
-    code = _unique_code()
-    cleanup_robot.append(code)
-    client.post("/robots", json={"code": code, "name": "로봇", "model": "turtlebot", "ros_domain_id": 12})
-
-    spy = AsyncMock()
-    monkeypatch.setattr(robot_ws, "broadcast_status", spy)
-
-    with client.websocket_connect(f"/ws/robot/{code}"):
-        pass
-
-    spy.assert_any_await(code, True)
-    spy.assert_any_await(code, False)
-
-
-def test_heartbeat_timeout_removes_robot_from_registry(client, cleanup_robot, monkeypatch):
-    monkeypatch.setattr(robot_ws, "HEARTBEAT_TIMEOUT", 0.2)
-    code = _unique_code()
-    cleanup_robot.append(code)
-    client.post("/robots", json={"code": code, "name": "로봇", "model": "turtlebot", "ros_domain_id": 13})
-
-    with client.websocket_connect(f"/ws/robot/{code}"):
-        assert code in connected_robots
-        time.sleep(0.6)  # HEARTBEAT_TIMEOUT(0.2s)보다 넉넉히 길게 대기 — 서버가 스스로 타임아웃
-        assert code not in connected_robots
-
-
-def test_dashboard_socket_receives_snapshot_of_connected_robots(client, cleanup_robot):
-    code = _unique_code()
-    cleanup_robot.append(code)
-    client.post("/robots", json={"code": code, "name": "로봇", "model": "turtlebot", "ros_domain_id": 14})
-
-    with client.websocket_connect(f"/ws/robot/{code}"):
-        with client.websocket_connect("/ws/dashboard") as dash:
-            snapshot = dash.receive_json()
-            assert snapshot["type"] == "snapshot"
-            assert code in snapshot["online_codes"]
+    response_after = client.get("/robots")
+    body_after = {r["code"]: r["is_online"] for r in response_after.json()}
+    assert body_after[code] is False
 ```
+
+파일 상단 import에 `from app.robot_registry import connected_robots` 줄이 있으면 지운다
+(더 이상 이 테스트가 그 모듈을 쓰지 않는다).
 
 - [ ] **Step 2: 실행해서 실패 확인**
 
 ```bash
-cd /home/cce/twomainProject/pc_careguard/server
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/test_robot_ws.py -v
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/test_robots.py -v
 ```
-Expected: FAIL — `/ws/robot/...`, `/ws/dashboard` 라우트가 아직 없어 연결 자체가 안 됨
+Expected: `test_list_robots_is_online_reflects_real_ws_connection`만 FAIL —
+`body_during[code]`가 `False`로 나옴 (아직 `robots.py`가 `robot_registry.connected_robots`를 보고 있어서)
 
-- [ ] **Step 3: robot_ws.py 구현**
+- [ ] **Step 3: `robots.py` 수정**
 
-`pc_careguard/server/app/robot_ws.py`:
+`pc_careguard/server/app/robots.py` 상단의:
 ```python
-import asyncio
-import json
-
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-
-from . import db
-from .robot_registry import broadcast_status, connected_robots, dashboard_sockets
-
-router = APIRouter()
-
-# 로봇이 5초마다 heartbeat를 보내는 것 기준, 3회분(15초) 안에 못 받으면 끊긴 것으로 본다.
-HEARTBEAT_TIMEOUT = 15.0
-
-
-async def _robot_registered(code: str) -> bool:
-    def _query():
-        with db.get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM robot WHERE code = %s AND deregistered_at IS NULL", (code,))
-            return cur.fetchone() is not None
-    # psycopg2는 동기 라이브러리라 이벤트 루프를 막지 않게 스레드로 돌린다.
-    return await asyncio.to_thread(_query)
-
-
-@router.websocket("/ws/robot/{code}")
-async def robot_socket(websocket: WebSocket, code: str):
-    """터틀봇 careguard_turtlebot_agent/uplink_node.py가 접속하는 엔드포인트.
-
-    등록 안 된 code는 즉시 거부한다 — 로봇은 먼저 대시보드에서 등록돼 있어야 한다.
-    """
-    if not await _robot_registered(code):
-        await websocket.close(code=4404)
-        return
-
-    await websocket.accept()
-    connected_robots.add(code)
-    await broadcast_status(code, True)
-
-    try:
-        while True:
-            await asyncio.wait_for(websocket.receive_text(), timeout=HEARTBEAT_TIMEOUT)
-    except (WebSocketDisconnect, asyncio.TimeoutError):
-        pass
-    finally:
-        connected_robots.discard(code)
-        await broadcast_status(code, False)
-
-
-@router.websocket("/ws/dashboard")
-async def dashboard_socket(websocket: WebSocket):
-    """대시보드 RobotWsClient가 접속하는 엔드포인트. 서버 -> 클라이언트 단방향 push."""
-    await websocket.accept()
-    dashboard_sockets.append(websocket)
-    await websocket.send_text(json.dumps({"type": "snapshot", "online_codes": list(connected_robots)}))
-
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if websocket in dashboard_sockets:
-            dashboard_sockets.remove(websocket)
+from .robot_registry import connected_robots
 ```
-
-- [ ] **Step 4: main.py에 라우터 등록**
-
-`pc_careguard/server/app/main.py`, Task 2에서 만든 상태에 이어서:
+을:
 ```python
-from .accounts import router as accounts_router
-from .audit import router as audit_router
-from .media import router as media_router
-from .media import video_events_router
-from .robot_ws import router as robot_ws_router
-from .robots import router as robots_router
-from .schemas import LoginRequest, LoginResponse
+from .ws.robot_ws import is_connected
+```
+로 바꾸고, `_row_to_item` 함수 안의:
+```python
+        is_online=row["code"] in connected_robots,
+```
+을:
+```python
+        is_online=is_connected(row["code"]),
+```
+로 바꾼다. 나머지(`LIST_QUERY`, `list_robots`, `register_robot`)는 그대로 둔다.
 
-app = FastAPI(title="CareGuard Server")
-app.include_router(media_router)
-app.include_router(video_events_router)
-app.include_router(accounts_router)
-app.include_router(audit_router)
-app.include_router(robots_router)
-app.include_router(robot_ws_router)
+- [ ] **Step 4: `robot_registry.py` 삭제**
+
+```bash
+git rm pc_careguard/server/app/robot_registry.py
 ```
 
 - [ ] **Step 5: 테스트 통과 확인**
 
 ```bash
-cd /home/cce/twomainProject/pc_careguard/server
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/ -v
 ```
-Expected: 이전 태스크 것 포함 전부 PASS
+Expected: 전부 PASS (이 파일 안의 4개 테스트 + Task 1의 health 테스트)
 
-- [ ] **Step 6: 커밋**
+- [ ] **Step 6: 서버가 실제로 뜨는지 확인 (import 에러 없는지)**
 
 ```bash
-git add pc_careguard/server/app/robot_ws.py pc_careguard/server/app/main.py \
-        pc_careguard/server/tests/test_robot_ws.py
-git commit -m "feat(server): 로봇·대시보드 WebSocket 연결 추가"
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
+timeout 5 .venv/bin/uvicorn app.main:app --port 8011 &
+sleep 2
+curl -s http://127.0.0.1:8011/health
+kill %1 2>/dev/null; wait 2>/dev/null
+```
+Expected: `{"status":"ok"}` — `app/ws/robot_ws.py`·`dashboard_ws.py`를 포함해 기존 라우터들이
+전부 정상적으로 import·기동됨을 확인 (이 태스크가 그쪽 파일을 안 건드렸다는 걸
+간접 확인하는 것이기도 함)
+
+- [ ] **Step 7: 커밋**
+
+```bash
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity
+git add pc_careguard/server/app/robots.py pc_careguard/server/tests/test_robots.py
+git rm pc_careguard/server/app/robot_registry.py 2>/dev/null || true
+git commit -m "fix(server): 로봇 온라인 여부를 기존 robot_ws.is_connected로 재배선"
 ```
 
 ---
 
-## Task 4: 로봇 에이전트 — ament_python 패키지 뼈대
+## Task 4 (PIVOT — 원래 Task 4·5·6 통합): 로봇 에이전트 — `careguard_turtlebot_agent` (기존 `careguard_agent` 연결 패턴 재사용)
+
+`robot_careguard_ws/src/careguard_agent/uplink_node.py`(LIMO용, 이미 존재하고 `/map`
+구독은 2026-09-04 실제 하드웨어로 검증됨 — 이번 작업에서 이 파일은 절대 건드리지
+않는다)의 연결 유지·재연결 로직(`_connect_forever`)을 그대로 재사용해, 새 최상위 폴더
+`careguard_turtlebot_agent/`에 최소 버전(토픽 구독 없이 접속 유지만)으로 이식한다.
+
+서버의 기존 `/ws/robot?robot_code=<code>`(`app/ws/robot_ws.py:34`, 이번에 수정하지
+않음)는 접속만 되면 알아서 대시보드에 `robot_status` 브로드캐스트를 보낸다(코드 확인:
+`robot_ws.py`의 `while True: await websocket.receive_json()`엔 타임아웃이 없다 — 로봇
+쪽에서 별도 heartbeat 메시지를 안 보내도 되고, TCP 연결이 끊기는 것만으로
+offline 판정이 된다). 그래서 이 태스크엔 heartbeat 로직 자체가 없다.
 
 **Files:**
 - Create: `careguard_turtlebot_agent/package.xml`
 - Create: `careguard_turtlebot_agent/setup.py`
 - Create: `careguard_turtlebot_agent/setup.cfg`
-- Create: `careguard_turtlebot_agent/resource/careguard_turtlebot_agent` (빈 파일)
+- Create: `careguard_turtlebot_agent/resource/careguard_turtlebot_agent` (빈 파일, ament_python 마커)
 - Create: `careguard_turtlebot_agent/careguard_turtlebot_agent/__init__.py` (빈 파일)
-- Create: `careguard_turtlebot_agent/requirements.txt`
+- Create: `careguard_turtlebot_agent/careguard_turtlebot_agent/ws_config.py`
+- Create: `careguard_turtlebot_agent/careguard_turtlebot_agent/uplink_node.py`
 
 **Interfaces:**
-- Produces: `colcon build`로 빌드되는 최상위 ROS2 ament_python 패키지 `careguard_turtlebot_agent`. entry point `uplink_node`(Task 6에서 실제 구현 채움 — 이 태스크에서는 파일이 없어도 `setup.py`에 entry_point 선언만 해둔다. `colcon build` 자체는 소스 파일 존재 여부를 안 따지므로 통과하고, `ros2 run`은 Task 6 이후에나 성공한다)
+- Consumes: 서버의 기존 `/ws/robot?robot_code=<code>` (수정 없음). Task 3에서 고친
+  `GET /robots`의 `is_online`으로 이 노드가 실제로 붙었는지 확인 가능.
+- Produces: `CAREGUARD_ROBOT_CODE=<code> ros2 run careguard_turtlebot_agent uplink_node`로
+  실행되는 노드. ROS2 파라미터가 아니라 환경변수(`CAREGUARD_SERVER_URL`,
+  `CAREGUARD_ROBOT_CODE`) 기반 — 기존 `careguard_agent/ws_config.py`와 동일한 관례.
 
-> 이 저장소에 이미 빈 디렉토리 3개(`careguard_turtlebot_agent/`, `careguard_turtlebot_agent/careguard_turtlebot_agent/`는 아니고 `launch/`, `resource/`, 그리고 `careguard_turtlebot_agent/careguard_turtlebot_agent/`)가 만들어져 있을 수 있다. 있으면 그대로 재사용하고, 없으면 새로 만든다.
+이 저장소에 이미 빈 디렉토리(`careguard_turtlebot_agent/`, `resource/`,
+`careguard_turtlebot_agent/careguard_turtlebot_agent/`, `launch/`)가 있을 수 있다. 있으면
+재사용하고, `launch/`는 이번 태스크에서 안 쓰니 비어 있어도 그대로 둔다(파일을 안
+만든다 — 안 쓰는 빈 launch 파일을 만들 이유가 없다).
 
 - [ ] **Step 1: package.xml**
 
-`careguard_turtlebot_agent/package.xml`:
 ```xml
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>careguard_turtlebot_agent</name>
-  <version>0.0.1</version>
-  <description>TurtleBot과 CareGuard 서버를 잇는 WebSocket 브리지 (uplink heartbeat)</description>
+  <version>0.1.0</version>
+  <description>TurtleBot 최소 업링크 — 서버 /ws/robot에 접속해 온라인 상태를 알린다. robot_careguard_ws/src/careguard_agent(LIMO)의 연결 유지 패턴을 재사용했다.</description>
   <maintainer email="ajtwlscldjs@gmail.com">postwo</maintainer>
   <license>Apache-2.0</license>
 
@@ -651,7 +578,6 @@ git commit -m "feat(server): 로봇·대시보드 WebSocket 연결 추가"
 
 - [ ] **Step 2: setup.py**
 
-`careguard_turtlebot_agent/setup.py`:
 ```python
 from setuptools import find_packages, setup
 
@@ -659,18 +585,17 @@ package_name = 'careguard_turtlebot_agent'
 
 setup(
     name=package_name,
-    version='0.0.1',
+    version='0.1.0',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/agent.launch.py']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'websockets'],
     zip_safe=True,
     maintainer='postwo',
     maintainer_email='ajtwlscldjs@gmail.com',
-    description='TurtleBot과 CareGuard 서버를 잇는 WebSocket 브리지',
+    description='TurtleBot -> CareGuard 서버 최소 업링크 (온라인 상태만)',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
@@ -680,11 +605,9 @@ setup(
     },
 )
 ```
-(`launch/agent.launch.py`는 Task 6에서 만든다 — `data_files`에 미리 넣어둔다)
 
 - [ ] **Step 3: setup.cfg**
 
-`careguard_turtlebot_agent/setup.cfg`:
 ```ini
 [develop]
 script_dir=$base/lib/careguard_turtlebot_agent
@@ -695,278 +618,98 @@ install_scripts=$base/lib/careguard_turtlebot_agent
 - [ ] **Step 4: 마커 파일들**
 
 ```bash
-mkdir -p /home/cce/twomainProject/careguard_turtlebot_agent/resource
-mkdir -p /home/cce/twomainProject/careguard_turtlebot_agent/careguard_turtlebot_agent
-mkdir -p /home/cce/twomainProject/careguard_turtlebot_agent/launch
-touch /home/cce/twomainProject/careguard_turtlebot_agent/resource/careguard_turtlebot_agent
-touch /home/cce/twomainProject/careguard_turtlebot_agent/careguard_turtlebot_agent/__init__.py
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity
+mkdir -p careguard_turtlebot_agent/resource careguard_turtlebot_agent/careguard_turtlebot_agent
+touch careguard_turtlebot_agent/resource/careguard_turtlebot_agent
+touch careguard_turtlebot_agent/careguard_turtlebot_agent/__init__.py
 ```
 
-- [ ] **Step 5: requirements.txt**
+- [ ] **Step 5: ws_config.py**
 
-`careguard_turtlebot_agent/requirements.txt`:
-```
-websocket-client
-```
-
-- [ ] **Step 6: 빌드 확인 (이 시점엔 uplink_node.py가 없어 콘솔 스크립트 대상이 비어 있지만, colcon 빌드 자체는 통과해야 한다)**
-
-```bash
-mkdir -p /tmp/careguard_turtlebot_ws/src
-ln -sfn /home/cce/twomainProject/careguard_turtlebot_agent /tmp/careguard_turtlebot_ws/src/careguard_turtlebot_agent
-cd /tmp/careguard_turtlebot_ws
-source /opt/ros/humble/setup.bash
-colcon build --packages-select careguard_turtlebot_agent
-```
-Expected: `Finished <<< careguard_turtlebot_agent`. (임시 심볼릭 링크 워크스페이스는 실제 라즈베리파이 배포 방식과 동일한 패턴 — 스펙의 "라즈베리파이 설정" 절차와 같다)
-
-- [ ] **Step 7: 커밋**
-
-```bash
-cd /home/cce/twomainProject
-git add careguard_turtlebot_agent/package.xml careguard_turtlebot_agent/setup.py \
-        careguard_turtlebot_agent/setup.cfg careguard_turtlebot_agent/requirements.txt \
-        careguard_turtlebot_agent/resource/careguard_turtlebot_agent \
-        careguard_turtlebot_agent/careguard_turtlebot_agent/__init__.py
-git commit -m "feat(agent): careguard_turtlebot_agent ROS2 패키지 뼈대 추가"
-```
-
----
-
-## Task 5: 로봇 에이전트 — `HeartbeatWorker` (재연결·백오프 로직, TDD)
-
-**Files:**
-- Create: `careguard_turtlebot_agent/careguard_turtlebot_agent/heartbeat_worker.py`
-- Test: `careguard_turtlebot_agent/test/test_heartbeat_worker.py`
-
-**Interfaces:**
-- Consumes: 없음 (순수 파이썬, rclpy·실제 네트워크 의존 없음 — 그래서 라즈베리파이 없이도 이 개발 PC에서 바로 테스트 가능)
-- Produces: `HeartbeatWorker(url, connect_fn, sleep_fn, interval=5.0, max_backoff=30.0)` 클래스.
-  - `.run()`: `connect_fn(url, timeout=5)`로 연결 시도 → 성공하면 `interval`마다 `ws.send('{"type": "heartbeat"}')` 반복, 실패하면 `sleep_fn(backoff)` 후 backoff를 2배(최대 `max_backoff`)로 늘려 재시도. `_stop_event`(threading.Event)가 set되면 루프 종료
-  - `.stop()`: 실행 중인 `run()` 루프를 다음 체크포인트에서 멈추게 함
-  - Task 6이 `connect_fn=websocket.create_connection`, `sleep_fn=time.sleep`로 실제 인스턴스를 만들어 별도 스레드에서 `.run()`을 돌린다
-
-- [ ] **Step 1: 실패하는 테스트 작성**
-
-`careguard_turtlebot_agent/test/test_heartbeat_worker.py`:
 ```python
-import sys
-from pathlib import Path
+import os
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# LIMO용 robot_careguard_ws/src/careguard_agent/ws_config.py와 동일한 관례 —
+# 서버 주소·로봇 코드를 환경변수 하나씩으로 통일한다.
+SERVER_HTTP_URL = os.environ.get('CAREGUARD_SERVER_URL', 'http://127.0.0.1:8000')
+SERVER_WS_URL = SERVER_HTTP_URL.replace('https://', 'wss://').replace('http://', 'ws://')
 
-from careguard_turtlebot_agent.heartbeat_worker import HeartbeatWorker
-
-
-class FakeWs:
-    def __init__(self):
-        self.sent = []
-
-    def send(self, msg):
-        self.sent.append(msg)
-
-
-def test_sends_heartbeat_every_interval_then_stops():
-    fake_ws = FakeWs()
-    calls = {"connect": 0, "sleep_args": []}
-
-    def connect_fn(url, timeout):
-        calls["connect"] += 1
-        return fake_ws
-
-    worker = HeartbeatWorker("ws://fake", connect_fn=connect_fn, sleep_fn=None, interval=5.0)
-
-    def fake_sleep(seconds):
-        calls["sleep_args"].append(seconds)
-        if len(calls["sleep_args"]) >= 3:
-            worker.stop()
-
-    worker._sleep_fn = fake_sleep
-    worker.run()
-
-    assert calls["connect"] == 1
-    assert fake_ws.sent == ['{"type": "heartbeat"}'] * 3
-    assert calls["sleep_args"] == [5.0, 5.0, 5.0]
-
-
-def test_reconnects_with_exponential_backoff_on_failure():
-    attempts = {"n": 0}
-    sleeps = []
-
-    def connect_fn(url, timeout):
-        attempts["n"] += 1
-        if attempts["n"] < 3:
-            raise ConnectionRefusedError("no server")
-        return FakeWs()
-
-    worker = HeartbeatWorker("ws://fake", connect_fn=connect_fn, sleep_fn=None, interval=5.0)
-
-    def fake_sleep(seconds):
-        sleeps.append(seconds)
-        if attempts["n"] >= 3:
-            worker.stop()
-
-    worker._sleep_fn = fake_sleep
-    worker.run()
-
-    assert attempts["n"] == 3
-    # 1·2차 연결 실패 -> backoff 1.0, 2.0으로 대기. 3차 성공 후 heartbeat 루프에서
-    # interval(5.0)만큼 한 번 더 sleep 호출된 뒤 멈춘다.
-    assert sleeps == [1.0, 2.0, 5.0]
-
-
-def test_backoff_caps_at_max_backoff():
-    sleeps = []
-
-    def connect_fn(url, timeout):
-        raise ConnectionRefusedError("always down")
-
-    worker = HeartbeatWorker("ws://fake", connect_fn=connect_fn, sleep_fn=None, interval=5.0, max_backoff=30.0)
-
-    def fake_sleep(seconds):
-        sleeps.append(seconds)
-        if len(sleeps) >= 7:
-            worker.stop()
-
-    worker._sleep_fn = fake_sleep
-    worker.run()
-
-    assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+# 이 로봇의 robot.code (대시보드 "로봇 등록"으로 미리 만들어둔 값, 예: "R-05").
+# LIMO 기본값(R-01)과 겹치지 않도록 기본값을 비워둔다 — 실행 시 반드시 넘겨야 한다.
+ROBOT_CODE = os.environ.get('CAREGUARD_ROBOT_CODE', '')
 ```
 
-- [ ] **Step 2: 실행해서 실패 확인**
+- [ ] **Step 6: uplink_node.py**
 
-```bash
-cd /home/cce/twomainProject/careguard_turtlebot_agent
-python3 -m pytest test/test_heartbeat_worker.py -v
-```
-Expected: FAIL — `heartbeat_worker` 모듈이 아직 없음
-
-- [ ] **Step 3: 구현**
-
-`careguard_turtlebot_agent/careguard_turtlebot_agent/heartbeat_worker.py`:
 ```python
-import threading
+"""careguard_turtlebot_agent/uplink_node.py
 
+터틀봇 -> 서버 최소 업링크. 서버의 기존 /ws/robot?robot_code=... 에 접속만
+유지한다 — 접속 즉시 서버(app/ws/robot_ws.py)가 대시보드에
+{"type":"robot_status","robot_code":...,"online":True}를 브로드캐스트하고,
+연결이 끊기면 online:False를 브로드캐스트한다. 그래서 이 노드는 별도
+heartbeat 메시지를 보낼 필요가 없다 — TCP 연결을 유지하는 것 자체가 전부다.
 
-class HeartbeatWorker:
-    """WebSocket으로 서버에 접속해 주기적으로 heartbeat를 보낸다.
-
-    연결이 끊기면 지수 백오프(최대 max_backoff초)로 재연결을 시도한다.
-    connect_fn/sleep_fn을 주입받는 이유는 순수 로직만 테스트하기 위함 —
-    실제 사용 시(uplink_node.py)엔 websocket.create_connection/time.sleep을 넘긴다.
-    """
-
-    def __init__(self, url, connect_fn, sleep_fn, interval=5.0, max_backoff=30.0):
-        self._url = url
-        self._connect_fn = connect_fn
-        self._sleep_fn = sleep_fn
-        self._interval = interval
-        self._max_backoff = max_backoff
-        self._stop_event = threading.Event()
-
-    def stop(self):
-        self._stop_event.set()
-
-    def run(self):
-        backoff = 1.0
-        while not self._stop_event.is_set():
-            try:
-                ws = self._connect_fn(self._url, timeout=5)
-                backoff = 1.0
-                while not self._stop_event.is_set():
-                    ws.send('{"type": "heartbeat"}')
-                    self._sleep_fn(self._interval)
-            except Exception:
-                self._sleep_fn(backoff)
-                backoff = min(backoff * 2, self._max_backoff)
-```
-
-- [ ] **Step 4: 테스트 통과 확인**
-
-```bash
-cd /home/cce/twomainProject/careguard_turtlebot_agent
-python3 -m pytest test/test_heartbeat_worker.py -v
-```
-Expected: 3개 테스트 모두 PASS
-
-- [ ] **Step 5: 커밋**
-
-```bash
-cd /home/cce/twomainProject
-git add careguard_turtlebot_agent/careguard_turtlebot_agent/heartbeat_worker.py \
-        careguard_turtlebot_agent/test/test_heartbeat_worker.py
-git commit -m "feat(agent): heartbeat 재연결·백오프 로직 추가"
-```
-
----
-
-## Task 6: 로봇 에이전트 — `uplink_node.py` + launch 파일
-
-**Files:**
-- Create: `careguard_turtlebot_agent/careguard_turtlebot_agent/uplink_node.py`
-- Create: `careguard_turtlebot_agent/launch/agent.launch.py`
-
-**Interfaces:**
-- Consumes: Task 5의 `HeartbeatWorker`
-- Produces: `ros2 run careguard_turtlebot_agent uplink_node --ros-args -p robot_code:=R-05 -p server_host:=<IP> [-p server_port:=8000]`로 실행되는 노드. 파라미터 `robot_code`/`server_host`(필수, 기본값 없으면 노드가 에러 로그를 남기고 값 없이는 동작 안 함)/`server_port`(기본 8000)
-
-> 이 태스크는 실제 하드웨어(라즈베리파이) 없이 이 개발 PC에서도 `rclpy`가 설치돼 있어 노드 생성 자체는 검증 가능하지만, "서버에 실제로 붙는지"는 Task 3의 서버가 로컬에 떠 있어야 확인 가능하다 — 아래 Step 4가 그 수동 확인이다. 자동 테스트는 만들지 않는다(네트워크·프로세스 수명주기가 얽혀 있어 TDD로 다루기보다 수동 확인이 더 정직함 — Task 5에서 로직은 이미 단위 테스트로 커버됨).
-
-- [ ] **Step 1: uplink_node.py 작성**
-
-`careguard_turtlebot_agent/careguard_turtlebot_agent/uplink_node.py`:
-```python
+연결 유지·재연결 로직은 robot_careguard_ws/src/careguard_agent/uplink_node.py
+(LIMO용)의 _connect_forever를 그대로 재사용했다. 토픽 릴레이(SLAM 지도·카메라·
+순찰 진행률 등)는 이번 범위 밖이라 구독하지 않는다 — 필요해지면
+careguard_agent/uplink_node.py를 참고해 여기에 추가하면 된다.
+"""
+import asyncio
 import threading
 
 import rclpy
 from rclpy.node import Node
-from websocket import create_connection
 
-from .heartbeat_worker import HeartbeatWorker
+from . import ws_config
+
+RECONNECT_DELAY_SEC = 3.0
 
 
 class UplinkNode(Node):
     def __init__(self):
         super().__init__('uplink_node')
 
-        self.declare_parameter('robot_code', '')
-        self.declare_parameter('server_host', '')
-        self.declare_parameter('server_port', 8000)
-
-        robot_code = self.get_parameter('robot_code').value
-        server_host = self.get_parameter('server_host').value
-        server_port = self.get_parameter('server_port').value
-
-        if not robot_code or not server_host:
+        if not ws_config.ROBOT_CODE:
             self.get_logger().error(
-                "robot_code, server_host 파라미터가 필요합니다. 예: "
-                "--ros-args -p robot_code:=R-05 -p server_host:=192.168.0.9")
+                "CAREGUARD_ROBOT_CODE 환경변수가 비어 있습니다. 예: "
+                "CAREGUARD_ROBOT_CODE=R-05 ros2 run careguard_turtlebot_agent uplink_node")
             raise SystemExit(1)
 
-        url = f"ws://{server_host}:{server_port}/ws/robot/{robot_code}"
-        self._worker = HeartbeatWorker(url, connect_fn=create_connection, sleep_fn=_sleep)
-        self._thread = threading.Thread(target=self._worker.run, daemon=True)
+        self._loop = asyncio.new_event_loop()
+        self._ws = None
+        self._connected = False
+
+        self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
-        self.get_logger().info(f"uplink 시작: {url}")
 
-    def destroy_node(self):
-        self._worker.stop()
-        super().destroy_node()
+    def _run_ws_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._connect_forever())
+
+    async def _connect_forever(self):
+        import websockets
+
+        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}'
+        while rclpy.ok():
+            try:
+                async with websockets.connect(url) as ws:
+                    self._ws = ws
+                    self._connected = True
+                    self.get_logger().info(f'서버 업링크 연결됨: {url}')
+                    await ws.wait_closed()
+            except Exception as exc:  # noqa: BLE001 - 재연결 루프이므로 모든 예외를 삼킨다
+                self.get_logger().warn(f'업링크 연결 실패, {RECONNECT_DELAY_SEC}s 후 재시도: {exc}')
+            self._connected = False
+            self._ws = None
+            await asyncio.sleep(RECONNECT_DELAY_SEC)
 
 
-def _sleep(seconds):
-    import time
-    time.sleep(seconds)
-
-
-def main():
-    rclpy.init()
+def main(args=None):
+    rclpy.init(args=args)
     node = UplinkNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
@@ -976,262 +719,144 @@ if __name__ == '__main__':
     main()
 ```
 
-- [ ] **Step 2: launch 파일 작성**
-
-`careguard_turtlebot_agent/launch/agent.launch.py`:
-```python
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
-
-
-def generate_launch_description():
-    return LaunchDescription([
-        DeclareLaunchArgument('robot_code', description='대시보드에 등록한 로봇 코드, 예: R-05'),
-        DeclareLaunchArgument('server_host', description='CareGuard 서버 IP'),
-        DeclareLaunchArgument('server_port', default_value='8000'),
-        Node(
-            package='careguard_turtlebot_agent',
-            executable='uplink_node',
-            name='uplink_node',
-            parameters=[{
-                'robot_code': LaunchConfiguration('robot_code'),
-                'server_host': LaunchConfiguration('server_host'),
-                'server_port': LaunchConfiguration('server_port'),
-            }],
-        ),
-    ])
-```
-
-- [ ] **Step 3: 빌드 + import 확인**
+- [ ] **Step 7: colcon build 확인**
 
 ```bash
-python3 -c "import websocket" || pip install --user websocket-client
+mkdir -p /tmp/careguard_turtlebot_ws/src
+ln -sfn /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/careguard_turtlebot_agent \
+        /tmp/careguard_turtlebot_ws/src/careguard_turtlebot_agent
 cd /tmp/careguard_turtlebot_ws
 source /opt/ros/humble/setup.bash
 colcon build --packages-select careguard_turtlebot_agent
-source install/setup.bash
-ros2 run careguard_turtlebot_agent uplink_node --ros-args -p robot_code:=TEST -p server_host:=127.0.0.1 &
-sleep 2
-kill %1 2>/dev/null
 ```
-Expected: `colcon build` 성공, 노드가 에러 없이 뜨고(로그에 "uplink 시작: ws://127.0.0.1:8000/ws/robot/TEST") kill로 정상 종료됨. 이 시점엔 서버(Task 3)가 안 떠 있어도 되고, 안 떠 있으면 `HeartbeatWorker`가 그냥 백오프 재시도를 반복하는 로그만 남긴다(에러로 죽지 않음).
+Expected: `Finished <<< careguard_turtlebot_agent`
 
-- [ ] **Step 4: (선택, 수동) 실제 서버와 붙는지 확인**
+- [ ] **Step 8: 노드 기동 확인 (환경변수 없을 때/있을 때 둘 다)**
 
 ```bash
-# 터미널 1
-cd /home/cce/twomainProject/pc_careguard/server
-.venv/bin/uvicorn app.main:app --reload
+cd /tmp/careguard_turtlebot_ws
+source install/setup.bash
+python3 -c "import websockets" 2>/dev/null || pip install --user websockets
 
-# 터미널 2 — 먼저 대시보드/curl로 로봇을 등록해야 함
+echo "--- CAREGUARD_ROBOT_CODE 없이 실행 (에러 로그 남기고 깨끗하게 종료돼야 함) ---"
+ros2 run careguard_turtlebot_agent uplink_node; echo "exit code: $?"
+
+echo "--- CAREGUARD_ROBOT_CODE 지정 후 실행 (서버 없어도 재연결 로그만 남고 안 죽어야 함) ---"
+timeout 5 env CAREGUARD_ROBOT_CODE=TEST-SMOKE ros2 run careguard_turtlebot_agent uplink_node
+```
+Expected: 첫 번째는 `robot_code 환경변수가 비어 있습니다` 에러 로그 후 non-zero
+종료. 두 번째는 "업링크 연결 실패, 3.0s 후 재시도" 경고 로그만 반복되고(서버가 안 떠
+있으니 당연함) 5초 뒤 timeout으로 강제 종료됨 — 이 자체가 재연결 루프가 죽지 않고
+도는 걸 보여주는 것.
+
+- [ ] **Step 9: (선택, 수동) 실제 서버와 연결 확인**
+
+```bash
+# 터미널 1: 서버
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
+.venv/bin/uvicorn app.main:app --port 8000
+
+# 터미널 2: 로봇 등록 (Task 2 API)
 curl -X POST http://127.0.0.1:8000/robots \
   -H "Content-Type: application/json" \
-  -d '{"code":"R-TEST","name":"수동확인용","model":"turtlebot","ros_domain_id":30}'
+  -d '{"code":"R-TEST","name":"수동확인용","model":"turtlebot"}'
 
-# 터미널 3
+# 터미널 3: 노드 실행
 cd /tmp/careguard_turtlebot_ws && source install/setup.bash
-ros2 run careguard_turtlebot_agent uplink_node --ros-args -p robot_code:=R-TEST -p server_host:=127.0.0.1
+CAREGUARD_ROBOT_CODE=R-TEST CAREGUARD_SERVER_URL=http://127.0.0.1:8000 \
+  ros2 run careguard_turtlebot_agent uplink_node
 
-# 터미널 4
-curl http://127.0.0.1:8000/robots   # is_online: true 확인
+# 터미널 4: 온라인 상태 확인 (Task 3에서 고친 is_online)
+curl -s http://127.0.0.1:8000/robots | python3 -m json.tool
 ```
-확인 후 터미널 3의 노드를 Ctrl+C로 끄고, `curl http://127.0.0.1:8000/robots`로 15초 이내 `is_online: false`로 바뀌는지 확인. 확인이 끝나면 `curl -X DELETE`가 없으므로 테스트용 `R-TEST` row는 DB에서 수동으로 지운다(`psql`로 `DELETE FROM robot WHERE code = 'R-TEST';` 또는 다음 태스크 진행에 지장 없으니 남겨둬도 무방).
+`R-TEST`의 `is_online`이 `true`인지 확인. 터미널 3을 Ctrl+C로 끄고 다시
+`curl http://127.0.0.1:8000/robots`로 `false`로 바뀌는지 확인(즉시 바뀜 —
+서버 쪽에 타임아웃 대기가 없음). 확인 후 `R-TEST` row는 DB에서 지워도 되고 남겨둬도
+다음 태스크에 지장 없음.
 
-- [ ] **Step 5: 커밋**
+- [ ] **Step 10: 커밋**
 
 ```bash
-cd /home/cce/twomainProject
-git add careguard_turtlebot_agent/careguard_turtlebot_agent/uplink_node.py \
-        careguard_turtlebot_agent/launch/agent.launch.py
-git commit -m "feat(agent): uplink_node ROS2 노드 추가"
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity
+git add careguard_turtlebot_agent/package.xml careguard_turtlebot_agent/setup.py \
+        careguard_turtlebot_agent/setup.cfg \
+        careguard_turtlebot_agent/resource/careguard_turtlebot_agent \
+        careguard_turtlebot_agent/careguard_turtlebot_agent/__init__.py \
+        careguard_turtlebot_agent/careguard_turtlebot_agent/ws_config.py \
+        careguard_turtlebot_agent/careguard_turtlebot_agent/uplink_node.py
+git commit -m "feat(agent): careguard_turtlebot_agent 최소 업링크 노드 추가"
 ```
 
 ---
 
-## Task 7: 대시보드 — `Qt6::WebSockets` + `RobotWsClient`
+## Task 5: SKIPPED (PIVOT)
 
-**Files:**
-- Modify: `pc_careguard/dashboard/CMakeLists.txt:11` (COMPONENTS에 `WebSockets` 추가), `:13-90`(소스 목록에 신규 파일 추가), `:93`(`target_link_libraries`에 `Qt6::WebSockets` 추가)
-- Create: `pc_careguard/dashboard/src/net/robot_ws_client.h`
-- Create: `pc_careguard/dashboard/src/net/robot_ws_client.cpp`
-
-**Interfaces:**
-- Produces: `RobotWsClient(const QString& serverUrl, QObject* parent)` — `.start()`로 접속 시작. 시그널 `snapshotReceived(const QStringList& onlineCodes)`, `robotStatusChanged(const QString& code, bool online)`
-- Task 8이 이 클래스를 `P7SettingsPage`에서 생성해서 시그널을 받는다
-
-이 프로젝트엔 C++ 자동 테스트 프레임워크가 없다(Global Constraints 참고) — 이 태스크는 **빌드 성공**으로 검증한다.
-
-- [ ] **Step 1: CMakeLists.txt 수정 — Qt6 컴포넌트**
-
-`pc_careguard/dashboard/CMakeLists.txt:11`, 기존:
-```cmake
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets Multimedia MultimediaWidgets Network)
-```
-다음으로 교체:
-```cmake
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets Multimedia MultimediaWidgets Network WebSockets)
-```
-
-- [ ] **Step 2: CMakeLists.txt 수정 — 소스 목록에 추가**
-
-같은 파일, `src/widgets/checkable_list_widget.cpp`(63-64행 부근) 다음 줄에 삽입:
-```cmake
-    src/widgets/checkable_list_widget.h
-    src/widgets/checkable_list_widget.cpp
-    src/net/robot_ws_client.h
-    src/net/robot_ws_client.cpp
-    src/dialogs/event_detail_modal.h
-```
-(마지막 줄 `src/dialogs/event_detail_modal.h`는 원래 있던 다음 줄 — 그 위에 두 줄만 끼워 넣는다는 뜻)
-
-- [ ] **Step 3: CMakeLists.txt 수정 — 링크**
-
-`pc_careguard/dashboard/CMakeLists.txt:93`, 기존:
-```cmake
-target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network)
-```
-다음으로 교체:
-```cmake
-target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network Qt6::WebSockets)
-```
-
-- [ ] **Step 4: robot_ws_client.h 작성**
-
-`pc_careguard/dashboard/src/net/robot_ws_client.h`:
-```cpp
-#pragma once
-#include <QObject>
-#include <QString>
-#include <QStringList>
-#include <QUrl>
-
-class QWebSocket;
-class QTimer;
-
-// /ws/dashboard에 상시 접속해 로봇 온라인/오프라인 상태를 실시간으로 받는다.
-// 폴링 없음 — 서버가 상태 변화 있을 때만 push한다.
-class RobotWsClient : public QObject {
-    Q_OBJECT
-public:
-    explicit RobotWsClient(const QString& serverUrl, QObject* parent = nullptr);
-    void start();
-
-signals:
-    void snapshotReceived(const QStringList& onlineCodes);
-    void robotStatusChanged(const QString& code, bool online);
-
-private:
-    void connectSocket();
-    void handleTextMessage(const QString& message);
-
-    QWebSocket* socket_;
-    QTimer* reconnectTimer_;
-    QUrl wsUrl_;
-};
-```
-
-- [ ] **Step 5: robot_ws_client.cpp 작성**
-
-`pc_careguard/dashboard/src/net/robot_ws_client.cpp`:
-```cpp
-#include "robot_ws_client.h"
-
-#include <QAbstractSocket>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QTimer>
-#include <QWebSocket>
-
-namespace {
-constexpr int kReconnectIntervalMs = 3000;
-}
-
-RobotWsClient::RobotWsClient(const QString& serverUrl, QObject* parent)
-    : QObject(parent), socket_(new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this)),
-      reconnectTimer_(new QTimer(this)) {
-    QUrl url(serverUrl);
-    url.setScheme(url.scheme() == QStringLiteral("https") ? QStringLiteral("wss") : QStringLiteral("ws"));
-    url.setPath(QStringLiteral("/ws/dashboard"));
-    wsUrl_ = url;
-
-    reconnectTimer_->setInterval(kReconnectIntervalMs);
-    connect(reconnectTimer_, &QTimer::timeout, this, &RobotWsClient::connectSocket);
-    connect(socket_, &QWebSocket::textMessageReceived, this, &RobotWsClient::handleTextMessage);
-}
-
-void RobotWsClient::start() {
-    connectSocket();
-    reconnectTimer_->start();
-}
-
-void RobotWsClient::connectSocket() {
-    if (socket_->state() == QAbstractSocket::UnconnectedState) {
-        socket_->open(wsUrl_);
-    }
-}
-
-void RobotWsClient::handleTextMessage(const QString& message) {
-    const QJsonObject obj = QJsonDocument::fromJson(message.toUtf8()).object();
-    const QString type = obj.value(QStringLiteral("type")).toString();
-    if (type == QStringLiteral("snapshot")) {
-        QStringList codes;
-        for (const QJsonValue& v : obj.value(QStringLiteral("online_codes")).toArray()) {
-            codes << v.toString();
-        }
-        emit snapshotReceived(codes);
-    } else if (type == QStringLiteral("robot_status")) {
-        emit robotStatusChanged(obj.value(QStringLiteral("code")).toString(),
-                                 obj.value(QStringLiteral("online")).toBool());
-    }
-}
-```
-
-- [ ] **Step 6: 빌드 확인**
-
-```bash
-cd /home/cce/twomainProject/pc_careguard/dashboard/build
-cmake -DCMAKE_PREFIX_PATH=/home/cce/Qt/6.11.1/gcc_64 .. 2>&1 | tail -20
-cmake --build . -j"$(nproc)" 2>&1 | tail -40
-```
-Expected: `Built target careguard_dashboard` (아직 `RobotWsClient`를 아무도 안 쓰므로 링크 경고 없이 그냥 빌드만 성공하면 됨 — 실제 연동은 Task 8)
-
-- [ ] **Step 7: 커밋**
-
-```bash
-cd /home/cce/twomainProject
-git add pc_careguard/dashboard/CMakeLists.txt pc_careguard/dashboard/src/net/robot_ws_client.h \
-        pc_careguard/dashboard/src/net/robot_ws_client.cpp
-git commit -m "feat(dashboard): Qt6 WebSockets 기반 RobotWsClient 추가"
-```
+원래 계획: 자체 `HeartbeatWorker`(재연결·백오프 로직)를 pytest로 테스트하며 새로
+설계. **더 이상 필요 없음** — 기존 시스템엔 로봇 쪽 heartbeat 메시지 개념 자체가
+없고(서버가 TCP 연결 유지 여부만 본다), 재연결 로직은 Task 4에서 기존
+`careguard_agent/uplink_node.py`의 `_connect_forever`를 그대로 재사용했다. 실행할 것 없음.
 
 ---
 
-## Task 8: 대시보드 — `P7SettingsPage` 실제 연동
+## Task 6: SKIPPED (PIVOT)
+
+원래 계획: `uplink_node.py` + launch 파일을 새로 설계. **Task 4에 이미 포함됨**
+(launch 파일은 이번 범위에선 안 씀 — `ros2 run` + 환경변수로 충분). 실행할 것 없음.
+
+---
+
+## Task 7: SKIPPED (PIVOT)
+
+원래 계획: 대시보드에 `Qt6::WebSockets` 추가 + 새 `RobotWsClient` 클래스 작성. **이미
+전부 존재함** — `pc_careguard/dashboard/CMakeLists.txt`에 `Qt6::WebSockets`가 이미
+링크돼 있고, `pc_careguard/dashboard/src/net/ws_client.{h,cpp}`(`WsClient` 클래스, P5/P6
+페이지가 이미 사용 중)가 이미 있다. 새로 만들 것 없음 — Task 8에서 이 기존 클래스를
+그대로 재사용한다.
+
+---
+
+## Task 8 (PIVOT — 기존 `WsClient` 재사용): 대시보드 — `P7SettingsPage` 실제 연동
 
 **Files:**
 - Modify: `pc_careguard/dashboard/src/pages/p7_settings_page.h`
 - Modify: `pc_careguard/dashboard/src/pages/p7_settings_page.cpp`
 
 **Interfaces:**
-- Consumes: Task 2/3의 서버 `GET/POST /robots`, `/ws/dashboard`; Task 7의 `RobotWsClient`
-- Produces: 로봇 관리 탭이 하드코딩 목업 대신 실제 서버 데이터로 채워지고, 등록 버튼이 실제로 DB에 저장하며, 온라인/오프라인이 WebSocket push로 실시간 갱신됨
+- Consumes: Task 2/3의 서버 `GET/POST /robots`(REST, 최초 목록 로드·등록용); 이미 존재하는
+  `pc_careguard/dashboard/src/net/ws_client.h`의 `WsClient` 클래스 — 생성자 인자 없음
+  (`CAREGUARD_SERVER_URL` 환경변수를 자기가 알아서 읽음), `connectToServer()`로 접속 시작,
+  `messageReceived(const QJsonObject&)` 시그널로 모든 타입의 메시지가 들어옴(P5 페이지가
+  이미 이 패턴을 씀 — `src/pages/p5_map_page.cpp:79-81` 참고). 이 태스크가 관심 있는 건
+  `{"type":"robot_status","robot_code":...,"online":...}` 뿐이고, 나머지 타입
+  (`robot_position`/`slam_progress`/`slam_done`/`patrol_progress`/`patrol_done`/`camera_frame`
+  등)은 무시한다.
+- Produces: 로봇 관리 탭이 하드코딩 목업 대신 실제 서버 데이터로 채워지고, 등록 버튼이
+  실제로 DB에 저장하며, 온라인/오프라인이 기존 WebSocket 인프라를 통해 실시간으로 갱신됨
 
-이것도 C++ — **빌드 성공 + 수동 스모크 테스트**로 검증한다(Global Constraints 참고).
+이 프로젝트엔 C++ 자동 테스트 프레임워크가 없다(Global Constraints 참고) — 이 태스크는
+**빌드 성공 + 수동 스모크 테스트**로 검증한다. `Qt6::WebSockets`는 이미
+`CMakeLists.txt`에 링크돼 있으므로 이번 태스크에서 CMakeLists.txt를 건드릴 필요가 없다.
 
 - [ ] **Step 1: 헤더에 선언 추가**
 
 `pc_careguard/dashboard/src/pages/p7_settings_page.h`:
 
-`class LiveSearchLineEdit;` 다음 줄(17행)에 전방 선언 추가:
+`class LiveSearchLineEdit;` 다음 줄에 전방 선언 추가:
 ```cpp
 class LiveSearchLineEdit;
-class RobotWsClient;
+class WsClient;
 ```
 
-`void openRobotDialog(int rowIndex);  // -1이면 신규 등록` 다음(100행) 근처, `void populateRobotRow(int r);`/`void refreshRobotTable();` 아래에 메서드 선언 추가:
+`#include "dialogs/p7_account_dialog.h"` 다음 줄에 include 추가(이 헤더에서
+`RobotDialog::RobotData`를 쓰려면 필요):
+```cpp
+#include "dialogs/p7_account_dialog.h"
+#include "dialogs/p7_robot_dialog.h"
+#include "theme/tokens.h"
+```
+
+`void openRobotDialog(int rowIndex);` 아래, `void populateRobotRow(int r);`/
+`void refreshRobotTable();` 다음 줄에 메서드 선언 추가:
 ```cpp
     void openRobotDialog(int rowIndex);  // -1이면 신규 등록
     void populateRobotRow(int r);
@@ -1239,25 +864,19 @@ class RobotWsClient;
     void fetchRobots();  // GET /robots
     void handleRobotsReply(QNetworkReply* reply);
     void registerRobot(const RobotDialog::RobotData& data);  // POST /robots
-    void handleRobotsSnapshot(const QStringList& onlineCodes);
-    void handleRobotStatusChanged(const QString& code, bool online);
-```
-(`RobotDialog::RobotData`를 쓰려면 `p7_settings_page.h` 상단에 `#include "dialogs/p7_robot_dialog.h"`가 필요 — 기존엔 `p7_account_dialog.h`만 include돼 있었다. `#include "dialogs/p7_account_dialog.h"` 다음 줄에 추가:)
-```cpp
-#include "dialogs/p7_account_dialog.h"
-#include "dialogs/p7_robot_dialog.h"
-#include "theme/tokens.h"
+    void handleWsMessage(const QJsonObject& message);  // WsClient::messageReceived — type으로 분기
 ```
 
 `QPushButton* deleteAccountBtn_ = nullptr;` 다음 줄(멤버 변수 영역)에 추가:
 ```cpp
     QPushButton* deleteAccountBtn_ = nullptr;
-    RobotWsClient* robotWsClient_ = nullptr;
+    WsClient* wsClient_ = nullptr;
 ```
 
-- [ ] **Step 2: 생성자 — 하드코딩 시드 제거, 실 연동 추가**
+- [ ] **Step 2: 생성자 — 하드코딩 시드 제거**
 
-`pc_careguard/dashboard/src/pages/p7_settings_page.cpp`, 기존(168-188행):
+`pc_careguard/dashboard/src/pages/p7_settings_page.cpp`, 기존(생성자 시작 부분,
+`robots_ = { ... };` 블록 전체, R-01~R-04 4개 항목):
 ```cpp
 P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     robots_ = {
@@ -1284,7 +903,8 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
 
     r03Nodes_ = {
 ```
-다음으로 교체 (`robots_ = {...}` 블록만 통째로 삭제하고, `r03Nodes_`는 그대로 둔다):
+다음으로 교체 (`robots_ = {...}` 블록만 통째로 삭제하고, `r03Nodes_`는 그대로 둔다 —
+R-03 노드 상세 카드는 이 태스크와 무관한 별개의 하드코딩 목업이라 손대지 않는다):
 ```cpp
 P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     // 로봇 목록은 하드코딩하지 않고 서버 DB에서 불러온다 (fetchRobots(), 생성자 마지막에서 호출).
@@ -1292,7 +912,7 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     r03Nodes_ = {
 ```
 
-- [ ] **Step 3: 생성자 끝 — fetchRobots + RobotWsClient 기동**
+- [ ] **Step 3: 생성자 끝 — fetchRobots + 기존 WsClient 연결**
 
 `pc_careguard/dashboard/src/pages/p7_settings_page.cpp`, 기존(생성자 마지막 부분):
 ```cpp
@@ -1310,22 +930,23 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     fetchAuditLog();
     fetchRobots();
 
-    robotWsClient_ = new RobotWsClient(serverUrl_, this);
-    connect(robotWsClient_, &RobotWsClient::snapshotReceived, this, &P7SettingsPage::handleRobotsSnapshot);
-    connect(robotWsClient_, &RobotWsClient::robotStatusChanged, this, &P7SettingsPage::handleRobotStatusChanged);
-    robotWsClient_->start();
+    wsClient_ = new WsClient(this);
+    connect(wsClient_, &WsClient::messageReceived, this, &P7SettingsPage::handleWsMessage);
+    wsClient_->connectToServer();
 }
 ```
-`#include "net/robot_ws_client.h"`를 cpp 파일 상단 include 목록에 추가 (`#include "dialogs/p7_robot_dialog.h"` 다음 줄):
+
+cpp 파일 상단 include 목록에 `#include "net/ws_client.h"`를 추가한다
+(`#include "dialogs/p7_robot_dialog.h"` 다음 줄):
 ```cpp
 #include "dialogs/p7_robot_dialog.h"
-#include "net/robot_ws_client.h"
+#include "net/ws_client.h"
 #include "theme/calendar_style.h"
 ```
 
 - [ ] **Step 4: 등록 시 실제 API 호출로 교체**
 
-`pc_careguard/dashboard/src/pages/p7_settings_page.cpp`, `openRobotDialog` 안의 기존(840-866행):
+`pc_careguard/dashboard/src/pages/p7_settings_page.cpp`, `openRobotDialog` 안의 기존:
 ```cpp
     connect(dialog, &RobotDialog::robotSaved, this,
             [this, rowIndex, isNew, previousRecipient](const RobotDialog::RobotData& saved) {
@@ -1355,7 +976,8 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
         refreshRobotTable();
     });
 ```
-다음으로 교체 (신규 등록만 서버로 보내고, 기존 로봇 수정은 이번 범위 밖이라 기존 로컬 처리 그대로 둔다):
+다음으로 교체 (신규 등록만 서버로 보내고, 기존 로봇 수정은 이번 범위 밖이라 기존 로컬
+처리 그대로 둔다):
 ```cpp
     connect(dialog, &RobotDialog::robotSaved, this,
             [this, rowIndex, isNew, previousRecipient](const RobotDialog::RobotData& saved) {
@@ -1378,9 +1000,10 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     });
 ```
 
-- [ ] **Step 5: fetchRobots/handleRobotsReply/registerRobot/스냅샷·상태 핸들러 구현**
+- [ ] **Step 5: fetchRobots/handleRobotsReply/registerRobot/handleWsMessage 구현**
 
-`pc_careguard/dashboard/src/pages/p7_settings_page.cpp`의 `refreshRobotTable()` 함수(기존 783-791행) 바로 뒤에 추가:
+`pc_careguard/dashboard/src/pages/p7_settings_page.cpp`의 `refreshRobotTable()` 함수
+바로 뒤에 추가:
 ```cpp
 void P7SettingsPage::fetchRobots() {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/robots")));
@@ -1443,16 +1066,11 @@ void P7SettingsPage::registerRobot(const RobotDialog::RobotData& data) {
     });
 }
 
-void P7SettingsPage::handleRobotsSnapshot(const QStringList& onlineCodes) {
-    for (auto& row : robots_) {
-        const bool online = onlineCodes.contains(row.id);
-        row.level = online ? Tokens::Level::Normal : Tokens::Level::Offline;
-        row.statusDetail = online ? QStringLiteral("● 온라인") : QStringLiteral("오프라인");
-    }
-    if (robotTable_ != nullptr) refreshRobotTable();
-}
+void P7SettingsPage::handleWsMessage(const QJsonObject& message) {
+    if (message.value(QStringLiteral("type")).toString() != QStringLiteral("robot_status")) return;
 
-void P7SettingsPage::handleRobotStatusChanged(const QString& code, bool online) {
+    const QString code = message.value(QStringLiteral("robot_code")).toString();
+    const bool online = message.value(QStringLiteral("online")).toBool();
     for (int r = 0; r < static_cast<int>(robots_.size()); ++r) {
         if (robots_[static_cast<size_t>(r)].id == code) {
             robots_[static_cast<size_t>(r)].level = online ? Tokens::Level::Normal : Tokens::Level::Offline;
@@ -1468,7 +1086,7 @@ void P7SettingsPage::handleRobotStatusChanged(const QString& code, bool online) 
 - [ ] **Step 6: 빌드**
 
 ```bash
-cd /home/cce/twomainProject/pc_careguard/dashboard/build
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/dashboard/build
 cmake -DCMAKE_PREFIX_PATH=/home/cce/Qt/6.11.1/gcc_64 .. 2>&1 | tail -20
 cmake --build . -j"$(nproc)" 2>&1 | tail -60
 ```
@@ -1479,23 +1097,27 @@ Expected: `Built target careguard_dashboard`
 ```bash
 # 터미널 1: 서버
 docker compose -f /home/cce/twomainProject/deploy/docker-compose.yml up -d postgres
-cd /home/cce/twomainProject/pc_careguard/server && .venv/bin/uvicorn app.main:app --reload
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/server
+.venv/bin/uvicorn app.main:app --reload
 
 # 터미널 2: 대시보드 실행
-/home/cce/twomainProject/pc_careguard/dashboard/build/careguard_dashboard
+/home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity/pc_careguard/dashboard/build/careguard_dashboard
 ```
 확인 항목:
-1. "로봇 관리" 탭에 로봇 목록이 뜬다(처음엔 비어있거나 이전 태스크에서 만든 테스트 로봇들이 남아있을 수 있음)
+1. "로봇 관리" 탭에 로봇 목록이 뜬다(이전 태스크에서 만든 테스트 로봇이 남아있을 수 있음)
 2. "로봇 등록" → 모델 `turtlebot`, 코드/이름/ROS_DOMAIN_ID 입력 후 저장 → 목록에 나타나고 "상태"가 오프라인
-3. 터미널 3에서 Task 6의 방식으로 같은 코드로 `uplink_node` 실행 → 대시보드가 몇 초 안에(폴링 없이, push로) "온라인"으로 자동 갱신되는지 확인
-4. `uplink_node`를 Ctrl+C로 종료 → 15초 안에 대시보드가 "오프라인"으로 자동 갱신되는지 확인
+3. 터미널 3에서 Task 4의 방식으로 같은 코드로 `uplink_node` 실행
+   (`CAREGUARD_ROBOT_CODE=<코드> ros2 run careguard_turtlebot_agent uplink_node`) →
+   대시보드가 몇 초 안에(폴링 없이, push로) "온라인"으로 자동 갱신되는지 확인
+4. `uplink_node`를 Ctrl+C로 종료 → 대시보드가 즉시(서버 쪽 타임아웃이 없으므로 몇 초 내)
+   "오프라인"으로 자동 갱신되는지 확인
 
 - [ ] **Step 8: 커밋**
 
 ```bash
-cd /home/cce/twomainProject
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity
 git add pc_careguard/dashboard/src/pages/p7_settings_page.h pc_careguard/dashboard/src/pages/p7_settings_page.cpp
-git commit -m "feat(dashboard): 로봇 관리 탭을 실제 서버·WebSocket과 연동"
+git commit -m "feat(dashboard): 로봇 관리 탭을 실제 서버·기존 WsClient와 연동"
 ```
 
 ---
@@ -1534,7 +1156,7 @@ git commit -m "feat(dashboard): 로봇 관리 탭을 실제 서버·WebSocket과
 - [ ] **Step 2: 커밋**
 
 ```bash
-cd /home/cce/twomainProject
+cd /home/cce/twomainProject/.worktrees/feature-turtlebot-realtime-connectivity
 git add CONVENTIONS.md
 git commit -m "docs(docs): careguard_turtlebot_agent 최상위 폴더 규칙 반영"
 ```
