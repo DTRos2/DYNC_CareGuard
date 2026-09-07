@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 import psycopg2.extras
 
-from ... import db, media
+from . import media
+from ... import db
 from ...schemas import (
     MapCreate,
     MapItem,
