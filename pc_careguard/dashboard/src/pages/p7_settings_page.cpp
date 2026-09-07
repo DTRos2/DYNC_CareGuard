@@ -475,10 +475,6 @@ QWidget* P7SettingsPage::buildThresholdTab() {
         thresholdRow(QStringLiteral("미수령 판정 시간"), thresholdField("10"), QStringLiteral("분")));
     medLayout->addWidget(
         thresholdRow(QStringLiteral("재안내 횟수"), thresholdField("2"), QStringLiteral("회")));
-    auto* medNote = new QLabel(QStringLiteral("심박 임계값은 대상자별 설정(대상자 관리)이 우선합니다"), medCard);
-    medNote->setProperty("role", "muted");
-    medNote->setWordWrap(true);
-    medLayout->addWidget(medNote);
     cardsLayout->addWidget(medCard);
 
     layout->addWidget(cardsRow);

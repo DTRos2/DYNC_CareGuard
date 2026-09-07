@@ -1,0 +1,11 @@
+# 순찰 1회차 실행. careguard_mission/patrol_task.py가 액션 서버,
+# careguard_agent/downlink_node.py가 서버의 "patrol_start" WS 명령을 받아 호출하는
+# 클라이언트다.
+int32 run_id
+Waypoint[] waypoints
+---
+string status            # "completed" / "aborted" / "failed"
+int32 waypoints_done
+---
+int32 waypoints_done
+int32 waypoints_total

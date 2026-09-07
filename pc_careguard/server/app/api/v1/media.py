@@ -2,14 +2,16 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
+import yaml
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from psycopg2.extras import Json
 
-from . import config, db
-from .schemas import (
+from ... import config, db
+from ...schemas import (
+    MapImageUploadResponse,
     MediaUploadResponse,
     RecordVideoViewRequest,
     RecordVideoViewResponse,
@@ -25,6 +27,7 @@ router = APIRouter(prefix="/media", tags=["media"])
 video_events_router = APIRouter(prefix="/video-events", tags=["video-events"])
 
 VIDEO_DIR = config.STORAGE_DIR / "videos"
+MAP_DIR = config.STORAGE_DIR / "maps"
 
 # 한 번에 메모리에 올릴 최대 청크 크기. 영상 파일이 커도 통째로 읽지 않고 이 크기씩 나눠 쓴다.
 CHUNK_SIZE = 1024 * 1024
@@ -108,6 +111,94 @@ def upload_video(
         original_filename=file.filename,
         duration_sec=duration_sec,
     )
+
+
+@router.post("/upload-map", response_model=MapImageUploadResponse)
+def upload_map_image(
+    robot_code: str = Form(..., description="매핑을 수행한 로봇 code (예: R-04)"),
+    file: UploadFile = File(..., description="업로드할 맵 이미지(.pgm 등) 파일"),
+):
+    """SLAM으로 완성한(또는 파일로 직접 등록하는) 맵 이미지를 업로드해 files에
+    entity_type='map_image'로 기록한다.
+
+    /media/upload(영상용)를 재사용하면 entity_type이 'event_clip'으로 고정되고
+    camera_recording에도 불필요한 행이 생겨, 이후 map 행 재연결("UPDATE files ...
+    WHERE entity_type = 'map_image'")이 아무 행도 못 찾고 조용히 실패한다 — 그래서
+    맵 전용 엔드포인트를 따로 둔다.
+
+    다른 곳(POST /slam-jobs 등)과 마찬가지로 robot_id가 아니라 robot_code로 받는다 —
+    robots.py(로봇 목록 API)가 이번 스코프 밖이라 대시보드가 robot_id를 알 방법이
+    없다. downlink_node.py도 이미 알고 있는 자기 ROBOT_CODE를 그대로 쓰면 되므로
+    서버가 알려주는 robot_id를 따로 안 받아도 된다.
+
+    업로드 시점엔 아직 map.id가 없으므로 entity_id는 임시로 robot_id를 담아 두고,
+    나중에 map 행이 만들어질 때(_save_slam_result 또는 POST /maps) 그 map.id로
+    다시 연결한다.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일이 비어 있습니다")
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
+        robot = cur.fetchone()
+    if robot is None:
+        raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+    robot_id = robot["id"]
+
+    robot_dir = MAP_DIR / str(robot_id)
+    robot_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(file.filename).suffix
+    storage_path = robot_dir / f"{uuid.uuid4().hex}{ext}"
+
+    with storage_path.open("wb") as out:
+        while chunk := file.file.read(CHUNK_SIZE):
+            out.write(chunk)
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO files (entity_type, entity_id, storage_path, original_filename)
+            VALUES ('map_image', %s, %s, %s)
+            RETURNING id
+            """,
+            (str(robot_id), str(storage_path), file.filename),
+        )
+        file_id = cur.fetchone()["id"]
+        conn.commit()
+
+    return MapImageUploadResponse(
+        file_id=file_id,
+        storage_path=str(storage_path),
+        original_filename=file.filename,
+    )
+
+
+def write_map_yaml_sidecar(file_id: int, raw_yaml: Dict[str, Any]) -> None:
+    """업로드된 맵 이미지(.pgm) 옆에 실제 .yaml 파일을 같이 남긴다.
+
+    SLAM 저장(ws/robot_ws.py::_save_slam_result)·파일로 등록(api/v1/map.py::
+    create_map) 둘 다 지금까지는 .yaml 내용(resolution/origin 등)을 DB 컬럼에만
+    남기고 실제 파일은 안 남겼다 — 그래서 나중에 "파일로 등록"으로 이 폴더의
+    pgm+yaml 쌍을 다시 불러오고 싶어도 yaml이 없어서 불가능했다(등록엔 .yaml이
+    필수). 이 함수가 그 실제 파일을 만든다.
+
+    raw_yaml의 image 필드는 원본 위치(로봇의 임시 경로, 또는 사용자 PC의 로컬
+    경로)를 가리키고 있어서 그대로 두면 잘못된 참조가 된다 — 실제로 옆에 저장된
+    파일명으로 고쳐 쓴다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT storage_path FROM files WHERE id = %s", (file_id,))
+        row = cur.fetchone()
+    if row is None:
+        return
+
+    pgm_path = Path(row["storage_path"])
+    yaml_path = pgm_path.with_suffix(".yaml")
+    content = dict(raw_yaml)
+    content["image"] = pgm_path.name
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(content, f, default_flow_style=None, sort_keys=False)
 
 
 @router.api_route("/files/{file_id}", methods=["GET", "HEAD"])

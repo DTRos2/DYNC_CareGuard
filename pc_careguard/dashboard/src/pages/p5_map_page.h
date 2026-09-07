@@ -11,6 +11,9 @@ class SlamMappingCard;
 class TeleopPanel;
 class MappingStatusOverlay;
 class QKeyEvent;
+class ApiClient;
+class WsClient;
+class QJsonObject;
 
 // P5 맵·로봇 매핑 — SLAM 캔버스 + 텔레옵 + 매핑 현황 오버레이 + 파일 등록 모달.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 4), §7 참고.
@@ -30,8 +33,8 @@ protected:
 
 private:
     // 등록 화면(openFileRegisterDialog)에서 실제로 업로드된 맵 이미지를 robotId별로
-    // 보관해 둔다 — MappingStatusOverlay::kRows는 텍스트 더미라 이미지를 안 들고
-    // 있으므로, 미리보기 모달에 넘길 실제 이미지의 유일한 출처는 여기다.
+    // 보관해 둔다 — MappingStatusOverlay는 이미지를 안 들고 텍스트 행만 관리하므로,
+    // 미리보기 모달에 넘길 실제 이미지의 유일한 출처는 여기다.
     struct RegisteredMapInfo {
         QImage image;
         QString mapName;
@@ -43,10 +46,40 @@ private:
     void openFileRegisterDialog();
     void openMapPreviewDialog(const QString& robotId);
     void handleEmergencyStop();
+    // 서버에 이미 배포된 활성 맵 목록을 조회해 매핑 현황 오버레이에 반영한다
+    // (GET /maps/active). 새로 파일로 등록/SLAM 저장한 맵은 이 경로를 타지 않고
+    // openFileRegisterDialog()에서 바로 markMapDeployed()를 부른다.
+    void loadActiveMapsFromServer();
+    // "매핑 시작" 버튼 — POST /slam-jobs로 현재 로봇의 SLAM 매핑을 시작시킨다
+    // (체크리스트 ⑧). 화면상 텔레옵·SlamMapView 시뮬레이션은 서버 연동 여부와 무관하게
+    // 그대로 동작한다 — 이 호출은 실제 로봇에게 명령을 전달하는 별도 경로다.
+    void startMappingOnServer();
+    // "매핑 취소" — 진행 중인 slam_job을 서버에 취소 요청한다(로봇의 cartographer
+    // 프로세스도 같이 종료됨). "매핑 재시작"도 내부적으로 이걸 먼저 부른 뒤
+    // startMappingOnServer()로 새 job을 다시 시작한다.
+    void cancelMappingOnServer();
+    void restartMappingOnServer();
+    // /ws/dashboard 메시지 — slam_progress/slam_done을 현재 로봇 기준으로 반영한다
+    // (체크리스트 ⑨).
+    void handleWsMessage(const QJsonObject& message);
 
     MappingStatusOverlay* statusOverlay_;
     SlamMappingCard* slamCard_;
     TeleopPanel* teleopPanel_;
     QPushButton* robotChipBtn_;
+    // "맵 저장 정보" 카드의 맵 이름 입력칸 — "SLAM 맵 저장·배포" 클릭 시 이 값을 실제
+    // 저장될 이름으로 서버에 넘겨야 해서 멤버로 들고 있는다("매핑 시작" 시점엔 아직
+    // 로봇이 지도를 다 그리기 전이라 이름이 확정 안 됐을 수 있어, 이름 확정은 저장
+    // 시점 기준으로 한다).
+    QLineEdit* mapNameEdit_;
     QMap<QString, RegisteredMapInfo> registeredMaps_;
+    ApiClient* apiClient_;
+    WsClient* wsClient_;
+    // 진행 중인 slam_job id. 0이면 진행 중인 매핑이 없다는 뜻(취소/재시작 버튼이
+    // 서버에 뭘 취소해야 할지 알아야 해서 필요) — startMappingOnServer 성공 시 채우고,
+    // cancelMappingOnServer 성공 시 0으로 되돌린다.
+    int currentSlamJobId_ = 0;
+    // 헤더의 로봇 칩은 지금 "R-04" 고정 표시다(로봇 목록 API는 이번 스코프 밖) — 매핑
+    // 시작·WS 필터링에 쓰는 로봇 코드도 이 상수를 그대로 따른다.
+    QString currentRobotCode_ = QStringLiteral("R-04");
 };

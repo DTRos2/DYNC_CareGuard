@@ -1,0 +1,299 @@
+from typing import List, Optional
+
+import psycopg2.extras
+from fastapi import APIRouter, HTTPException, Query
+
+from ... import db
+from ...schemas import (
+    PatrolRouteCreate,
+    PatrolRouteItem,
+    PatrolRouteUpdate,
+    PatrolRunCreate,
+    PatrolRunItem,
+    PatrolScheduleCreate,
+    PatrolScheduleItem,
+    PatrolScheduleUpdate,
+)
+from ...ws import robot_ws
+
+routes_router = APIRouter(prefix="/patrol-routes", tags=["patrol"])
+schedules_router = APIRouter(prefix="/patrol-schedules", tags=["patrol"])
+
+# 순찰 실행(실제 "순찰 시작" 트리거). schedule(자동)·manual(대시보드 버튼) 둘 다 여기로 모인다.
+runs_router = APIRouter(prefix="/patrol-runs", tags=["patrol"])
+
+
+@routes_router.get("", response_model=List[PatrolRouteItem])
+def list_patrol_routes(map_id: Optional[int] = Query(None, description="맵으로 필터링")):
+    """순찰 경로 목록. steps는 방문할 waypoint id를 순서대로 담은 배열이다."""
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, map_id, name, description, steps, created_by, created_at
+            FROM patrol_route
+            WHERE deregistered_at IS NULL
+                AND (%(map_id)s IS NULL OR map_id = %(map_id)s)
+            ORDER BY id
+            """,
+            {"map_id": map_id},
+        )
+        rows = cur.fetchall()
+
+    return [PatrolRouteItem(**row) for row in rows]
+
+
+@routes_router.post("", response_model=PatrolRouteItem, status_code=201)
+def create_patrol_route(payload: PatrolRouteCreate):
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM patrol_route WHERE map_id = %s AND name = %s AND deregistered_at IS NULL",
+            (payload.map_id, payload.name),
+        )
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail="이미 같은 이름의 경로가 있습니다")
+
+        cur.execute(
+            """
+            INSERT INTO patrol_route (map_id, name, description, steps, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, map_id, name, description, steps, created_by, created_at
+            """,
+            (
+                payload.map_id,
+                payload.name,
+                payload.description,
+                psycopg2.extras.Json(payload.steps),
+                payload.created_by,
+            ),
+        )
+        row = cur.fetchone()
+        conn.commit()
+
+    return PatrolRouteItem(**row)
+
+
+@routes_router.put("/{route_id}", response_model=PatrolRouteItem)
+def update_patrol_route(route_id: int, payload: PatrolRouteUpdate):
+    fields = payload.dict(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="변경할 내용이 없습니다")
+    if "steps" in fields:
+        fields["steps"] = psycopg2.extras.Json(fields["steps"])
+
+    sets = ", ".join(f"{key} = %s" for key in fields)
+    params = list(fields.values()) + [route_id]
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE patrol_route SET {sets}
+            WHERE id = %s AND deregistered_at IS NULL
+            RETURNING id, map_id, name, description, steps, created_by, created_at
+            """,
+            params,
+        )
+        row = cur.fetchone()
+        conn.commit()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="경로를 찾을 수 없습니다")
+    return PatrolRouteItem(**row)
+
+
+@routes_router.delete("/{route_id}", status_code=204)
+def delete_patrol_route(route_id: int):
+    """경로를 삭제한다. 이 경로를 쓰는 순찰 스케줄도 함께 비활성화한다."""
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE patrol_route SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL",
+            (route_id,),
+        )
+        if cur.rowcount == 0:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="경로를 찾을 수 없습니다")
+
+        cur.execute(
+            "UPDATE patrol_schedule SET deregistered_at = NOW() WHERE route_id = %s AND deregistered_at IS NULL",
+            (route_id,),
+        )
+        conn.commit()
+
+
+@schedules_router.get("", response_model=List[PatrolScheduleItem])
+def list_patrol_schedules(route_id: int = Query(..., description="대상 경로 id")):
+    """경로 실행 예약 목록. 한 경로에 여러 시각이 등록될 수 있다."""
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, route_id, run_time, days_of_week, created_by, created_at,
+                   (deregistered_at IS NULL) AS enabled
+            FROM patrol_schedule
+            WHERE route_id = %s AND deregistered_at IS NULL
+            ORDER BY run_time
+            """,
+            (route_id,),
+        )
+        rows = cur.fetchall()
+
+    return [PatrolScheduleItem(**row) for row in rows]
+
+
+@schedules_router.post("", response_model=PatrolScheduleItem, status_code=201)
+def create_patrol_schedule(payload: PatrolScheduleCreate):
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM patrol_schedule
+            WHERE route_id = %s AND run_time = %s AND deregistered_at IS NULL
+            """,
+            (payload.route_id, payload.run_time),
+        )
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail="같은 시각의 스케줄이 이미 있습니다")
+
+        cur.execute(
+            """
+            INSERT INTO patrol_schedule (route_id, run_time, days_of_week, created_by)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, route_id, run_time, days_of_week, created_by, created_at,
+                      (deregistered_at IS NULL) AS enabled
+            """,
+            (payload.route_id, payload.run_time, payload.days_of_week, payload.created_by),
+        )
+        row = cur.fetchone()
+        conn.commit()
+
+    return PatrolScheduleItem(**row)
+
+
+@schedules_router.put("/{schedule_id}", response_model=PatrolScheduleItem)
+def update_patrol_schedule(schedule_id: int, payload: PatrolScheduleUpdate):
+    """run_time/days_of_week 수정 + enabled 토글(대시보드 ToggleSwitch).
+
+    DB엔 별도 enabled 컬럼이 없어 deregistered_at으로 대신한다: False -> NOW(), True -> NULL.
+    """
+    provided = payload.dict(exclude_unset=True)
+    enabled = provided.pop("enabled", None)
+
+    sets = [f"{key} = %s" for key in provided]
+    params = list(provided.values())
+    if enabled is not None:
+        sets.append("deregistered_at = NULL" if enabled else "deregistered_at = NOW()")
+    if not sets:
+        raise HTTPException(status_code=400, detail="변경할 내용이 없습니다")
+
+    params.append(schedule_id)
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE patrol_schedule SET {', '.join(sets)}
+            WHERE id = %s
+            RETURNING id, route_id, run_time, days_of_week, created_by, created_at,
+                      (deregistered_at IS NULL) AS enabled
+            """,
+            params,
+        )
+        row = cur.fetchone()
+        conn.commit()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="스케줄을 찾을 수 없습니다")
+    return PatrolScheduleItem(**row)
+
+
+@schedules_router.delete("/{schedule_id}", status_code=204)
+def delete_patrol_schedule(schedule_id: int):
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE patrol_schedule SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL",
+            (schedule_id,),
+        )
+        if cur.rowcount == 0:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="스케줄을 찾을 수 없습니다")
+        conn.commit()
+
+
+async def start_patrol_run(
+    robot_id: int, route_id: int, trigger: str, schedule_id: Optional[int] = None
+) -> PatrolRunItem:
+    """순찰 1회차를 시작한다. patrol_run을 기록하고 로봇에 웨이포인트 순서를 전송한다.
+
+    대시보드 "순찰 시작" 버튼(POST /patrol-runs)과 services/scheduler.py의 자동 트리거가
+    공유하는 핵심 로직 — trigger만 "manual"/"schedule"로 다르다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT code FROM robot WHERE id = %s AND deregistered_at IS NULL", (robot_id,))
+        robot = cur.fetchone()
+        if robot is None:
+            raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+
+        cur.execute(
+            "SELECT map_id, steps FROM patrol_route WHERE id = %s AND deregistered_at IS NULL",
+            (route_id,),
+        )
+        route = cur.fetchone()
+        if route is None:
+            raise HTTPException(status_code=404, detail="경로를 찾을 수 없습니다")
+
+        steps = route["steps"] or []
+        waypoints = []
+        if steps:
+            cur.execute("SELECT id, code, pos_x, pos_y, yaw FROM waypoint WHERE id = ANY(%s)", (steps,))
+            by_id = {w["id"]: w for w in cur.fetchall()}
+            waypoints = [by_id[wid] for wid in steps if wid in by_id]
+
+        cur.execute(
+            "SELECT id FROM recipient WHERE robot_id = %s AND deregistered_at IS NULL LIMIT 1",
+            (robot_id,),
+        )
+        recipient = cur.fetchone()
+
+        cur.execute(
+            """
+            INSERT INTO patrol_run (robot_id, recipient_id, route_id, schedule_id, trigger, status, waypoints_total)
+            VALUES (%s, %s, %s, %s, %s, 'running', %s)
+            RETURNING id, robot_id, recipient_id, route_id, schedule_id, trigger, status,
+                      waypoints_total, waypoints_done, started_at, ended_at
+            """,
+            (robot_id, recipient["id"] if recipient else None, route_id, schedule_id, trigger, len(waypoints)),
+        )
+        row = cur.fetchone()
+        conn.commit()
+
+    connected = await robot_ws.send_command(
+        robot["code"],
+        {
+            "type": "patrol_start",
+            "run_id": row["id"],
+            "waypoints": [{"code": w["code"], "x": w["pos_x"], "y": w["pos_y"], "yaw": w["yaw"]} for w in waypoints],
+        },
+    )
+    return PatrolRunItem(**row, robot_connected=connected)
+
+
+@runs_router.post("", response_model=PatrolRunItem, status_code=201)
+async def create_patrol_run(payload: PatrolRunCreate):
+    return await start_patrol_run(payload.robot_id, payload.route_id, payload.trigger)
+
+
+@runs_router.get("/{run_id}", response_model=PatrolRunItem)
+def get_patrol_run(run_id: int):
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT pr.id, pr.robot_id, pr.recipient_id, pr.route_id, pr.schedule_id, pr.trigger,
+                   pr.status, pr.waypoints_total, pr.waypoints_done, pr.started_at, pr.ended_at,
+                   r.code AS robot_code
+            FROM patrol_run pr JOIN robot r ON r.id = pr.robot_id
+            WHERE pr.id = %s
+            """,
+            (run_id,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="순찰 기록을 찾을 수 없습니다")
+
+    connected = robot_ws.is_connected(row["robot_code"])
+    return PatrolRunItem(**{k: v for k, v in row.items() if k != "robot_code"}, robot_connected=connected)

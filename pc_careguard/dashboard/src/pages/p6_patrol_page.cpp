@@ -6,6 +6,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QAction>
+#include <QImage>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -17,9 +18,15 @@
 #include <QStyle>
 #include <QTimeEdit>
 #include <QVBoxLayout>
+#include <QtMath>
 #include <cmath>
 
+#include <QJsonArray>
+#include <QJsonObject>
+
+#include "net/ws_client.h"
 #include "theme/tokens.h"
+#include "widgets/pgm_image_loader.h"
 #include "widgets/simple_icons.h"
 #include "widgets/toggle_switch.h"
 #include "widgets/waypoint_popover.h"
@@ -29,44 +36,9 @@ constexpr qreal kPxPerMeter = 40.0;
 }
 
 P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(0), routeEditMode_(false) {
-    // 4개 맵 — P5 매핑 현황에 등록된 것과 동일한 맵/로봇/대상자 조합.
-    // 행복빌라 302만 와이어프레임의 실제 예시 데이터를 쓰고, 나머지는 충전 스테이션만
-    // 있는 빈 맵으로 시작한다 (사용자가 직접 웨이포인트를 채워나가면 된다).
-    {
-        MapData m;
-        m.mapName = QStringLiteral("행복빌라 302");
-        m.robotId = QStringLiteral("R-01");
-        m.recipientName = QStringLiteral("김순자");
-        m.waypoints = {
-            {QStringLiteral("WP_01"), QStringLiteral("거실"), false, QPointF(90, 80), 90},
-            {QStringLiteral("WP_02"), QStringLiteral("주방"), false, QPointF(210, 80), 27},
-            {QStringLiteral("WP_03"), QStringLiteral("안방"), false, QPointF(290, 160), 315},
-            {QStringLiteral("WP_04"), QStringLiteral("현관"), false, QPointF(290, 260), 180},
-            {QStringLiteral("WP_05"), QStringLiteral("충전 스테이션"), true, QPointF(90, 260), 0},
-        };
-        m.routes[QStringLiteral("주간 순찰")] = {QStringLiteral("WP_01"), QStringLiteral("WP_02"),
-                                                QStringLiteral("WP_03"), QStringLiteral("WP_04")};
-        m.routes[QStringLiteral("야간 순찰")] = {};
-        m.currentRoute = QStringLiteral("주간 순찰");
-        m.nextWpSeq = 6;
-        m.schedules.append(
-            Schedule{QStringLiteral("주간 순찰"), QStringLiteral("10:00"), {0, 1, 2, 3, 4, 5, 6}, true});
-        m.schedules.append(
-            Schedule{QStringLiteral("야간 순찰"), QStringLiteral("21:00"), {0, 1, 2, 3, 4, 5, 6}, false});
-        maps_.append(m);
-    }
-    auto addBlankMap = [this](const QString& mapName, const QString& robotId, const QString& recipient) {
-        MapData m;
-        m.mapName = mapName;
-        m.robotId = robotId;
-        m.recipientName = recipient;
-        m.waypoints = {{QStringLiteral("WP_01"), QStringLiteral("충전 스테이션"), true, QPointF(90, 260), 0}};
-        m.nextWpSeq = 2;
-        maps_.append(m);
-    };
-    addBlankMap(QStringLiteral("은빛아파트 101"), QStringLiteral("R-02"), QStringLiteral("박영호"));
-    addBlankMap(QStringLiteral("솔마을 7호"), QStringLiteral("R-03"), QStringLiteral("이말순"));
-    addBlankMap(QStringLiteral("동산주택 2층"), QStringLiteral("R-04"), QStringLiteral("최금례"));
+    // maps_는 여기서 더미로 채우지 않는다 — 생성자 끝의 loadMapsFromServer()가
+    // GET /maps/active로 실제 서버 데이터를 받아와야만 채워진다. DB에 맵이 없으면
+    // 이 페이지는 그대로 빈 상태로 남는다(가짜 데모 맵으로 대체하지 않는다).
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(Tokens::Layout::PAGE_PADDING, Tokens::Layout::PAGE_PADDING,
@@ -117,6 +89,13 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     });
 
     loadMapData(0);
+
+    apiClient_ = new ApiClient(this);
+    loadMapsFromServer();
+
+    wsClient_ = new WsClient(this);
+    connect(wsClient_, &WsClient::messageReceived, this, &P6PatrolPage::handleWsMessage);
+    wsClient_->connectToServer();
 }
 
 QWidget* P6PatrolPage::buildHeaderRow() {
@@ -144,11 +123,7 @@ QWidget* P6PatrolPage::buildHeaderRow() {
                                        QStringLiteral("저장 · 로봇에 배포"), row);
     deployBtn->setProperty("variant", "primary");
     deployBtn->setIconSize(QSize(12, 12));
-    connect(deployBtn, &QPushButton::clicked, this, [this] {
-        QMessageBox::information(
-            this, QStringLiteral("배포 완료"),
-            QStringLiteral("웨이포인트·경로·스케줄이 저장되어 %1에 배포되었습니다.").arg(maps_[currentMapIndex_].robotId));
-    });
+    connect(deployBtn, &QPushButton::clicked, this, &P6PatrolPage::deployCurrentMap);
     layout->addWidget(deployBtn);
 
     return row;
@@ -320,7 +295,7 @@ QWidget* P6PatrolPage::buildRouteCard() {
     normalLayout->addWidget(routeStatsLabel_);
 
     auto* testBtn = new QPushButton(SimpleIcons::radar(Tokens::TEXT_SECONDARY, 11),
-                                     QStringLiteral("테스트 실행 (1회 주행)"), normalPage);
+                                     QStringLiteral("순찰 시작"), normalPage);
     testBtn->setProperty("variant", "secondary");
     testBtn->setIconSize(QSize(11, 11));
     connect(testBtn, &QPushButton::clicked, this, &P6PatrolPage::runTestRun);
@@ -791,7 +766,15 @@ void P6PatrolPage::rebuildScheduleList() {
 
         auto* toggle = new ToggleSwitch(row);
         toggle->setChecked(sched.enabled);
-        connect(toggle, &ToggleSwitch::toggled, this, [this, i](bool on) { schedules_[i].enabled = on; });
+        connect(toggle, &ToggleSwitch::toggled, this, [this, i](bool on) {
+            schedules_[i].enabled = on;
+            const int serverId = schedules_[i].serverId;
+            if (serverId > 0) {
+                apiClient_->updatePatrolSchedule(serverId, QJsonObject{{"enabled", on}},
+                                                  [](bool, const ApiClient::PatrolScheduleInfo&,
+                                                     const QString&) {});
+            }
+        });
         rowLayout->addWidget(toggle);
 
         listLayout->addWidget(row);
@@ -894,11 +877,29 @@ void P6PatrolPage::runTestRun() {
     const QVector<QString> order = routes_.value(currentRoute_);
     const QString chargeId = chargingWaypointId();
     if (currentRoute_.isEmpty() || order.isEmpty() || chargeId.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("테스트 실행"),
+        QMessageBox::information(this, QStringLiteral("순찰 시작"),
                                   QStringLiteral("경로에 웨이포인트가 없거나 충전 스테이션이 없습니다."));
         return;
     }
+    // 화면상 애니메이션은 서버 연동 여부와 무관하게 항상 재생한다(시각 피드백).
     canvas_->startTestRun(order, chargeId);
+
+    // 서버에 배포된 맵·경로일 때만 실제 POST /patrol-runs로 로봇에 순찰 시작을 지시한다
+    // (로컬 데모 맵이거나 아직 "저장·배포"를 누르지 않은 경로면 서버에 route_id가 없다).
+    const MapData& current = maps_[currentMapIndex_];
+    if (current.serverRobotId <= 0 || !current.routeServerIds.contains(currentRoute_)) return;
+
+    const int routeId = current.routeServerIds.value(currentRoute_);
+    apiClient_->startPatrolRun(
+        current.serverRobotId, routeId, QStringLiteral("manual"),
+        [this](bool ok, const ApiClient::PatrolRunInfo& run, const QString& err) {
+            if (!ok) return;  // 서버가 없거나 실패해도 화면 애니메이션은 이미 재생 중이므로 조용히 무시
+            if (!run.robotConnected) {
+                QMessageBox::information(
+                    this, QStringLiteral("순찰 시작"),
+                    QStringLiteral("순찰 기록은 저장했지만 로봇이 아직 연결되어 있지 않습니다."));
+            }
+        });
 }
 
 void P6PatrolPage::driveToSingleWaypoint(const QString& id) {
@@ -932,8 +933,24 @@ void P6PatrolPage::addScheduleFromForm() {
     if (sched.routeName.isEmpty() || sched.days.isEmpty()) return;
 
     schedules_.append(sched);
+    const int newIndex = schedules_.size() - 1;
     rebuildScheduleList();
     toggleScheduleForm(false);
+
+    // 이 경로가 이미 서버에 배포되어 있으면(routeServerIds에 id가 있으면) 바로 서버에도
+    // 등록한다. 아직 배포 전이면 "저장·배포"에서 경로가 만들어진 뒤에도 이 스케줄은
+    // 서버에 올라가지 않는다 — 사용자가 "저장·배포"를 먼저 한 뒤 스케줄을 추가하도록
+    // buildScheduleCard 쪽 안내에 맡긴다(알려진 제약, 체크리스트 ⑦ 최소 구현 범위).
+    const MapData& current = maps_[currentMapIndex_];
+    if (!current.routeServerIds.contains(sched.routeName)) return;
+
+    int daysBitmask = 0;
+    for (int d : sched.days) daysBitmask |= (1 << d);
+    apiClient_->createPatrolSchedule(
+        current.routeServerIds.value(sched.routeName), sched.timeText, daysBitmask,
+        [this, newIndex](bool ok, const ApiClient::PatrolScheduleInfo& info, const QString&) {
+            if (ok && newIndex < schedules_.size()) schedules_[newIndex].serverId = info.id;
+        });
 }
 
 void P6PatrolPage::saveCurrentMapData() {
@@ -1044,4 +1061,258 @@ void P6PatrolPage::upsertMap(const QImage& mapImage, const QString& mapName, con
     if (foundIndex == currentMapIndex_) {
         loadMapData(currentMapIndex_);
     }
+}
+
+void P6PatrolPage::loadMapsFromServer() {
+    apiClient_->fetchActiveMaps([this](bool ok, const QVector<ApiClient::MapInfo>& serverMaps) {
+        if (!ok || serverMaps.isEmpty()) return;  // 서버 미기동/빈 DB — maps_는 빈 채로 둔다
+
+        auto maps = std::make_shared<QVector<MapData>>();
+        maps->reserve(serverMaps.size());
+        for (const ApiClient::MapInfo& m : serverMaps) {
+            MapData md;
+            md.serverMapId = m.id;
+            md.serverRobotId = m.robotId;
+            md.mapName = m.name;
+            md.robotId = m.robotCode;
+            md.recipientName = m.recipientName;
+            md.imageUrl = m.imageUrl;
+            md.nextWpSeq = 1;
+            maps->append(md);
+        }
+        loadServerMapDetails(maps, 0);
+    });
+}
+
+void P6PatrolPage::loadServerMapDetails(std::shared_ptr<QVector<MapData>> maps, int index) {
+    if (index >= maps->size()) {
+        // 모든 맵의 웨이포인트·경로·스케줄을 다 채웠다 — 로컬 데모 데이터를 서버 데이터로 교체.
+        maps_ = *maps;
+        rebuildMapMenu();
+        loadMapData(0);
+        return;
+    }
+
+    const QString imageUrl = (*maps)[index].imageUrl;
+    if (imageUrl.isEmpty()) {
+        loadServerMapImageDone(maps, index);
+        return;
+    }
+    apiClient_->fetchBytes(imageUrl, [this, maps, index](bool ok, const QByteArray& data) {
+        if (ok) {
+            const QImage image = PgmImageLoader::loadFromData(data);
+            if (!image.isNull()) (*maps)[index].backgroundImage = image;
+        }
+        loadServerMapImageDone(maps, index);
+    });
+}
+
+void P6PatrolPage::loadServerMapImageDone(std::shared_ptr<QVector<MapData>> maps, int index) {
+    const int mapId = (*maps)[index].serverMapId;
+    apiClient_->fetchWaypoints(
+        mapId,
+        [this, maps, index, mapId](bool ok, const QVector<ApiClient::WaypointInfo>& serverWaypoints) {
+            MapData& md = (*maps)[index];
+            QMap<int, QString> codeById;  // 순찰 경로 steps(웨이포인트 id)를 code로 옮기는 데 필요
+            int nextSeq = 1;
+            for (const ApiClient::WaypointInfo& w : serverWaypoints) {
+                const bool charging = w.kind == QStringLiteral("charge");
+                md.waypoints.append(WaypointCanvas::Waypoint{
+                    w.code, w.name, charging,
+                    QPointF(w.posX * kPxPerMeter, w.posY * kPxPerMeter), qRadiansToDegrees(w.yaw)});
+                md.waypointServerIds[w.code] = w.id;
+                codeById[w.id] = w.code;
+
+                if (w.code.startsWith(QStringLiteral("WP_"))) {
+                    bool convOk = false;
+                    const int n = w.code.mid(3).toInt(&convOk);
+                    if (convOk) nextSeq = qMax(nextSeq, n + 1);
+                }
+            }
+            md.nextWpSeq = nextSeq;
+
+            if (!ok) {
+                loadServerMapDetails(maps, index + 1);
+                return;
+            }
+
+            apiClient_->fetchPatrolRoutes(
+                mapId, [this, maps, index, codeById](bool routesOk,
+                                                      const QVector<ApiClient::PatrolRouteInfo>& routes) {
+                    MapData& md2 = (*maps)[index];
+                    if (!routesOk || routes.isEmpty()) {
+                        loadServerMapDetails(maps, index + 1);
+                        return;
+                    }
+
+                    for (const ApiClient::PatrolRouteInfo& r : routes) {
+                        QVector<QString> codes;
+                        for (int waypointId : r.steps) codes.append(codeById.value(waypointId));
+                        md2.routes[r.name] = codes;
+                        md2.routeServerIds[r.name] = r.id;
+                    }
+                    md2.currentRoute = routes.first().name;
+
+                    loadServerRouteSchedules(maps, index, routes, 0);
+                });
+        });
+}
+
+void P6PatrolPage::loadServerRouteSchedules(std::shared_ptr<QVector<MapData>> maps, int mapIndex,
+                                             QVector<ApiClient::PatrolRouteInfo> routes, int routeIndex) {
+    if (routeIndex >= routes.size()) {
+        loadServerMapDetails(maps, mapIndex + 1);
+        return;
+    }
+
+    const ApiClient::PatrolRouteInfo route = routes[routeIndex];
+    apiClient_->fetchPatrolSchedules(
+        route.id, [this, maps, mapIndex, routes, routeIndex,
+                   route](bool ok, const QVector<ApiClient::PatrolScheduleInfo>& schedules) {
+            if (ok) {
+                MapData& md = (*maps)[mapIndex];
+                for (const ApiClient::PatrolScheduleInfo& s : schedules) {
+                    QVector<int> days;
+                    for (int i = 0; i < 7; ++i) {
+                        if (s.daysOfWeek & (1 << i)) days.append(i);
+                    }
+                    md.schedules.append(Schedule{route.name, s.runTime, days, s.enabled, s.id});
+                }
+            }
+            loadServerRouteSchedules(maps, mapIndex, routes, routeIndex + 1);
+        });
+}
+
+void P6PatrolPage::deployCurrentMap() {
+    MapData& current = maps_[currentMapIndex_];
+    if (current.serverMapId <= 0) {
+        QMessageBox::warning(
+            this, QStringLiteral("배포 불가"),
+            QStringLiteral("이 맵은 아직 서버에 등록되지 않았습니다. 맵·로봇 매핑 화면에서 맵을 "
+                            "등록하거나 매핑을 완료한 뒤 다시 시도해 주세요."));
+        return;
+    }
+
+    auto routeNamesToDelete = std::make_shared<QVector<QString>>(current.routeServerIds.keys().toVector());
+    deployDeleteRoutes(routeNamesToDelete, 0);
+}
+
+void P6PatrolPage::deployDeleteRoutes(std::shared_ptr<QVector<QString>> routeNames, int index) {
+    MapData& current = maps_[currentMapIndex_];
+    if (index >= routeNames->size()) {
+        current.routeServerIds.clear();
+        auto wpCodesToDelete = std::make_shared<QVector<QString>>(current.waypointServerIds.keys().toVector());
+        deployDeleteWaypoints(wpCodesToDelete, 0);
+        return;
+    }
+    const int routeId = current.routeServerIds.value((*routeNames)[index], -1);
+    if (routeId <= 0) {
+        deployDeleteRoutes(routeNames, index + 1);
+        return;
+    }
+    apiClient_->deletePatrolRoute(
+        routeId, [this, routeNames, index](bool, const QString&) { deployDeleteRoutes(routeNames, index + 1); });
+}
+
+void P6PatrolPage::deployDeleteWaypoints(std::shared_ptr<QVector<QString>> codes, int index) {
+    MapData& current = maps_[currentMapIndex_];
+    if (index >= codes->size()) {
+        current.waypointServerIds.clear();
+        auto hadError = std::make_shared<bool>(false);
+        auto toCreate = std::make_shared<QVector<WaypointCanvas::Waypoint>>(waypoints_);
+        deployCreateWaypoints(toCreate, 0, hadError);
+        return;
+    }
+    const int wpId = current.waypointServerIds.value((*codes)[index], -1);
+    if (wpId <= 0) {
+        deployDeleteWaypoints(codes, index + 1);
+        return;
+    }
+    apiClient_->deleteWaypoint(
+        wpId, [this, codes, index](bool, const QString&) { deployDeleteWaypoints(codes, index + 1); });
+}
+
+void P6PatrolPage::deployCreateWaypoints(std::shared_ptr<QVector<WaypointCanvas::Waypoint>> list, int index,
+                                          std::shared_ptr<bool> hadError) {
+    if (index >= list->size()) {
+        auto routeNames = std::make_shared<QVector<QString>>(routes_.keys().toVector());
+        deployCreateRoutes(routeNames, 0, hadError);
+        return;
+    }
+    MapData& current = maps_[currentMapIndex_];
+    const WaypointCanvas::Waypoint w = (*list)[index];
+    apiClient_->createWaypoint(
+        current.serverMapId, w.id, w.name, w.charging ? QStringLiteral("charge") : QStringLiteral("patrol"),
+        w.pos.x() / kPxPerMeter, w.pos.y() / kPxPerMeter, qDegreesToRadians(w.yawDeg),
+        [this, list, index, hadError](bool ok, const ApiClient::WaypointInfo& info, const QString&) {
+            if (ok) {
+                maps_[currentMapIndex_].waypointServerIds[info.code] = info.id;
+            } else {
+                *hadError = true;
+            }
+            deployCreateWaypoints(list, index + 1, hadError);
+        });
+}
+
+void P6PatrolPage::deployCreateRoutes(std::shared_ptr<QVector<QString>> routeNames, int index,
+                                       std::shared_ptr<bool> hadError) {
+    if (index >= routeNames->size()) {
+        finishDeploy(*hadError);
+        return;
+    }
+    MapData& current = maps_[currentMapIndex_];
+    const QString name = (*routeNames)[index];
+    QVector<int> steps;
+    for (const QString& code : routes_.value(name)) {
+        const int wpId = current.waypointServerIds.value(code, -1);
+        if (wpId > 0) steps.append(wpId);
+    }
+    apiClient_->createPatrolRoute(
+        current.serverMapId, name, steps,
+        [this, routeNames, index, hadError](bool ok, const ApiClient::PatrolRouteInfo& info, const QString&) {
+            if (ok) {
+                maps_[currentMapIndex_].routeServerIds[info.name] = info.id;
+            } else {
+                *hadError = true;
+            }
+            deployCreateRoutes(routeNames, index + 1, hadError);
+        });
+}
+
+void P6PatrolPage::finishDeploy(bool hadError) {
+    if (hadError) {
+        QMessageBox::warning(this, QStringLiteral("배포 중 오류"),
+                              QStringLiteral("웨이포인트·경로 저장 중 일부 항목이 실패했습니다. 다시 시도해 주세요."));
+        return;
+    }
+    QMessageBox::information(
+        this, QStringLiteral("배포 완료"),
+        QStringLiteral("웨이포인트·경로가 저장되어 %1에 배포되었습니다.").arg(maps_[currentMapIndex_].robotId));
+}
+
+void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
+    const QString type = message.value(QStringLiteral("type")).toString();
+    if (type != QStringLiteral("robot_position") && type != QStringLiteral("camera_frame")) return;
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+
+    const QString robotCode = message.value(QStringLiteral("robot_code")).toString();
+    if (maps_[currentMapIndex_].robotId != robotCode) return;
+
+    if (type == QStringLiteral("camera_frame")) {
+        // /camera/color/image_raw/compressed를 uplink_node가 재인코딩 없이 그대로
+        // base64로 실어 보낸 것 — JPEG라서 QImage가 바로 디코딩한다.
+        const QByteArray jpegBytes =
+            QByteArray::fromBase64(message.value(QStringLiteral("jpeg_base64")).toString().toLatin1());
+        QImage frame;
+        if (frame.loadFromData(jpegBytes)) {
+            canvas_->setCameraFrame(frame);
+        }
+        return;
+    }
+
+    const qreal xMeters = message.value(QStringLiteral("x")).toDouble();
+    const qreal yMeters = message.value(QStringLiteral("y")).toDouble();
+    const qreal yawRad = message.value(QStringLiteral("yaw")).toDouble();
+    canvas_->setCurrentRobotPosition(QPointF(xMeters * kPxPerMeter, yMeters * kPxPerMeter),
+                                      qRadiansToDegrees(yawRad));
 }

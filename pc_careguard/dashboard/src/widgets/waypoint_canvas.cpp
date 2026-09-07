@@ -108,6 +108,8 @@ void WaypointCanvas::setCurrentRobotPosition(QPointF canvasPos, qreal headingDeg
     update();
 }
 
+void WaypointCanvas::setCameraFrame(const QImage& frame) { cameraView_->setFrame(frame); }
+
 void WaypointCanvas::setBackgroundImage(const QImage& image) {
     backgroundImage_ = image;
     update();

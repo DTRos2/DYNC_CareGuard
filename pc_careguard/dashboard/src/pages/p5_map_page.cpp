@@ -9,12 +9,19 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
+
+#include <QJsonArray>
+#include <QJsonObject>
 
 #include "dialogs/map_file_register_dialog.h"
 #include "dialogs/map_preview_dialog.h"
+#include "net/api_client.h"
+#include "net/ws_client.h"
 #include "theme/tokens.h"
 #include "widgets/mapping_status_overlay.h"
+#include "widgets/pgm_image_loader.h"
 #include "widgets/simple_icons.h"
 #include "widgets/slam_mapping_card.h"
 #include "widgets/teleop_panel.h"
@@ -39,6 +46,8 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
 
     slamCard_ = new SlamMappingCard(this);
     connect(slamCard_, &SlamMappingCard::emergencyStopRequested, this, &P5MapPage::handleEmergencyStop);
+    connect(slamCard_, &SlamMappingCard::mappingCancelRequested, this, &P5MapPage::cancelMappingOnServer);
+    connect(slamCard_, &SlamMappingCard::mappingRestartRequested, this, &P5MapPage::restartMappingOnServer);
     content->addWidget(slamCard_, /*stretch=*/16);
 
     auto* rightCol = new QVBoxLayout();
@@ -47,6 +56,11 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
     teleopPanel_ = new TeleopPanel(this);
     teleopPanel_->setFixedWidth(196);
     connect(teleopPanel_, &TeleopPanel::velocityChanged, slamCard_, &SlamMappingCard::setVelocity);
+    // 화면 표시(위)와는 별개로, 실제 로봇에게도 같은 속도를 그대로 전달한다
+    // (POST /teleop/{robot_code} -> robot_ws -> downlink_node -> /cmd_vel).
+    connect(teleopPanel_, &TeleopPanel::velocityChanged, this, [this](qreal linearMps, qreal angularRadps) {
+        apiClient_->sendTeleop(currentRobotCode_, linearMps, angularRadps);
+    });
     rightCol->addWidget(teleopPanel_);
 
     rightCol->addWidget(buildSaveInfoCard());
@@ -58,6 +72,13 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
     content->addWidget(rightWrap, /*stretch=*/0);
 
     layout->addLayout(content, /*stretch=*/1);
+
+    apiClient_ = new ApiClient(this);
+    loadActiveMapsFromServer();
+
+    wsClient_ = new WsClient(this);
+    connect(wsClient_, &WsClient::messageReceived, this, &P5MapPage::handleWsMessage);
+    wsClient_->connectToServer();
 }
 
 QWidget* P5MapPage::buildHeaderRow() {
@@ -83,6 +104,13 @@ QWidget* P5MapPage::buildHeaderRow() {
     connect(registerBtn, &QPushButton::clicked, this, &P5MapPage::openFileRegisterDialog);
     layout->addWidget(registerBtn);
 
+    auto* startMappingBtn = new QPushButton(SimpleIcons::radar(Tokens::TEXT_INVERSE, 12),
+                                             QStringLiteral("매핑 시작"), row);
+    startMappingBtn->setProperty("variant", "primary");
+    startMappingBtn->setIconSize(QSize(12, 12));
+    connect(startMappingBtn, &QPushButton::clicked, this, &P5MapPage::startMappingOnServer);
+    layout->addWidget(startMappingBtn);
+
     return row;
 }
 
@@ -102,8 +130,8 @@ QWidget* P5MapPage::buildSaveInfoCard() {
     auto* nameLabel = new QLabel(QStringLiteral("맵 이름"), card);
     nameLabel->setProperty("role", "secondary");
     layout->addWidget(nameLabel);
-    auto* nameEdit = new QLineEdit(QStringLiteral("동산주택 2층"), card);
-    layout->addWidget(nameEdit);
+    mapNameEdit_ = new QLineEdit(QStringLiteral("동산주택 2층"), card);
+    layout->addWidget(mapNameEdit_);
     layout->addSpacing(5);
 
     auto* recipientLabel = new QLabel(QStringLiteral("대상자 연결"), card);
@@ -121,8 +149,29 @@ QWidget* P5MapPage::buildSaveInfoCard() {
     // 좁은 우측 패널(196px) 폭에 기본 13px 글자로는 문구가 버튼 밖으로 잘려 보인다.
     saveBtn->setStyleSheet(QStringLiteral("font-size:11px;"));
     connect(saveBtn, &QPushButton::clicked, this, [this] {
-        QMessageBox::information(this, QStringLiteral("저장 완료"),
-                                  QStringLiteral("SLAM 맵이 저장되고 R-04에 배포되었습니다."));
+        // 예전엔 이 버튼이 실제로는 아무 것도 안 하고 "저장됐다"는 메시지만 띄웠다 —
+        // 이제 진짜로 로봇에 저장 명령을 보낸다. 로봇이 map_saver_cli 실행+업로드를
+        // 끝내는 데 시간이 걸리므로, 여기서는 "요청을 보냈다"까지만 알리고 실제 완료
+        // 확인(및 매핑 현황 새로고침)은 handleWsMessage의 slam_done에서 처리한다.
+        if (currentSlamJobId_ == 0) {
+            QMessageBox::warning(this, QStringLiteral("저장 실패"),
+                                  QStringLiteral("먼저 \"매핑 시작\"으로 SLAM 작업을 시작해야 합니다."));
+            return;
+        }
+        // 이 입력칸의 이름이 실제 저장되는 맵 이름이 된다 — "매핑 시작"이 만든 임시
+        // 이름("새 맵")을 여기서 덮어쓴다.
+        apiClient_->saveSlamJob(currentSlamJobId_, mapNameEdit_->text(),
+                                 [this](bool ok, const ApiClient::SlamJobInfo&, const QString& err) {
+                                     if (!ok) {
+                                         QMessageBox::warning(
+                                             this, QStringLiteral("저장 요청 실패"),
+                                             err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
+                                         return;
+                                     }
+                                     QMessageBox::information(
+                                         this, QStringLiteral("저장 요청 전송됨"),
+                                         QStringLiteral("로봇에 저장 명령을 보냈습니다. 완료되면 매핑 현황에 반영됩니다."));
+                                 });
     });
     layout->addWidget(saveBtn);
     layout->addSpacing(4);
@@ -147,12 +196,56 @@ void P5MapPage::openFileRegisterDialog() {
 
     MapFileRegisterDialog dialog(this);
     connect(&dialog, &MapFileRegisterDialog::mapRegistered, this,
-            [this](const QImage& image, const QString& mapName, const QString& robotId,
-                   const QString& recipientName) {
-                slamCard_->applyRegisteredMap(image, mapName, robotId);
-                statusOverlay_->markMapDeployed(robotId, mapName, recipientName);
-                registeredMaps_[robotId] = RegisteredMapInfo{image, mapName, recipientName};
-                emit mapRegistered(image, mapName, robotId, recipientName);
+            [this, &dialog](const QImage& image, const QString& mapName, const QString& robotId,
+                            const QString& recipientName) {
+                // 예전엔 여기서 로컬 화면만 갱신하고 서버엔 아무 것도 안 보냈다 — "파일로
+                // 등록"이 SLAM 저장·배포와 달리 앱을 재시작하면 사라지는 가짜 등록이었다.
+                // 이제 실제로 업로드(POST /media/upload-map) -> 맵 확정(POST /maps)까지
+                // 끝내야만 화면(SlamMapView·매핑 현황)을 갱신한다.
+                const QString pgmPath = dialog.pgmFilePath();
+                const double resolution = dialog.resolution();
+                const double originX = dialog.originX();
+                const double originY = dialog.originY();
+                const double originYaw = dialog.originYaw();
+                const QJsonObject rawYaml = dialog.rawYaml();
+
+                apiClient_->uploadMapFile(
+                    robotId, pgmPath,
+                    [this, image, mapName, robotId, recipientName, resolution, originX, originY, originYaw,
+                     rawYaml](bool uploadOk, int fileId, const QString& uploadErr) {
+                        if (!uploadOk) {
+                            QMessageBox::warning(this, QStringLiteral("맵 등록 실패"),
+                                                  uploadErr.isEmpty() ? QStringLiteral("파일 업로드에 실패했습니다.")
+                                                                       : uploadErr);
+                            return;
+                        }
+                        ApiClient::MapCreateParams params;
+                        params.robotCode = robotId;
+                        params.mapName = mapName;
+                        params.fileId = fileId;
+                        params.resolution = resolution;
+                        params.originX = originX;
+                        params.originY = originY;
+                        params.originYaw = originYaw;
+                        params.widthPx = image.width();
+                        params.heightPx = image.height();
+                        params.rawYaml = rawYaml;
+                        apiClient_->createMap(
+                            params, [this, image, mapName, robotId, recipientName](
+                                        bool createOk, const ApiClient::MapInfo&, const QString& createErr) {
+                                if (!createOk) {
+                                    QMessageBox::warning(this, QStringLiteral("맵 등록 실패"),
+                                                          createErr.isEmpty()
+                                                              ? QStringLiteral("서버에 맵을 저장하지 못했습니다.")
+                                                              : createErr);
+                                    return;
+                                }
+                                slamCard_->applyRegisteredMap(image, mapName, robotId);
+                                statusOverlay_->markMapDeployed(robotId, mapName, recipientName);
+                                registeredMaps_[robotId] = RegisteredMapInfo{image, mapName, recipientName};
+                                emit mapRegistered(image, mapName, robotId, recipientName);
+                            });
+                    });
             });
     dialog.exec();
 
@@ -175,7 +268,184 @@ void P5MapPage::openMapPreviewDialog(const QString& robotId) {
     overlay->deleteLater();
 }
 
+void P5MapPage::loadActiveMapsFromServer() {
+    apiClient_->fetchActiveMaps([this](bool ok, const QVector<ApiClient::MapInfo>& maps) {
+        // 서버 미기동/DB에 맵 없음 — 매핑 현황 패널은 헤더만 남은 빈 상태로 둔다
+        // (더미 데이터로 대체하지 않는다).
+        if (!ok) return;
+        for (const ApiClient::MapInfo& m : maps) {
+            const int mapId = m.id;
+            const QString robotCode = m.robotCode;
+            const QString mapName = m.name;
+            const QString recipientName = m.recipientName;
+
+            // "미리보기" 모달(openMapPreviewDialog)이 쓰는 registeredMaps_는 파일로 직접
+            // 등록한 맵만 채워지던 로컬 캐시였다 — 서버에서 받아온 맵도 미리보기가 되도록
+            // 이미지를 받아 같은 캐시에 채운다.
+            if (!m.imageUrl.isEmpty()) {
+                apiClient_->fetchBytes(
+                    m.imageUrl, [this, robotCode, mapName, recipientName](bool imgOk, const QByteArray& data) {
+                        if (!imgOk) return;
+                        const QImage image = PgmImageLoader::loadFromData(data);
+                        if (image.isNull()) return;
+                        registeredMaps_[robotCode] = RegisteredMapInfo{image, mapName, recipientName};
+                    });
+            }
+
+            // WP·경로 수는 실제 값을 받아와야 한다 — 가짜 숫자를 보여주지 않기 위해
+            // GET /waypoints, GET /patrol-routes를 이어서 조회한 뒤에만 행을 표시한다.
+            apiClient_->fetchWaypoints(
+                mapId, [this, mapId, robotCode, mapName, recipientName](
+                           bool wpOk, const QVector<ApiClient::WaypointInfo>& wps) {
+                    const int wpCount = wpOk ? wps.size() : 0;
+                    apiClient_->fetchPatrolRoutes(
+                        mapId, [this, robotCode, mapName, recipientName, wpCount](
+                                   bool routeOk, const QVector<ApiClient::PatrolRouteInfo>& routes) {
+                            statusOverlay_->markMapDeployed(robotCode, mapName, recipientName, wpCount,
+                                                             routeOk ? routes.size() : 0);
+                        });
+                });
+        }
+    });
+}
+
+void P5MapPage::startMappingOnServer() {
+    apiClient_->startSlamJob(
+        currentRobotCode_, QStringLiteral("새 맵"),
+        [this](bool ok, const ApiClient::SlamJobInfo& job, const QString& err) {
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("매핑 시작 실패"),
+                                      err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
+                return;
+            }
+            currentSlamJobId_ = job.id;
+            if (!job.robotConnected) {
+                QMessageBox::information(
+                    this, QStringLiteral("매핑 시작"),
+                    QStringLiteral("SLAM 작업은 기록했지만 로봇이 아직 연결되어 있지 않습니다."));
+            }
+        });
+}
+
+void P5MapPage::cancelMappingOnServer() {
+    if (currentSlamJobId_ == 0) return;  // 시작한 적 없으면 취소할 것도 없다.
+    const int jobId = currentSlamJobId_;
+    currentSlamJobId_ = 0;
+    apiClient_->cancelSlamJob(jobId, [this](bool ok, const ApiClient::SlamJobInfo&, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("매핑 취소 실패"),
+                                  err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
+        }
+    });
+}
+
+void P5MapPage::restartMappingOnServer() {
+    if (currentSlamJobId_ == 0) {
+        // 진행 중이던 job이 없으면(예: 매핑 시작 전에 눌렀거나 이미 취소됨) 바로 새로 시작한다.
+        startMappingOnServer();
+        return;
+    }
+    const int jobId = currentSlamJobId_;
+    currentSlamJobId_ = 0;
+    apiClient_->cancelSlamJob(jobId, [this](bool ok, const ApiClient::SlamJobInfo&, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("매핑 재시작 실패"),
+                                  err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
+            return;
+        }
+        // 로봇이 이전 cartographer 프로세스를 완전히 끝낼 시간을 살짝 두고 다시 시작한다
+        // (바로 다시 보내면 downlink_node가 아직 종료 중인 프로세스를 보고 거부할 수 있음).
+        QTimer::singleShot(500, this, &P5MapPage::startMappingOnServer);
+    });
+}
+
+void P5MapPage::handleWsMessage(const QJsonObject& message) {
+    const QString type = message.value(QStringLiteral("type")).toString();
+
+    if (type == QStringLiteral("slam_map_update")) {
+        // SLAM 도중 실시간 지도 미리보기 — uplink_node.py가 /map(OccupancyGrid)을 PGM
+        // 바이트로 인코딩해 base64로 보낸 것을 디코딩해 SlamMapView 배경으로 그대로
+        // 얹는다. "파일로 등록"한 실제 맵을 보여줄 때와 같은 경로(setBackgroundImage)를
+        // 재사용한다 — 렌더링 쪽엔 실시간이든 파일이든 차이가 없다.
+        if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
+        const QByteArray pgmBase64 = message.value(QStringLiteral("pgm_base64")).toString().toLatin1();
+        const QImage liveMap = PgmImageLoader::loadFromData(QByteArray::fromBase64(pgmBase64));
+        if (!liveMap.isNull()) {
+            // 로봇 화살표·라이다 스캔을 지도 위 올바른 자리에 그리려면 미터<->픽셀
+            // 환산 기준(해상도·원점)도 같이 있어야 한다 — 이미지와 함께 넘긴다.
+            slamCard_->view()->setMapMeta(message.value(QStringLiteral("resolution")).toDouble(0.05),
+                                           QPointF(message.value(QStringLiteral("origin_x")).toDouble(),
+                                                   message.value(QStringLiteral("origin_y")).toDouble()),
+                                           liveMap.size());
+            slamCard_->view()->setBackgroundImage(liveMap);
+        }
+        return;
+    }
+
+    if (type == QStringLiteral("robot_position")) {
+        // map->base_link TF 기반 실제 로봇 위치(uplink_node._on_slam_overlay_tick) —
+        // 지도 위 빨간 화살표를 이 값으로 그린다.
+        if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
+        slamCard_->view()->setLivePose(message.value(QStringLiteral("x")).toDouble(),
+                                        message.value(QStringLiteral("y")).toDouble(),
+                                        message.value(QStringLiteral("yaw")).toDouble());
+        return;
+    }
+
+    if (type == QStringLiteral("camera_frame")) {
+        // /camera/color/image_raw/compressed를 uplink_node가 재인코딩 없이 그대로
+        // base64로 실어 보낸 것 — JPEG라서 QImage가 바로 디코딩한다.
+        if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
+        const QByteArray jpegBytes =
+            QByteArray::fromBase64(message.value(QStringLiteral("jpeg_base64")).toString().toLatin1());
+        QImage frame;
+        if (frame.loadFromData(jpegBytes)) {
+            slamCard_->view()->setCameraFrame(frame);
+        }
+        return;
+    }
+
+    if (type == QStringLiteral("slam_scan_update")) {
+        // 실시간 라이다 스캔(map 프레임 x,y가 번갈아 들어있는 평탄화 배열) — rviz2처럼
+        // 지도 위에 점으로 겹쳐 그린다.
+        if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
+        const QJsonArray flat = message.value(QStringLiteral("points")).toArray();
+        QVector<QPointF> points;
+        points.reserve(flat.size() / 2);
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            points.append(QPointF(flat.at(i).toDouble(), flat.at(i + 1).toDouble()));
+        }
+        slamCard_->view()->setLiveScan(points);
+        return;
+    }
+
+    if (type != QStringLiteral("slam_progress") && type != QStringLiteral("slam_done")) return;
+    if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
+
+    if (type == QStringLiteral("slam_done")) {
+        // 로봇이 map_saver_cli 실행 + 업로드까지 끝내고 서버가 map 행을 새로 만들었다
+        // (POST /slam-jobs/{id}/save로 시작된 저장의 실제 완료 신호). GET /maps/active를
+        // 다시 불러 파일 등록(openFileRegisterDialog)과 동일한 경로로 화면에 반영한다.
+        // 이미지 자체(pgm)는 여기서 새로 내려받지 않는다 — MappingStatusOverlay는 이름·
+        // 대상자·상태만 갱신하고, 실제 이미지는 맵 미리보기를 열 때 필요하면 추가한다.
+        const bool hasMapId = !message.value(QStringLiteral("map_id")).isNull();
+        if (message.value(QStringLiteral("job_id")).toInt() == currentSlamJobId_) {
+            currentSlamJobId_ = 0;
+        }
+        loadActiveMapsFromServer();
+        if (hasMapId) {
+            QMessageBox::information(this, QStringLiteral("저장 완료"),
+                                      QStringLiteral("SLAM 맵이 저장되고 %1에 배포되었습니다.")
+                                          .arg(currentRobotCode_));
+        }
+    }
+    // slam_progress는 지금은 별도 진행률 라벨이 없어 무시한다 — SlamMappingCard가 이미
+    // 텔레옵 기반 경과시간·탐색면적을 자체적으로 보여주고 있다(로컬 시각 피드백 유지).
+}
+
 void P5MapPage::handleEmergencyStop() {
+    // Space와 같은 경로(velocityChanged(0,0))라 확인 대화상자를 띄우기 전에 이미
+    // 실제 로봇에도 정지 명령이 나간다 — 안전이 우선이라 사용자 확인을 기다리지 않는다.
     teleopPanel_->handleKeyPress(Qt::Key_Space);
     const auto reply =
         QMessageBox::warning(this, QStringLiteral("비상정지"),

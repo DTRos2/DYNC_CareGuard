@@ -9,6 +9,7 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QStyle>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "theme/tokens.h"
@@ -20,10 +21,15 @@ constexpr qreal kNormalLinear = 0.30, kNormalAngular = 0.5;
 constexpr qreal kFastLinear = 0.50, kFastAngular = 0.8;
 constexpr qreal kLinearMax = 0.80;
 constexpr qreal kAngularMax = 1.50;
+// "지연 0.3s" 표시와 같은 로봇 쪽 명령 타임아웃보다 확실히 짧게 재전송해야
+// 누르고 있는 동안 안 멈춘다.
+constexpr int kHoldResendIntervalMs = 150;
 }  // namespace
 
-TeleopPanel::TeleopPanel(QWidget* parent) : QFrame(parent) {
+TeleopPanel::TeleopPanel(QWidget* parent) : QFrame(parent), holdTimer_(new QTimer(this)) {
     setObjectName("card");
+    holdTimer_->setInterval(kHoldResendIntervalMs);
+    connect(holdTimer_, &QTimer::timeout, this, &TeleopPanel::recomputeVelocity);
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING,
@@ -201,12 +207,19 @@ void TeleopPanel::setDirectionActive(int key, bool active) {
     restyle(leftBtn_, pressedKeys_.contains(Qt::Key_Left));
     restyle(rightBtn_, pressedKeys_.contains(Qt::Key_Right));
 
+    if (pressedKeys_.isEmpty()) {
+        holdTimer_->stop();
+    } else if (!holdTimer_->isActive()) {
+        holdTimer_->start();
+    }
+
     recomputeVelocity();
 }
 
 void TeleopPanel::handleKeyPress(int key) {
     if (key == Qt::Key_Space) {
         pressedKeys_.clear();
+        holdTimer_->stop();
         spaceLabel_->setProperty("active", true);
         spaceLabel_->style()->unpolish(spaceLabel_);
         spaceLabel_->style()->polish(spaceLabel_);

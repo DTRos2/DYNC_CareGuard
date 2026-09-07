@@ -75,4 +75,8 @@ QIcon users(const QColor& color, int px = 16);            // 보호자 연락 (t
 QIcon message(const QColor& color, int px = 16);          // 보호자 문자 (ti-message)
 QIcon phoneCall(const QColor& color, int px = 16);        // 119 모의 신고 (ti-phone-call)
 
+// P3(대상자 관리) 와이어프레임 대응 아이콘.
+QIcon plus(const QColor& color, int px = 16);             // 대상자 등록 버튼 (ti-plus)
+QIcon edit(const QColor& color, int px = 16);             // 보호자·복약 스케줄 행 편집 (ti-edit)
+
 }  // namespace SimpleIcons

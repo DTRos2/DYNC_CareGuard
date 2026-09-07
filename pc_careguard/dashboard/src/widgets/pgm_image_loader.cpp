@@ -1,5 +1,6 @@
 #include "pgm_image_loader.h"
 
+#include <QBuffer>
 #include <QFile>
 
 namespace {
@@ -39,7 +40,17 @@ bool nextToken(QIODevice& dev, QByteArray& out) {
 QImage PgmImageLoader::load(const QString& path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return QImage();
+    return load(file);
+}
 
+QImage PgmImageLoader::loadFromData(const QByteArray& data) {
+    QBuffer buffer;
+    buffer.setData(data);
+    if (!buffer.open(QIODevice::ReadOnly)) return QImage();
+    return load(buffer);
+}
+
+QImage PgmImageLoader::load(QIODevice& file) {
     QByteArray magic;
     if (!nextToken(file, magic)) return QImage();
     const bool ascii = (magic == "P2");

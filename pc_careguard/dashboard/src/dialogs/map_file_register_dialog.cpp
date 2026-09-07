@@ -2,15 +2,19 @@
 
 #include <QComboBox>
 #include <QEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPixmap>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QStyle>
+#include <QTextStream>
 #include <QVBoxLayout>
 
 #include "theme/tokens.h"
@@ -265,8 +269,13 @@ QFrame* MapFileRegisterDialog::buildFooter() {
     return footer;
 }
 
+QString MapFileRegisterDialog::defaultMapsDir() {
+    return QProcessEnvironment::systemEnvironment().value(QStringLiteral("CAREGUARD_MAPS_DIR"),
+                                                            QStringLiteral(CAREGUARD_MAPS_DIR));
+}
+
 void MapFileRegisterDialog::pickPgmFile() {
-    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral(".pgm 파일 선택"), QString(),
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral(".pgm 파일 선택"), defaultMapsDir(),
                                                         QStringLiteral("PGM (*.pgm)"));
     if (path.isEmpty()) return;
 
@@ -278,6 +287,7 @@ void MapFileRegisterDialog::pickPgmFile() {
         return;
     }
     pgmImage_ = image;
+    pgmFilePath_ = path;
 
     pgmLoaded_ = true;
     const QFileInfo info(path);
@@ -294,14 +304,27 @@ void MapFileRegisterDialog::pickPgmFile() {
 }
 
 void MapFileRegisterDialog::pickYamlFile() {
-    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral(".yaml 파일 선택"), QString(),
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral(".yaml 파일 선택"), defaultMapsDir(),
                                                         QStringLiteral("YAML (*.yaml *.yml)"));
     if (path.isEmpty()) return;
+
+    // 예전엔 파일명만 확인하고 내용(resolution/origin)은 안 읽었다 — 그래서 이 값들
+    // 없이는 서버에 실제로 저장할 수 없다는 걸 여기서 미리 걸러야 한다.
+    if (!parseMapYaml(path)) {
+        yamlLoaded_ = false;
+        yamlSubLabel_->setText(QStringLiteral("읽기 실패 — resolution/origin이 있는 .yaml인지 확인하세요"));
+        yamlSubLabel_->setStyleSheet(
+            QStringLiteral("color:%1; font-size:11px;").arg(Tokens::EMERGENCY.main.name()));
+        updateRegisterEnabled();
+        return;
+    }
 
     yamlLoaded_ = true;
     const QFileInfo info(path);
     yamlLabel_->setText(info.fileName());
     yamlSubLabel_->setText(QStringLiteral("업로드 완료"));
+    yamlSubLabel_->setStyleSheet(
+        QStringLiteral("color:%1; font-size:11px;").arg(Tokens::OK.main.name()));
     yamlIcon_->setPixmap(SimpleIcons::fileCheck(Tokens::OK.main, 16).pixmap(16, 16));
     yamlDropzone_->setProperty("filled", true);
     yamlDropzone_->style()->unpolish(yamlDropzone_);
@@ -309,6 +332,62 @@ void MapFileRegisterDialog::pickYamlFile() {
     warningBanner_->hide();
     updatePreview();
     updateRegisterEnabled();
+}
+
+bool MapFileRegisterDialog::parseMapYaml(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+
+    QJsonObject parsed;
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        const QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
+
+        const int colon = line.indexOf(QLatin1Char(':'));
+        if (colon <= 0) continue;
+        const QString key = line.left(colon).trimmed();
+        QString value = line.mid(colon + 1).trimmed();
+        // 인라인 주석(#) 제거 — map_saver_cli 출력엔 없지만 사람이 손으로 고친
+        // 파일에는 있을 수 있다.
+        const int hashIdx = value.indexOf(QLatin1Char('#'));
+        if (hashIdx >= 0) value = value.left(hashIdx).trimmed();
+        if (key.isEmpty() || value.isEmpty()) continue;
+
+        if (value.startsWith(QLatin1Char('[')) && value.endsWith(QLatin1Char(']'))) {
+            QJsonArray arr;
+            const QStringList parts = value.mid(1, value.length() - 2).split(QLatin1Char(','));
+            for (const QString& part : parts) {
+                bool ok = false;
+                const double num = part.trimmed().toDouble(&ok);
+                arr.append(ok ? QJsonValue(num) : QJsonValue(part.trimmed()));
+            }
+            parsed.insert(key, arr);
+            continue;
+        }
+        bool ok = false;
+        const double num = value.toDouble(&ok);
+        if (ok) {
+            parsed.insert(key, num);
+        } else {
+            if (value.startsWith(QLatin1Char('"')) && value.endsWith(QLatin1Char('"')) && value.length() >= 2) {
+                value = value.mid(1, value.length() - 2);
+            }
+            parsed.insert(key, value);
+        }
+    }
+
+    if (!parsed.contains(QStringLiteral("resolution"))) return false;
+    resolution_ = parsed.value(QStringLiteral("resolution")).toDouble();
+
+    const QJsonArray origin = parsed.value(QStringLiteral("origin")).toArray();
+    if (origin.size() < 2) return false;  // origin은 map_saver_cli 출력에 항상 있다 — 없으면 이상한 파일
+    originX_ = origin.at(0).toDouble();
+    originY_ = origin.at(1).toDouble();
+    originYaw_ = origin.size() > 2 ? origin.at(2).toDouble() : 0.0;
+
+    rawYaml_ = parsed;
+    return true;
 }
 
 void MapFileRegisterDialog::updatePreview() {

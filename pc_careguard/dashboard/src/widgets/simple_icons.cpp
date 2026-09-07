@@ -820,4 +820,29 @@ QIcon phoneCall(const QColor& color, int px) {
     });
 }
 
+QIcon plus(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.drawLine(QPointF(12, 4.5), QPointF(12, 19.5));
+        p.drawLine(QPointF(4.5, 12), QPointF(19.5, 12));
+    });
+}
+
+QIcon edit(const QColor& color, int px) {
+    return makeIcon(color, px, [color](QPainter& p, qreal w) {
+        p.setPen(QPen(color, w, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        QPainterPath pencil;
+        pencil.moveTo(4, 20);
+        pencil.lineTo(5.2, 15.3);
+        pencil.lineTo(15, 5.5);
+        pencil.lineTo(18.5, 9);
+        pencil.lineTo(8.7, 18.8);
+        pencil.closeSubpath();
+        p.drawPath(pencil);
+        p.drawLine(QPointF(4, 20), QPointF(8.7, 18.8));
+        p.drawLine(QPointF(12.5, 8), QPointF(16, 11.5));
+    });
+}
+
 }  // namespace SimpleIcons
