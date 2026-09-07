@@ -114,6 +114,7 @@
 | 경로 | 내용 | 실행 위치 |
 |---|---|---|
 | `robot_careguard_ws/` | ROS2 워크스페이스 전체 | LIMO 로봇 (`deploy/sync_to_limo.sh`로 rsync 배포) |
+| `careguard_turtlebot_agent/` | TurtleBot ↔ 서버 WebSocket 브리지 (ROS2 ament_python 패키지, `src/` 없이 최상위) | TurtleBot 라즈베리파이 (직접 git pull) |
 | `pc_careguard/` | FastAPI 서버, Qt 대시보드, DB 스키마 | 관제 PC |
 | `shared/api_contract/` | OpenAPI 스펙, 이벤트 코드 정의 | 양쪽이 참조만 함 |
 | `docs/` | 시나리오서, 와이어프레임, 상세 설계 문서 | - |
