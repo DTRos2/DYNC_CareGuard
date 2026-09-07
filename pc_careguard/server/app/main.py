@@ -11,6 +11,7 @@ from .api.v1 import teleop as teleop_api
 from .audit import router as audit_router
 from .api.v1.media import router as media_router
 from .api.v1.media import video_events_router
+from .robots import router as robots_router
 from .schemas import LoginRequest, LoginResponse
 from .services.scheduler import run_scheduler_loop
 from .ws import dashboard_ws, robot_ws
@@ -29,6 +30,7 @@ app.include_router(teleop_api.router)
 app.include_router(robot_ws.router)
 app.include_router(dashboard_ws.router)
 app.include_router(audit_router)
+app.include_router(robots_router)
 
 INVALID_CREDENTIALS = "아이디 또는 비밀번호가 올바르지 않습니다"
 

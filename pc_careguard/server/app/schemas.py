@@ -284,3 +284,23 @@ class PatrolRunItem(BaseModel):
     started_at: datetime
     ended_at: Optional[datetime] = None
     robot_connected: bool = False
+
+
+class RobotItem(BaseModel):
+    id: int
+    code: str
+    name: str
+    model: str
+    ros_domain_id: Optional[int] = None
+    is_online: bool
+
+
+class RegisterRobotRequest(BaseModel):
+    code: str
+    name: str
+    model: str = "limo"
+    ros_domain_id: Optional[int] = None
+
+
+class RegisterRobotResponse(RobotItem):
+    pass
