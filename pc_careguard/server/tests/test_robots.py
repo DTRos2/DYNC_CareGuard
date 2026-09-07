@@ -49,17 +49,20 @@ def test_list_robots_includes_registered_robot(client, cleanup_robot):
     assert code in codes
 
 
-def test_list_robots_is_online_reflects_connected_registry(client, cleanup_robot):
-    from app.robot_registry import connected_robots
-
+def test_list_robots_is_online_reflects_real_ws_connection(client, cleanup_robot):
     code = _unique_code()
     cleanup_robot.append(code)
     client.post("/robots", json={"code": code, "name": "로봇3", "model": "turtlebot"})
 
-    connected_robots.add(code)
-    try:
-        response = client.get("/robots")
-        body = {r["code"]: r["is_online"] for r in response.json()}
-        assert body[code] is True
-    finally:
-        connected_robots.discard(code)
+    response_before = client.get("/robots")
+    body_before = {r["code"]: r["is_online"] for r in response_before.json()}
+    assert body_before[code] is False
+
+    with client.websocket_connect(f"/ws/robot?robot_code={code}"):
+        response_during = client.get("/robots")
+        body_during = {r["code"]: r["is_online"] for r in response_during.json()}
+        assert body_during[code] is True
+
+    response_after = client.get("/robots")
+    body_after = {r["code"]: r["is_online"] for r in response_after.json()}
+    assert body_after[code] is False
