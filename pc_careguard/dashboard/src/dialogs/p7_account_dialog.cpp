@@ -5,20 +5,21 @@
 #include <QCheckBox>
 #include <QFrame>
 #include <QHBoxLayout>
-#include <QInputMethodEvent>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
-#include <QMouseEvent>
 #include <QPushButton>
 #include <QStyle>
-#include <QStyleOptionViewItem>
 #include <QVBoxLayout>
 #include <algorithm>
 
 #include "theme/tokens.h"
+#include "widgets/checkable_list_widget.h"
 #include "widgets/icon_line_edit.h"
+#include "widgets/korean_search.h"
+#include "widgets/live_search_line_edit.h"
 #include "widgets/simple_icons.h"
 
 namespace {
@@ -28,30 +29,6 @@ bool isPasswordStrongEnough(const QString& password) {
     const bool hasLetter = std::any_of(password.begin(), password.end(), [](QChar c) { return c.isLetter(); });
     const bool hasDigit = std::any_of(password.begin(), password.end(), [](QChar c) { return c.isDigit(); });
     return hasLetter && hasDigit;
-}
-
-// 한글 음절의 초성만 뽑아낸 문자열로 바꾼다. 한글이 아닌 문자(코드, 로봇 번호 등)는 그대로 둔다.
-QString hangulChoseong(const QString& text) {
-    static const QString kChoseong = QStringLiteral("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ");
-    QString result;
-    result.reserve(text.size());
-    for (const QChar& ch : text) {
-        const ushort code = ch.unicode();
-        if (code >= 0xAC00 && code <= 0xD7A3) {
-            const int choseongIndex = (code - 0xAC00) / (21 * 28);
-            result.append(kChoseong.at(choseongIndex));
-        } else {
-            result.append(ch);
-        }
-    }
-    return result;
-}
-
-// "담당 대상자" 검색 — 일반 부분일치 우선, 안 걸리면 초성만으로도 대조한다("ㄱㅇㅇ" → "김예은").
-bool matchesRecipientSearch(const QString& text, const QString& query) {
-    if (query.isEmpty()) return true;
-    if (text.contains(query, Qt::CaseInsensitive)) return true;
-    return hangulChoseong(text).contains(query, Qt::CaseInsensitive);
 }
 
 QString roleLabel(AccountDialog::Role role) {
@@ -195,6 +172,7 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
         auto* changeBtn = new QPushButton(QStringLiteral("변경"), this);
         changeBtn->setProperty("variant", "secondary");
         changeBtn->setProperty("size", "s");
+        changeBtn->setAutoDefault(false);
 
         // 1번째 줄 입력창 폭을 2번째 줄(입력창+버튼)의 입력창 폭과 맞추기 위해,
         // 실제 버튼과 동일한 크기의 투명 자리표시자를 같은 위치에 둔다.
@@ -323,11 +301,11 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
                                         .arg(Tokens::TEXT_PRIMARY.name(), Tokens::BORDER.name()));
         body->addWidget(chargeLabel);
 
-        recipientSearchEdit_ = new QLineEdit(this);
+        recipientSearchEdit_ = new LiveSearchLineEdit(this);
         recipientSearchEdit_->setPlaceholderText(QStringLiteral("이름 또는 코드로 검색"));
         body->addWidget(recipientSearchEdit_);
 
-        recipientListWidget_ = new QListWidget(this);
+        recipientListWidget_ = new CheckableListWidget(this);
         recipientListWidget_->setFixedHeight(120);
         recipientListWidget_->setSelectionMode(QAbstractItemView::NoSelection);
         recipientListWidget_->setFocusPolicy(Qt::NoFocus);
@@ -338,14 +316,10 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
             item->setData(Qt::UserRole, option.id);
         }
         body->addWidget(recipientListWidget_);
-        // 체크박스 자체를 정확히 클릭하지 않아도 행 어디를 눌러도 선택되게 한다 — 아래
-        // eventFilter()에서 체크박스 영역 바깥 클릭만 대신 토글해준다(정확히 체크박스를
-        // 클릭한 경우는 Qt 기본 토글에 맡겨 이중 토글을 피한다).
-        recipientListWidget_->viewport()->installEventFilter(this);
-
-        connect(recipientSearchEdit_, &QLineEdit::textChanged, this, &AccountDialog::applyRecipientFilter);
-        // 한글 조합 중(커밋 전) preedit 문자열도 잡아서 실시간으로 반영한다 — 아래 eventFilter() 참고.
-        recipientSearchEdit_->installEventFilter(this);
+        
+        // LiveSearchLineEdit이 한글 조합 중(커밋 전) preedit 문자열까지 합쳐서 liveTextChanged를 낸다.
+        connect(recipientSearchEdit_, &LiveSearchLineEdit::liveTextChanged, this,
+                &AccountDialog::applyRecipientFilter);
 
         if (recipients.isEmpty()) {
             auto* emptyHint = new QLabel(QStringLiteral("등록된 대상자가 없습니다"), this);
@@ -435,6 +409,7 @@ void AccountDialog::buildRoleSelector(QVBoxLayout* body, Role initial) {
     for (auto* btn : {roleAdminBtn_, roleOperatorBtn_, roleGuardianBtn_}) {
         btn->setObjectName("segBtn");
         btn->setCheckable(true);
+        btn->setAutoDefault(false);
         group->addButton(btn, idx++);
         row->addWidget(btn);
     }
@@ -501,39 +476,16 @@ void AccountDialog::togglePasswordConfirmVisibility() {
 void AccountDialog::applyRecipientFilter(const QString& query) {
     for (int i = 0; i < recipientListWidget_->count(); ++i) {
         auto* item = recipientListWidget_->item(i);
-        item->setHidden(!matchesRecipientSearch(item->text(), query));
+        item->setHidden(!KoreanSearch::matches(item->text(), query));
     }
 }
 
-bool AccountDialog::eventFilter(QObject* watched, QEvent* event) {
-    if (watched == recipientSearchEdit_ && event->type() == QEvent::InputMethod) {
-        auto* imEvent = static_cast<QInputMethodEvent*>(event);
-        // 아직 커밋 안 된 조합 중 글자(밑줄로 표시되는 부분)까지 합쳐서 걸러야
-        // "박" 입력 직후(조합 완료 전)에도 바로 검색된다.
-        applyRecipientFilter(recipientSearchEdit_->text() + imEvent->preeditString());
+void AccountDialog::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+        event->accept();
+        return;
     }
-
-    if (watched == recipientListWidget_->viewport() && event->type() == QEvent::MouseButtonRelease) {
-        auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (mouseEvent->button() == Qt::LeftButton) {
-            QListWidgetItem* item = recipientListWidget_->itemAt(mouseEvent->pos());
-            if (item != nullptr) {
-                QStyleOptionViewItem opt;
-                opt.initFrom(recipientListWidget_);
-                opt.rect = recipientListWidget_->visualItemRect(item);
-                const QRect checkRect = recipientListWidget_->style()->subElementRect(
-                    QStyle::SE_ItemViewItemCheckIndicator, &opt, recipientListWidget_);
-                // 체크박스 자체를 클릭했으면 Qt 기본 토글에 맡긴다(여기서 또 토글하면
-                // 두 번 토글되어 원상태로 되돌아가 버린다). 그 외 행 어디를 클릭해도
-                // 같은 효과를 내도록 여기서 대신 토글해준다.
-                if (!checkRect.contains(mouseEvent->pos())) {
-                    item->setCheckState(item->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
-                }
-            }
-        }
-    }
-
-    return QDialog::eventFilter(watched, event);
+    QDialog::keyPressEvent(event);
 }
 
 void AccountDialog::handleActiveToggled(bool) {
@@ -559,6 +511,7 @@ QFrame* AccountDialog::buildHeader(const QString& title) {
     closeBtn->setProperty("variant", "ghost");
     closeBtn->setProperty("size", "s");
     closeBtn->setFixedSize(28, 28);
+    closeBtn->setAutoDefault(false);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::reject);
     layout->addWidget(closeBtn);
     return header;
@@ -573,10 +526,14 @@ QFrame* AccountDialog::buildFooter(const QString& primaryLabel) {
     layout->addStretch();
     auto* cancelBtn = new QPushButton(QStringLiteral("취소"), footer);
     cancelBtn->setProperty("variant", "secondary");
+    // autoDefault를 꺼야 Enter가 이 버튼(취소/저장)을 "기본 버튼"으로 여겨 자동으로
+    // 눌러버리지 않는다 — 그냥 두면 입력창에서 Enter만 쳐도 다이얼로그가 닫혀버린다.
+    cancelBtn->setAutoDefault(false);
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
     layout->addWidget(cancelBtn);
     auto* saveBtn = new QPushButton(primaryLabel, footer);
     saveBtn->setProperty("variant", "primary");
+    saveBtn->setAutoDefault(false);
     connect(saveBtn, &QPushButton::clicked, this, &AccountDialog::handleSaveClicked);
     layout->addWidget(saveBtn);
     return footer;

@@ -64,6 +64,8 @@ add_executable(careguard_dashboard
     src/widgets/live_search_line_edit.cpp
     src/widgets/careguard_date_edit.h
     src/widgets/careguard_date_edit.cpp
+    src/widgets/checkable_list_widget.h
+    src/widgets/checkable_list_widget.cpp
     src/dialogs/event_detail_modal.h
     src/dialogs/event_detail_modal.cpp
     src/dialogs/p5_map_file_register_dialog.h
