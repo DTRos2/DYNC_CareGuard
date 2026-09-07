@@ -13,4 +13,5 @@ pc_careguard/server/.env
 .venv/
 CLAUDE.md
 .superpowers/
+.worktrees/
 P7_MODALS_SUMMARY.md

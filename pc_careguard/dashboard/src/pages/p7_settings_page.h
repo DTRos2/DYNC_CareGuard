@@ -130,6 +130,7 @@ private:
     QLabel* robotCountLabel_ = nullptr;
     QTableWidget* accountTable_ = nullptr;
     QLabel* accountCountLabel_ = nullptr;
+    QPushButton* accountRegisterBtn_ = nullptr;
     QPushButton* deleteAccountBtn_ = nullptr;
     WsClient* wsClient_ = nullptr;
 
