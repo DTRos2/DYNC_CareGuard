@@ -26,6 +26,9 @@ amcl이 안 떠 있어 그 토픽에 퍼블리셔가 전혀 없다 — 매핑 �
 /camera/color/image_raw/compressed(orbbec_camera, sensor_msgs/CompressedImage)도
 같은 방식으로 relay한다 — 이미 JPEG로 압축되어 있어 재인코딩 없이 그대로
 base64만 씌워 보낸다(대시보드 P5/P6 우측 상단 카메라 라이브 박스용).
+
+video_recorder.py가 남긴 mp4+json 업로드도 이 노드가 같이 맡는다 —
+media_uploader.start_video_upload_watcher() 백그라운드 스레드 하나만 띄운다.
 """
 import asyncio
 import base64
@@ -44,7 +47,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, LaserScan
 from std_msgs.msg import String
 
-from . import ws_config
+from . import media_uploader, ws_config
 
 RECONNECT_DELAY_SEC = 3.0
 
@@ -117,6 +120,9 @@ class UplinkNode(Node):
 
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
+
+        # 영상 업로드 워처. WS 연결과 무관한 별개의 백그라운드 스레드.
+        media_uploader.start_video_upload_watcher(self.get_logger())
 
     # ---------- ROS2 콜백: 들어오는 대로 asyncio 루프에 넘겨서 전송한다 ----------
 
