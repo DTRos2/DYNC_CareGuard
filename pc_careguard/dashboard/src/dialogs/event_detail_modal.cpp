@@ -48,8 +48,13 @@ QLabel* makeSectionLabel(const QString& text, QWidget* parent) {
 }
 
 QFrame* makeBoxFrame(QWidget* parent) {
+    // 타입 셀렉터("QFrame{...}")로 스타일시트를 지정하면 QLabel이 QFrame의 서브클래스라
+    // 이 박스 안의 모든 QLabel(시간·본문·상태 텍스트)에도 border/radius가 그대로 상속되어
+    // 각 텍스트마다 캡슐 테두리가 둘러지는 문제가 있었다. objectName + ID 셀렉터로 스코프를
+    // 이 프레임 자신에게만 한정한다.
     auto* frame = new QFrame(parent);
-    frame->setStyleSheet(QStringLiteral("QFrame{border:0.5px solid %1; border-radius:8px;}")
+    frame->setObjectName(QStringLiteral("eventDetailBox"));
+    frame->setStyleSheet(QStringLiteral("QFrame#eventDetailBox{border:0.5px solid %1; border-radius:8px;}")
                               .arg(Tokens::BORDER.name()));
     return frame;
 }
@@ -60,6 +65,8 @@ EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, QWidget
     : QDialog(parent), row_(row) {
     setWindowTitle(QStringLiteral("이벤트 상세 — %1").arg(row_.eventId));
     setModal(true);
+    // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     setFixedWidth(640);
 
     if (row_.resolved) {
@@ -123,7 +130,9 @@ QWidget* EventDetailModal::buildHeader() {
 
 QWidget* EventDetailModal::buildProgressBar() {
     auto* bar = new QFrame(this);
-    bar->setStyleSheet(QStringLiteral("QFrame{border-bottom:0.5px solid %1;}").arg(Tokens::BORDER.name()));
+    bar->setObjectName(QStringLiteral("eventProgressBar"));
+    bar->setStyleSheet(
+        QStringLiteral("QFrame#eventProgressBar{border-bottom:0.5px solid %1;}").arg(Tokens::BORDER.name()));
     auto* layout = new QHBoxLayout(bar);
     layout->setContentsMargins(16, 10, 16, 10);
     layout->setSpacing(4);
@@ -415,7 +424,9 @@ QWidget* EventDetailModal::buildHistorySection() {
     layout->addWidget(makeSectionLabel(QStringLiteral("처리 이력 · CARE_ACTION"), wrap));
 
     auto* timeline = new QFrame(wrap);
-    timeline->setStyleSheet(QStringLiteral("QFrame{border-left:2px solid %1;}").arg(Tokens::BORDER.name()));
+    timeline->setObjectName(QStringLiteral("eventHistoryTimeline"));
+    timeline->setStyleSheet(
+        QStringLiteral("QFrame#eventHistoryTimeline{border-left:2px solid %1;}").arg(Tokens::BORDER.name()));
     auto* timelineLayout = new QVBoxLayout(timeline);
     timelineLayout->setContentsMargins(10, 0, 0, 0);
     timelineLayout->setSpacing(6);

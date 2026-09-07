@@ -101,6 +101,8 @@ const QStringList kRobotMaps = {QStringLiteral("행복빌라 302"), QStringLiter
 P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, QWidget* parent)
     : QDialog(parent), nextCode_(nextCode) {
     setModal(true);
+    // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     setFixedWidth(620);
     setWindowTitle(QStringLiteral("대상자 등록"));
 
