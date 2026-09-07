@@ -10,8 +10,10 @@ class QCheckBox;
 class QFrame;
 class QLabel;
 class QVBoxLayout;
-class QListWidget;
 class IconLineEdit;
+class LiveSearchLineEdit;
+class CheckableListWidget;
+class QKeyEvent;
 
 // P7 계정 등록·수정 모달 — p7_robot_account_modal_wireframe_rev2.html §3~4 대응.
 class AccountDialog : public QDialog {
@@ -60,9 +62,9 @@ private:
     void togglePasswordVisibility();
     void togglePasswordConfirmVisibility();
     void applyRecipientFilter(const QString& query);
-    // 한글 입력기 조합 중(글자가 아직 밑줄로 "떠 있는" 상태)에도 실시간으로 걸러지도록,
-    // 커밋 전 조합 문자열(preedit)까지 recipientSearchEdit_에서 가로채 검색에 반영한다.
-    bool eventFilter(QObject* watched, QEvent* event) override;
+    // Enter/Return으로는 저장·닫힘이 안 되게 막는다(오타 입력 중 실수로 저장되는 것 방지).
+    // Esc는 QDialog 기본 동작(reject)이 그대로 처리하도록 둔다.
+    void keyPressEvent(QKeyEvent* event) override;
 
     Mode mode_;
     AccountData data_;
@@ -83,6 +85,6 @@ private:
     QFrame* adminWarnBanner_;
     QFrame* selfBlockBanner_;
     QFrame* lastAdminBlockBanner_;
-    QLineEdit* recipientSearchEdit_ = nullptr;
-    QListWidget* recipientListWidget_ = nullptr;
+    LiveSearchLineEdit* recipientSearchEdit_ = nullptr;
+    CheckableListWidget* recipientListWidget_ = nullptr;
 };

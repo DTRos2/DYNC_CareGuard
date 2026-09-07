@@ -436,6 +436,20 @@ void ApiClient::startMedicationMission(const QString& robotCode, ItemCallback<Mi
              });
 }
 
+void ApiClient::driveToPoint(const QString& robotCode, int mapId, const QString& code, double xMeters,
+                              double yMeters, double yawRad, SimpleCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}, {"map_id", mapId},   {"code", code},
+                      {"x", xMeters},           {"y", yMeters},     {"yaw", yawRad}};
+    postJson(QStringLiteral("/patrol-runs/drive-to-point"), body,
+             [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
+}
+
+void ApiClient::prepareNavigation(const QString& robotCode, int mapId) {
+    QJsonObject body{{"robot_code", robotCode}, {"map_id", mapId}};
+    postJson(QStringLiteral("/patrol-runs/prepare-navigation"), body,
+             [](bool, const QByteArray&, const QString&) {});
+}
+
 void ApiClient::sendTeleop(const QString& robotCode, double linearMps, double angularRadps) {
     // 방향키를 누르고 있는 동안 계속 호출되는 hot path라 응답을 기다리지 않는다 —
     // 실패해도(로봇 미연결 등) 조용히 무시한다. 위험 상황은 SlamMappingCard의

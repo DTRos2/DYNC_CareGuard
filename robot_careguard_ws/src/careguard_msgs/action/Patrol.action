@@ -3,6 +3,9 @@
 # 클라이언트다.
 int32 run_id
 Waypoint[] waypoints
+# true: 다 돌면 충전 스테이션으로 복귀(원래 순찰 동작). false: 웨이포인트 하나로만
+# 이동하고 도착한 자리에 머문다(P6 "이동" 단일 지점 주행용) — run_id=0으로 온다.
+bool return_to_charging
 ---
 string status            # "completed" / "aborted" / "failed"
 int32 waypoints_done

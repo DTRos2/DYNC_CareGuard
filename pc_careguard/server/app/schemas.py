@@ -271,6 +271,32 @@ class PatrolRunCreate(BaseModel):
     trigger: str = "manual"  # "schedule" / "manual" / "recheck"
 
 
+class DriveToPointRequest(BaseModel):
+    # P6 "이동"(단일 웨이포인트 주행) — patrol_run으로 기록하지 않는 일회성 명령이라
+    # route_id 없이 좌표를 직접 받는다. GUI가 캔버스에 이미 갖고 있는 값을 그대로 보낸다
+    # (patrol_start가 waypoints를 route_id 재조회 없이 좌표로 직접 싣는 것과 같은 이유).
+    robot_code: str
+    code: str = "AD_HOC"
+    x: float
+    y: float
+    yaw: float = 0.0
+    # downlink_node가 Nav2를 자동으로 준비하는 데 필요하다(map.id) — GUI가
+    # maps_[currentMapIndex_].serverMapId를 그대로 보낸다.
+    map_id: int
+
+
+class DriveToPointResponse(BaseModel):
+    robot_connected: bool
+
+
+class PrepareNavigationRequest(BaseModel):
+    # P6 페이지를 열거나 다른 로봇의 맵으로 전환할 때 — 실제 순찰/이동 목표 없이
+    # Nav2(맵 다운로드+런치+초기 위치)만 미리 준비시킨다. "웨이포인트를 보내기
+    # 전에도 로봇 현재 위치부터 보고 싶다"는 요청에 대응.
+    robot_code: str
+    map_id: int
+
+
 class PatrolRunItem(BaseModel):
     id: int
     robot_id: int

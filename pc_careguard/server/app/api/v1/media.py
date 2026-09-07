@@ -48,7 +48,8 @@ RETENTION_DAYS_PATROL_SNAPSHOT = 7
 
 @router.post("/upload", response_model=MediaUploadResponse)
 def upload_video(
-    robot_id: int = Form(..., description="촬영한 로봇 id"),
+    robot_id: Optional[int] = Form(None, description="촬영한 로봇 id. robot_code 대신 이걸 쓸 수도 있다"),
+    robot_code: Optional[str] = Form(None, description="촬영한 로봇 code (예: R-01). robot_id 대신 이걸 써도 된다"),
     care_event_id: Optional[int] = Form(None, description="연동된 이벤트 id. 순찰 스냅샷 등은 비워둔다"),
     duration_sec: Optional[int] = Form(None, description="영상 길이(초)"),
     file: UploadFile = File(..., description="업로드할 영상 파일"),
@@ -57,9 +58,22 @@ def upload_video(
 
     OpenCV 저장 코드(6단계)가 아직 없어도, 로봇이 로컬에 만든 아무 영상 파일이나
     curl -F로 이 엔드포인트에 넣어서 저장/DB 기록까지 먼저 검증하기 위한 단계.
+
+    robot_id 또는 robot_code 중 하나만 있으면 된다(upload-map과 같은 방식).
+    둘 다 오면 robot_id를 우선한다.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="파일이 비어 있습니다")
+
+    if robot_id is None:
+        if not robot_code:
+            raise HTTPException(status_code=400, detail="robot_id 또는 robot_code 중 하나는 필요합니다")
+        with db.get_connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
+            robot = cur.fetchone()
+        if robot is None:
+            raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+        robot_id = robot["id"]
 
     robot_dir = VIDEO_DIR / str(robot_id)
     robot_dir.mkdir(parents=True, exist_ok=True)

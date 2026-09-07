@@ -29,7 +29,11 @@ def main(args=None):
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGINT 시 rclpy가 내부적으로 먼저 shutdown()을 부를 수 있어, 여기서
+        # 무조건 또 부르면 "rcl_shutdown already called"로 비정상 종료한다
+        # (slam_progress_publisher.py에서 실제로 겪은 버그, 같은 패턴이라 방어).
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

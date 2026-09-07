@@ -26,6 +26,9 @@ amcl이 안 떠 있어 그 토픽에 퍼블리셔가 전혀 없다 — 매핑 �
 /camera/color/image_raw/compressed(orbbec_camera, sensor_msgs/CompressedImage)도
 같은 방식으로 relay한다 — 이미 JPEG로 압축되어 있어 재인코딩 없이 그대로
 base64만 씌워 보낸다(대시보드 P5/P6 우측 상단 카메라 라이브 박스용).
+
+video_recorder.py가 남긴 mp4+json 업로드도 이 노드가 같이 맡는다 —
+media_uploader.start_video_upload_watcher() 백그라운드 스레드 하나만 띄운다.
 """
 import asyncio
 import base64
@@ -44,7 +47,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, LaserScan
 from std_msgs.msg import String
 
-from . import ws_config
+from . import media_uploader, ws_config
 
 RECONNECT_DELAY_SEC = 3.0
 
@@ -117,6 +120,9 @@ class UplinkNode(Node):
 
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
+
+        # 영상 업로드 워처. WS 연결과 무관한 별개의 백그라운드 스레드.
+        media_uploader.start_video_upload_watcher(self.get_logger())
 
     # ---------- ROS2 콜백: 들어오는 대로 asyncio 루프에 넘겨서 전송한다 ----------
 
@@ -240,7 +246,11 @@ class UplinkNode(Node):
     async def _connect_forever(self):
         import websockets
 
-        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}'
+        # role=uplink — 서버가 downlink(명령 수신)와 다른 딕셔너리에 이 연결을 담는다.
+        # 안 붙이면(role 생략) 서버가 downlink로 취급해, 와이파이 재연결 타이밍에 따라
+        # 이 연결이 downlink의 명령 수신 자리를 가로챌 수 있다(server/app/ws/robot_ws.py
+        # 참고 — 실제로 이 문제로 teleop/저장 명령이 조용히 씹히는 버그가 있었다).
+        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}&role=uplink'
         while rclpy.ok():
             try:
                 async with websockets.connect(url) as ws:
@@ -262,7 +272,11 @@ def main(args=None):
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGINT 시 rclpy가 내부적으로 먼저 shutdown()을 부를 수 있어, 여기서
+        # 무조건 또 부르면 "rcl_shutdown already called"로 비정상 종료한다
+        # (slam_progress_publisher.py에서 실제로 겪은 버그, 같은 패턴이라 방어).
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
