@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>careguard_mission</name>
+  <version>0.1.0</version>
+  <description>시나리오 실행 엔진. 이번 스코프는 순찰 액션 서버만 포함한다(복약 등은 밖).</description>
+  <maintainer email="careguard@example.com">CareGuard Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>careguard_msgs</depend>
+  <depend>careguard_nav</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

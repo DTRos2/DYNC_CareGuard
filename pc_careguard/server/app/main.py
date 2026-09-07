@@ -1,20 +1,42 @@
+import asyncio
+
 import bcrypt
 from fastapi import FastAPI, HTTPException
 
 from . import db
 from .accounts import router as accounts_router
+from .api.v1 import map as map_api
+from .api.v1 import patrol as patrol_api
+from .api.v1 import teleop as teleop_api
 from .audit import router as audit_router
 from .media import router as media_router
 from .media import video_events_router
 from .schemas import LoginRequest, LoginResponse
+from .services.scheduler import run_scheduler_loop
+from .ws import dashboard_ws, robot_ws
 
 app = FastAPI(title="CareGuard Server")
 app.include_router(media_router)
 app.include_router(video_events_router)
 app.include_router(accounts_router)
+app.include_router(map_api.router)
+app.include_router(map_api.waypoints_router)
+app.include_router(map_api.slam_jobs_router)
+app.include_router(patrol_api.routes_router)
+app.include_router(patrol_api.schedules_router)
+app.include_router(patrol_api.runs_router)
+app.include_router(teleop_api.router)
+app.include_router(robot_ws.router)
+app.include_router(dashboard_ws.router)
 app.include_router(audit_router)
 
 INVALID_CREDENTIALS = "아이디 또는 비밀번호가 올바르지 않습니다"
+
+
+@app.on_event("startup")
+async def start_background_tasks():
+    # patrol_schedule을 주기적으로 확인해 시각이 되면 자동으로 순찰을 시작한다.
+    asyncio.create_task(run_scheduler_loop())
 
 
 @app.get("/health")

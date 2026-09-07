@@ -50,6 +50,8 @@ public:
 
     // 로봇의 현재 위치를 지도 위에 표시한다 (초기값: 충전 스테이션).
     void setCurrentRobotPosition(QPointF canvasPos, qreal headingDeg);
+    // 우상단 카메라 라이브 화면에 실제 프레임을 흘려보낸다(camera_frame WS 메시지).
+    void setCameraFrame(const QImage& frame);
 
     // P5에서 파일로 등록한 실제 pgm 맵 이미지를 배경으로 표시한다 (없으면 목업 평면도).
     void setBackgroundImage(const QImage& image);

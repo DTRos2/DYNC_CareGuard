@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets Multimedia MultimediaWidgets Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets Multimedia MultimediaWidgets Network WebSockets)
 
 add_executable(careguard_dashboard
     src/main.cpp
@@ -16,6 +16,10 @@ add_executable(careguard_dashboard
     src/windows/mainwindow.cpp
     src/windows/loginwindow.h
     src/windows/loginwindow.cpp
+    src/net/api_client.h
+    src/net/api_client.cpp
+    src/net/ws_client.h
+    src/net/ws_client.cpp
     src/theme/tokens.h
     src/theme/calendar_style.h
     src/widgets/simple_icons.h
@@ -92,9 +96,12 @@ add_executable(careguard_dashboard
 )
 
 target_include_directories(careguard_dashboard PRIVATE src)
-target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network)
+target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network Qt6::WebSockets)
 
 # 대시보드 실행 시 FastAPI 서버를 자동 기동하기 위한 기본 경로.
 # 환경변수 CAREGUARD_SERVER_DIR로 재정의 가능 (main.cpp 참고).
+# 파일로 맵 등록할 때 .pgm/.yaml 파일 선택 다이얼로그가 처음 열리는 기본 경로.
+# 환경변수 CAREGUARD_MAPS_DIR로 재정의 가능 (map_file_register_dialog.cpp 참고).
 target_compile_definitions(careguard_dashboard PRIVATE
-    CAREGUARD_SERVER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../server")
+    CAREGUARD_SERVER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../server"
+    CAREGUARD_MAPS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../robot_careguard_ws/src/careguard_bringup/maps")
