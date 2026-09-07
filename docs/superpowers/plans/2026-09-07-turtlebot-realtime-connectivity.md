@@ -110,7 +110,7 @@ def test_health_endpoint_returns_ok(client):
 
 ```bash
 cd /home/cce/twomainProject/pc_careguard/server
-.venv/bin/pytest tests/ -v
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/ -v
 ```
 Expected: `test_health_endpoint_returns_ok` PASS. (`/health`은 이미 `main.py`에 있는 기존 엔드포인트 — 새로 만들 필요 없음)
 
@@ -274,7 +274,7 @@ def test_list_robots_is_online_reflects_connected_registry(client, cleanup_robot
 
 ```bash
 cd /home/cce/twomainProject/pc_careguard/server
-.venv/bin/pytest tests/test_robots.py -v
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/test_robots.py -v
 ```
 Expected: FAIL — `404 Not Found` (아직 `/robots` 라우트가 없음)
 
@@ -388,7 +388,7 @@ app.include_router(robots_router)
 
 ```bash
 cd /home/cce/twomainProject/pc_careguard/server
-.venv/bin/pytest tests/test_robots.py -v
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/test_robots.py -v
 ```
 Expected: 4개 테스트 모두 PASS
 
@@ -500,7 +500,7 @@ def test_dashboard_socket_receives_snapshot_of_connected_robots(client, cleanup_
 
 ```bash
 cd /home/cce/twomainProject/pc_careguard/server
-.venv/bin/pytest tests/test_robot_ws.py -v
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/test_robot_ws.py -v
 ```
 Expected: FAIL — `/ws/robot/...`, `/ws/dashboard` 라우트가 아직 없어 연결 자체가 안 됨
 
@@ -597,7 +597,7 @@ app.include_router(robot_ws_router)
 
 ```bash
 cd /home/cce/twomainProject/pc_careguard/server
-.venv/bin/pytest tests/ -v
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/pytest tests/ -v
 ```
 Expected: 이전 태스크 것 포함 전부 PASS
 
