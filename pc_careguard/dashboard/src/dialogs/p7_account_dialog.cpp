@@ -17,22 +17,6 @@
 
 #include "theme/tokens.h"
 #include "widgets/checkable_list_widget.h"
-
-    AccountData result = data_;
-    result.loginId = loginId;
-    result.displayName = name;
-    if (!isEdit) result.password = passwordEdit_->text();
-    result.role = selectedRole();
-    result.active = activeCheck_->isChecked();
-    result.assignedRecipientIds = matchedRecipientIds;
-    emit accountSaved(result);
-    accept();
-}
-
-You've hit your session limit · resets 8:20pm (Asia/Seoul)
-/upgrade to increase your usage limit.
-
-✻ Crunched for 3m
 #include "widgets/icon_line_edit.h"
 #include "widgets/korean_search.h"
 #include "widgets/live_search_line_edit.h"
@@ -501,6 +485,8 @@ void AccountDialog::keyPressEvent(QKeyEvent* event) {
         event->accept();
         return;
     }
+    QDialog::keyPressEvent(event);
+}
 
 void AccountDialog::handleActiveToggled(bool) {
     // 관리자 계정 비활성화에 별도 확인 팝업은 없다(범위 제외 — 사용자 지시).
