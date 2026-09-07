@@ -30,7 +30,11 @@ constexpr qreal kZoomStepFactor = 1.15;
 WaypointCanvas::WaypointCanvas(QWidget* parent)
     : QFrame(parent),
       routeEditMode_(false),
-      mode_(InteractionMode::AddWaypoint),
+      // P6 페이지에 처음 들어왔을 때는 웨이포인트를 새로 추가하기보다 로봇을
+      // 움직여보고 싶어하는 경우가 더 많아서(순찰 페이지 = 이미 있는 지점으로
+      // 보내보는 용도) 기본 모드를 "이동"으로 바꿨다. p6_patrol_page.cpp의
+      // moveModeBtn->setChecked(true)와 짝을 맞춰야 한다.
+      mode_(InteractionMode::MoveWaypoint),
       dragging_(false),
       dragMoved_(false),
       dragIndex_(-1),

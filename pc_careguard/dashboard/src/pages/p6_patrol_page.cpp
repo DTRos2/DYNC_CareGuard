@@ -203,7 +203,9 @@ QWidget* P6PatrolPage::buildCanvasCard() {
     }
     addModeBtn->setProperty("pos", "first");
     moveModeBtn->setProperty("pos", "last");
-    addModeBtn->setChecked(true);
+    // WaypointCanvas의 기본 모드(mode_)를 MoveWaypoint로 바꿔서, 여기 버튼 체크
+    // 상태도 그에 맞춰 "이동"을 기본으로 보여준다.
+    moveModeBtn->setChecked(true);
     toolbar->addWidget(addModeBtn);
     toolbar->addWidget(moveModeBtn);
 
