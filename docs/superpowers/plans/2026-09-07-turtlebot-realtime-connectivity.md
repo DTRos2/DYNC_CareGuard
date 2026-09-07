@@ -1193,7 +1193,7 @@ void RobotWsClient::handleTextMessage(const QString& message) {
 
 ```bash
 cd /home/cce/twomainProject/pc_careguard/dashboard/build
-cmake .. 2>&1 | tail -20
+cmake -DCMAKE_PREFIX_PATH=/home/cce/Qt/6.11.1/gcc_64 .. 2>&1 | tail -20
 cmake --build . -j"$(nproc)" 2>&1 | tail -40
 ```
 Expected: `Built target careguard_dashboard` (아직 `RobotWsClient`를 아무도 안 쓰므로 링크 경고 없이 그냥 빌드만 성공하면 됨 — 실제 연동은 Task 8)
@@ -1469,7 +1469,7 @@ void P7SettingsPage::handleRobotStatusChanged(const QString& code, bool online) 
 
 ```bash
 cd /home/cce/twomainProject/pc_careguard/dashboard/build
-cmake .. 2>&1 | tail -20
+cmake -DCMAKE_PREFIX_PATH=/home/cce/Qt/6.11.1/gcc_64 .. 2>&1 | tail -20
 cmake --build . -j"$(nproc)" 2>&1 | tail -60
 ```
 Expected: `Built target careguard_dashboard`
