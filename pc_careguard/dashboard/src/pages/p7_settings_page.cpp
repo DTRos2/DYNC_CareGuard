@@ -386,9 +386,13 @@ QWidget* P7SettingsPage::buildAccountTab() {
         QStringLiteral("계정 %1 · 활성 %2").arg(accounts_.size()).arg(activeCount),
         QStringLiteral("계정 등록"));
     accountCountLabel_ = headerRow->findChild<QLabel*>();
-    auto* headerBtn = headerRow->findChild<QPushButton*>();
-    if (headerBtn != nullptr) {
-        connect(headerBtn, &QPushButton::clicked, this, [this] { openAccountDialog(-1); });
+    accountRegisterBtn_ = headerRow->findChild<QPushButton*>();
+    if (accountRegisterBtn_ != nullptr) {
+        // 등록도 관리자 권한 계정만 가능 — 삭제와 동일하게 계정 목록을 불러온 뒤
+        // refreshAccountTable()에서 isCurrentUserAdmin()으로 판단해 갱신한다. 그 전까지는
+        // 기본으로 막아둔다.
+        accountRegisterBtn_->setEnabled(false);
+        connect(accountRegisterBtn_, &QPushButton::clicked, this, [this] { openAccountDialog(-1); });
     }
     // 삭제는 관리자 권한 계정만 가능 — 실제 표시 여부는 계정 목록을 불러온 뒤
     // refreshAccountTable()에서 isCurrentUserAdmin()으로 판단해 갱신한다.
@@ -823,7 +827,16 @@ void P7SettingsPage::openRobotDialog(int rowIndex) {
 
     const QString previousRecipient = isNew ? QString() : robots_[static_cast<size_t>(rowIndex)].recipientLabel;
 
-    auto* dialog = new RobotDialog(isNew ? RobotDialog::Mode::Register : RobotDialog::Mode::Edit, data, this);
+    QVector<RobotDialog::RecipientOption> recipientOptions;
+    for (const RecipientRow& rc : recipients_) {
+        RobotDialog::RecipientOption option;
+        option.id = rc.id;
+        option.label = rc.label;
+        recipientOptions.push_back(option);
+    }
+
+    auto* dialog = new RobotDialog(isNew ? RobotDialog::Mode::Register : RobotDialog::Mode::Edit, data,
+                                    recipientOptions, this);
     connect(dialog, &RobotDialog::robotSaved, this,
             [this, rowIndex, isNew, previousRecipient](const RobotDialog::RobotData& saved) {
         RobotRow row;
@@ -990,11 +1003,12 @@ void P7SettingsPage::refreshAccountTable() {
         populateAccountRow(r);
     }
 
-    // 계정 삭제는 관리자 권한 계정만 — 로그인 세션 연동 전이라 currentUserLoginId_로
+    // 계정 등록·삭제는 관리자 권한 계정만 — 로그인 세션 연동 전이라 currentUserLoginId_로
     // 본인 계정을 찾아 그 역할로 판단한다.
-    const bool canDelete = isCurrentUserAdmin();
-    accountTable_->setColumnHidden(7, !canDelete);
-    if (deleteAccountBtn_ != nullptr) deleteAccountBtn_->setVisible(canDelete);
+    const bool isAdmin = isCurrentUserAdmin();
+    if (accountRegisterBtn_ != nullptr) accountRegisterBtn_->setEnabled(isAdmin);
+    accountTable_->setColumnHidden(7, !isAdmin);
+    if (deleteAccountBtn_ != nullptr) deleteAccountBtn_->setVisible(isAdmin);
 }
 
 void P7SettingsPage::fetchAccounts() {
