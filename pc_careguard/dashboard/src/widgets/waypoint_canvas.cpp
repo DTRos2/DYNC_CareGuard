@@ -30,7 +30,11 @@ constexpr qreal kZoomStepFactor = 1.15;
 WaypointCanvas::WaypointCanvas(QWidget* parent)
     : QFrame(parent),
       routeEditMode_(false),
-      mode_(InteractionMode::AddWaypoint),
+      // P6 페이지에 처음 들어왔을 때는 웨이포인트를 새로 추가하기보다 로봇을
+      // 움직여보고 싶어하는 경우가 더 많아서(순찰 페이지 = 이미 있는 지점으로
+      // 보내보는 용도) 기본 모드를 "이동"으로 바꿨다. p6_patrol_page.cpp의
+      // moveModeBtn->setChecked(true)와 짝을 맞춰야 한다.
+      mode_(InteractionMode::MoveWaypoint),
       dragging_(false),
       dragMoved_(false),
       dragIndex_(-1),
@@ -271,9 +275,13 @@ void WaypointCanvas::updateRobotAlongTestPath() {
 QRectF WaypointCanvas::floorBounds() const { return rect().adjusted(22, 16, -22, -16); }
 
 int WaypointCanvas::hitTest(const QPointF& pt) const {
+    // 마커 화면 크기가 zoomScale_와 무관하게 고정되도록 바꿨으니(paintEvent), 클릭
+    // 판정 반경도 같은 비율(1/zoomScale_)로 맞춰야 "보이는 크기"와 "눌리는 범위"가
+    // 확대·축소 어느 배율에서나 일치한다. pt는 이미 월드 좌표(toWorld() 결과)다.
+    const qreal hitRadius = kHitRadius / zoomScale_;
     for (int i = 0; i < waypoints_.size(); ++i) {
         const qreal d = std::hypot(pt.x() - waypoints_[i].pos.x(), pt.y() - waypoints_[i].pos.y());
-        if (d <= kHitRadius) return i;
+        if (d <= hitRadius) return i;
     }
     return -1;
 }
@@ -516,17 +524,24 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
             textColor = Tokens::ACCENT_HOVER;
         }
 
+        // 마커는 화면상 크기가 확대/축소와 무관하게 일정해야 한다(예: 지도 핀) — 바깥
+        // p.scale(zoomScale_)의 영향을 이 마커 하나에서만 1/zoomScale_로 상쇄한다.
+        // 그래서 좌표는 w.pos로 이동해둔 로컬 원점(0,0) 기준으로 그린다.
+        p.save();
+        p.translate(w.pos);
+        p.scale(1.0 / zoomScale_, 1.0 / zoomScale_);
+
         p.setPen(QPen(ring, selected ? 2.5 : 2.0));
         p.setBrush(fill);
         const qreal r = kMarkerRadius;
-        p.drawEllipse(w.pos, r, r);
+        p.drawEllipse(QPointF(0, 0), r, r);
 
         p.setFont(labelFont);
         p.setPen(textColor);
         const QString marker = w.charging ? QStringLiteral("C")
                                 : editOrder >= 0 ? QString::number(editOrder + 1)
                                                   : QString();
-        if (!marker.isEmpty()) p.drawText(QRectF(w.pos.x() - r, w.pos.y() - r, r * 2, r * 2), Qt::AlignCenter, marker);
+        if (!marker.isEmpty()) p.drawText(QRectF(-r, -r, r * 2, r * 2), Qt::AlignCenter, marker);
 
         p.setFont(captionFont);
         p.setPen(routeEditMode_ && !selected && !w.charging ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
@@ -536,28 +551,32 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
             : (routeEditMode_ && !selected ? QStringLiteral("%1 — 미선택").arg(w.name) : w.name);
         // 원 바로 아래, 가운데 정렬로 딱 붙여서 그린다 (AlignVCenter+큰 박스 조합은
         // 여백이 생겨 원과 이름이 멀어 보였다).
-        p.drawText(QRectF(w.pos.x() - 75, w.pos.y() + r + 2, 150, 14), Qt::AlignHCenter | Qt::AlignTop, caption);
+        p.drawText(QRectF(-75, r + 2, 150, 14), Qt::AlignHCenter | Qt::AlignTop, caption);
+        p.restore();
     }
 
-    // 로봇 현재 위치 (지속 표시 — 테스트 실행 중에는 경로를 따라 움직인다)
+    // 로봇 현재 위치(다이얼 모양 — halo + 중심점 + 방향 바늘). 이 마커가 곧 "현재 위치"
+    // 표시 전부다 — 예전엔 별도로 "● 현재 위치" 텍스트 라벨을 옆에 더 그렸는데, 확대한
+    // 상태에서는 라벨의 고정 오프셋(-60,-32)도 함께 확대되어 마커와 멀리 떨어져
+    // 보이면서 마치 서로 다른 두 마커처럼 보이는 문제가 있어 라벨은 제거했다(요청).
+    // 웨이포인트 마커와 같은 이유로 화면상 크기를 zoomScale_와 무관하게 고정한다.
     if (hasRobotPos_) {
+        p.save();
+        p.translate(currentRobotPos_);
+        p.scale(1.0 / zoomScale_, 1.0 / zoomScale_);
+
         QColor halo = Tokens::ACCENT;
         halo.setAlphaF(0.2);
         p.setPen(Qt::NoPen);
         p.setBrush(halo);
-        p.drawEllipse(currentRobotPos_, 15, 15);
+        p.drawEllipse(QPointF(0, 0), 15, 15);
         p.setBrush(Tokens::ACCENT);
-        p.drawEllipse(currentRobotPos_, 8, 8);
+        p.drawEllipse(QPointF(0, 0), 8, 8);
         const qreal headingRad = currentRobotHeadingDeg_ * M_PI / 180.0;
-        const QPointF tip(currentRobotPos_.x() + std::cos(headingRad) * 10,
-                           currentRobotPos_.y() + std::sin(headingRad) * 10);
+        const QPointF tip(std::cos(headingRad) * 10, std::sin(headingRad) * 10);
         p.setPen(QPen(Tokens::BG_SURFACE, 2.0));
-        p.drawLine(currentRobotPos_, tip);
-
-        p.setFont(captionFont);
-        p.setPen(Tokens::ACCENT_HOVER);
-        p.drawText(QRectF(currentRobotPos_.x() - 60, currentRobotPos_.y() - 32, 150, 14),
-                   Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("● 현재 위치"));
+        p.drawLine(QPointF(0, 0), tip);
+        p.restore();
     }
 
     p.restore();  // 확대/패닝 종료 — 이 아래는 항상 고정 크기로 그린다.

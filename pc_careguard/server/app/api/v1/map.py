@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 import psycopg2.extras
 
-from ... import db, media
+from . import media
+from ... import db
 from ...schemas import (
     MapCreate,
     MapItem,
@@ -90,6 +91,16 @@ def create_map(payload: MapCreate):
             INSERT INTO map (robot_id, name, raw_yaml, resolution, origin_x, origin_y, origin_yaw,
                               width_px, height_px, is_active)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            ON CONFLICT (robot_id, name) DO UPDATE SET
+                raw_yaml = EXCLUDED.raw_yaml,
+                resolution = EXCLUDED.resolution,
+                origin_x = EXCLUDED.origin_x,
+                origin_y = EXCLUDED.origin_y,
+                origin_yaw = EXCLUDED.origin_yaw,
+                width_px = EXCLUDED.width_px,
+                height_px = EXCLUDED.height_px,
+                is_active = TRUE,
+                created_at = NOW()
             RETURNING id
             """,
             (
@@ -104,8 +115,20 @@ def create_map(payload: MapCreate):
                 payload.height_px,
             ),
         )
+        # ws/robot_ws.py::_save_slam_result와 같은 이유의 ON CONFLICT — map(robot_id, name)
+        # UNIQUE 제약 때문에, 같은 이름으로 다시 등록하면(예: SLAM 저장 크래시로 남은
+        # .pgm+.yaml을 이 엔드포인트로 복구하는 경우) 예전엔 UniqueViolation으로 그냥
+        # 실패했다. map.id가 안 바뀌어야 기존 waypoint들이 계속 유효해 기존 행을 덮어쓴다.
         map_id = cur.fetchone()["id"]
 
+        # 같은 map_id에 이미 연결된 예전 이미지 파일이 있으면 "현재 이미지" 후보에서
+        # 빼야 아래 SELECT의 LEFT JOIN files가 중복 행을 안 만든다 — 실제 파일은 지우지
+        # 않는다(soft delete만, robot_ws.py의 같은 처리와 동일한 이유).
+        cur.execute(
+            "UPDATE files SET deleted_at = NOW() "
+            "WHERE entity_type = 'map_image' AND entity_id = %s AND id != %s AND deleted_at IS NULL",
+            (str(map_id), payload.file_id),
+        )
         cur.execute(
             "UPDATE files SET entity_id = %s WHERE id = %s AND entity_type = 'map_image'",
             (str(map_id), payload.file_id),

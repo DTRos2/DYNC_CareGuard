@@ -246,7 +246,11 @@ class UplinkNode(Node):
     async def _connect_forever(self):
         import websockets
 
-        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}'
+        # role=uplink — 서버가 downlink(명령 수신)와 다른 딕셔너리에 이 연결을 담는다.
+        # 안 붙이면(role 생략) 서버가 downlink로 취급해, 와이파이 재연결 타이밍에 따라
+        # 이 연결이 downlink의 명령 수신 자리를 가로챌 수 있다(server/app/ws/robot_ws.py
+        # 참고 — 실제로 이 문제로 teleop/저장 명령이 조용히 씹히는 버그가 있었다).
+        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}&role=uplink'
         while rclpy.ok():
             try:
                 async with websockets.connect(url) as ws:
@@ -268,7 +272,11 @@ def main(args=None):
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGINT 시 rclpy가 내부적으로 먼저 shutdown()을 부를 수 있어, 여기서
+        # 무조건 또 부르면 "rcl_shutdown already called"로 비정상 종료한다
+        # (slam_progress_publisher.py에서 실제로 겪은 버그, 같은 패턴이라 방어).
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

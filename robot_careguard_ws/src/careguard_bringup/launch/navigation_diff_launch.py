@@ -11,8 +11,8 @@ from launch import LaunchDescription
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
-from launch.actions import IncludeLaunchDescription
-from launch.substitutions import PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
 from launch_ros.descriptions import ParameterFile
@@ -31,8 +31,19 @@ def generate_launch_description():
 
     # set the map yaml file — 기본값은 이 로봇이 실제로 SLAM해서 만든 맵 중 하나.
     # 실제 순찰 실행 시엔 DB에 등록된 로봇별 맵으로 `map:=` 인자를 덮어써야 한다.
-    map_file_name = 'mapd_origin.yaml'
-    map_file_path = os.path.join(bringup_share_dir, 'maps', map_file_name)
+    #
+    # 예전엔 이 값이 그냥 파이썬 지역 변수라, `ros2 launch ... map:=<경로>`로
+    # 실행해도 ros2 launch가 그런 이름의 인자를 아예 모르고(DeclareLaunchArgument가
+    # 없었음) 조용히 무시했다 — 그래서 실제로는 항상 이 기본값(mapd_origin.yaml)만
+    # 쓰였을 것이다. downlink_node.py가 로봇/맵별로 다운로드한 파일을 map:=으로
+    # 넘겨서 순찰을 자동화하려는데 이게 안 먹히면 의미가 없어서 DeclareLaunchArgument로
+    # 실제로 받게 고쳤다.
+    map_arg = DeclareLaunchArgument(
+        'map',
+        default_value=os.path.join(bringup_share_dir, 'maps', 'mapd_origin.yaml'),
+        description='Nav2가 쓸 맵 yaml 경로',
+    )
+    map_file_path = LaunchConfiguration('map')
 
     # remapping tf topic
     remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
@@ -83,6 +94,7 @@ def generate_launch_description():
         )
 
     return LaunchDescription([
+        map_arg,
         nav2_container,
         localization_launch,
         navigation_launch,

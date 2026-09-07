@@ -9,8 +9,8 @@ from .api.v1 import map as map_api
 from .api.v1 import patrol as patrol_api
 from .api.v1 import teleop as teleop_api
 from .audit import router as audit_router
-from .media import router as media_router
-from .media import video_events_router
+from .api.v1.media import router as media_router
+from .api.v1.media import video_events_router
 from .schemas import LoginRequest, LoginResponse
 from .services.scheduler import run_scheduler_loop
 from .ws import dashboard_ws, robot_ws

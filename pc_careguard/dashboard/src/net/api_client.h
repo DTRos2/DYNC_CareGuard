@@ -143,6 +143,20 @@ public:
     // POST /patrol-runs — 순찰 시작.
     void startPatrolRun(int robotId, int routeId, const QString& trigger, ItemCallback<PatrolRunInfo> callback);
 
+    // POST /patrol-runs/drive-to-point — P6 "이동"(단일 웨이포인트 주행). 순찰과 달리
+    // patrol_run을 기록하지 않고, 도착해도 충전소로 복귀하지 않는다(제자리에 머묾).
+    // mapId는 downlink_node가 Nav2를 자동으로 준비하는 데 필요하다(맵 다운로드+런치+
+    // 초기 위치).
+    void driveToPoint(const QString& robotCode, int mapId, const QString& code, double xMeters,
+                       double yMeters, double yawRad, SimpleCallback callback);
+
+    // POST /patrol-runs/prepare-navigation — 실제 순찰/이동 목표 없이 Nav2만 미리
+    // 준비시킨다(P6 페이지를 열거나 다른 로봇의 맵으로 전환할 때 호출). 로봇이 아직
+    // 안 켜져 있어도 에러가 아니라 그냥 robot_connected:false로 조용히 알려줄
+    // 뿐이라, 이 호출은 실패해도 팝업을 띄우지 않는다(SimpleCallback 결과를 무시해도
+    // 되게 설계) — 그래서 콜백 없는 오버로드를 둔다.
+    void prepareNavigation(const QString& robotCode, int mapId);
+
     // POST /teleop/{robot_code} — 방향키 패널이 계산한 목표 속도를 로봇에 그대로 전달한다.
     void sendTeleop(const QString& robotCode, double linearMps, double angularRadps);
 

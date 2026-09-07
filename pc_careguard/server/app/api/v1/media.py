@@ -9,8 +9,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from psycopg2.extras import Json
 
-from . import config, db
-from .schemas import (
+from ... import config, db
+from ...schemas import (
     MapImageUploadResponse,
     MediaUploadResponse,
     RecordVideoViewRequest,

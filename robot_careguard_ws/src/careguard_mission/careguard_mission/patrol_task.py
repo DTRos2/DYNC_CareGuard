@@ -63,7 +63,10 @@ class PatrolTask(Node):
             goal_handle.publish_feedback(Patrol.Feedback(waypoints_done=i, waypoints_total=waypoints_total))
             self._publish_status(type='patrol_progress', run_id=run_id, waypoints_done=i)
 
-        return_to_charging(self._waypoint_manager)
+        # P6 "이동"(단일 웨이포인트 주행, run_id=0)은 도착한 자리에 그대로 머물러야
+        # 한다 — 원래 순찰(여러 지점을 돌고 항상 충전소로 복귀)과 이 필드로 구분한다.
+        if goal_handle.request.return_to_charging:
+            return_to_charging(self._waypoint_manager)
 
         goal_handle.succeed()
         self._publish_status(type='patrol_done', run_id=run_id, status='completed')
@@ -81,7 +84,11 @@ def main(args=None):
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGINT 시 rclpy가 내부적으로 먼저 shutdown()을 부를 수 있어, 여기서
+        # 무조건 또 부르면 "rcl_shutdown already called"로 비정상 종료한다
+        # (slam_progress_publisher.py에서 실제로 겪은 버그, 같은 패턴이라 방어).
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

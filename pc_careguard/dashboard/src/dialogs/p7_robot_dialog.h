@@ -1,17 +1,29 @@
 #pragma once
 #include <QDialog>
 #include <QString>
+#include <QVector>
 
 class QLineEdit;
 class QComboBox;
 class QFrame;
 class QPushButton;
+class LiveSearchLineEdit;
+class CheckableListWidget;
+class QKeyEvent;
 
 // P7 로봇 등록·수정 모달 — p7_robot_account_modal_wireframe_rev2.html §1~2 대응.
 class RobotDialog : public QDialog {
     Q_OBJECT
 public:
     enum class Mode { Register, Edit };
+
+    // 담당 대상자 선택지 한 명 — AccountDialog::RecipientOption과 동일 출처(recipients_,
+    // fetchRecipients() 결과)를 그대로 받아 쓴다. 로봇 한 대엔 대상자 한 명만 배정되므로
+    // 초기 체크 상태는 data.recipientLabel과 비교해서 정한다(assigned 필드는 없다).
+    struct RecipientOption {
+        int id = -1;
+        QString label;  // "김순자 (C-001)" 또는 이미 다른 로봇 담당 중이면 "김순자 (C-001) · R-01"
+    };
 
     struct RobotData {
         QString code;                                    // 로봇 코드 — Edit에서는 잠금
@@ -26,7 +38,8 @@ public:
         QString warnDetail;                                // "응답 지연 2.1s"
     };
 
-    RobotDialog(Mode mode, const RobotData& data, QWidget* parent = nullptr);
+    RobotDialog(Mode mode, const RobotData& data, const QVector<RecipientOption>& recipients = {},
+                QWidget* parent = nullptr);
 
 signals:
     void robotSaved(const RobotData& data);
@@ -36,6 +49,10 @@ private:
     QFrame* buildHeader(const QString& title);
     QFrame* buildFooter(const QString& primaryLabel);
     void handleSaveClicked();
+    void applyRecipientFilter(const QString& query);
+    // Enter/Return으로는 저장·닫힘이 안 되게 막는다(AccountDialog와 동일 이유).
+    // Esc는 QDialog 기본 동작(reject)이 그대로 처리하도록 둔다.
+    void keyPressEvent(QKeyEvent* event) override;
 
     Mode mode_;
     QString originalCode_;
@@ -43,6 +60,7 @@ private:
     QLineEdit* nameEdit_;
     QComboBox* modelCombo_;
     QLineEdit* rosDomainEdit_;
-    QComboBox* recipientCombo_;
+    LiveSearchLineEdit* recipientSearchEdit_;
+    CheckableListWidget* recipientListWidget_;
     QPushButton* saveBtn_;
 };

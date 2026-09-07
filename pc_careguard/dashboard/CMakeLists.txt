@@ -64,12 +64,14 @@ add_executable(careguard_dashboard
     src/widgets/live_search_line_edit.cpp
     src/widgets/careguard_date_edit.h
     src/widgets/careguard_date_edit.cpp
+    src/widgets/checkable_list_widget.h
+    src/widgets/checkable_list_widget.cpp
     src/dialogs/event_detail_modal.h
     src/dialogs/event_detail_modal.cpp
-    src/dialogs/map_file_register_dialog.h
-    src/dialogs/map_file_register_dialog.cpp
-    src/dialogs/map_preview_dialog.h
-    src/dialogs/map_preview_dialog.cpp
+    src/dialogs/p5_map_file_register_dialog.h
+    src/dialogs/p5_map_file_register_dialog.cpp
+    src/dialogs/p5_map_preview_dialog.h
+    src/dialogs/p5_map_preview_dialog.cpp
     src/dialogs/p7_robot_dialog.h
     src/dialogs/p7_robot_dialog.cpp
     src/dialogs/p7_account_dialog.h
@@ -101,7 +103,7 @@ target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Q
 # 대시보드 실행 시 FastAPI 서버를 자동 기동하기 위한 기본 경로.
 # 환경변수 CAREGUARD_SERVER_DIR로 재정의 가능 (main.cpp 참고).
 # 파일로 맵 등록할 때 .pgm/.yaml 파일 선택 다이얼로그가 처음 열리는 기본 경로.
-# 환경변수 CAREGUARD_MAPS_DIR로 재정의 가능 (map_file_register_dialog.cpp 참고).
+# 환경변수 CAREGUARD_MAPS_DIR로 재정의 가능 (p5_map_file_register_dialog.cpp 참고).
 target_compile_definitions(careguard_dashboard PRIVATE
     CAREGUARD_SERVER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../server"
     CAREGUARD_MAPS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../robot_careguard_ws/src/careguard_bringup/maps")

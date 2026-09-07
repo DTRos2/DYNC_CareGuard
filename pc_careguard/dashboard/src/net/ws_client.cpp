@@ -31,9 +31,14 @@ WsClient::WsClient(QObject* parent) : QObject(parent) {
         const QJsonObject obj = QJsonDocument::fromJson(text.toUtf8()).object();
         if (!obj.isEmpty()) emit messageReceived(obj);
     });
-    // 연결 자체가 안 되는 경우(서버 미기동 등)도 재연결 루프로 이어지게 한다.
-    connect(socket_, &QWebSocket::errorOccurred, this,
-            [this](QAbstractSocket::SocketError) { scheduleReconnect(); });
+    // 연결 자체가 안 되는 경우(서버 미기동, 와이파이 불안정 등)도 재연결 루프로
+    // 이어지게 한다. connected 이벤트를 한 번도 못 받고 바로 에러가 나는 경우(disconnected가
+    // 아예 안 뜨는 케이스)엔 connectionStateChanged(false)도 여기서 같이 emit해야
+    // 화면의 "연결 끊김" 배너가 뜬다 — disconnected에서만 emit하면 이 경로가 빠진다.
+    connect(socket_, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
+        emit connectionStateChanged(false);
+        scheduleReconnect();
+    });
 
     reconnectTimer_ = new QTimer(this);
     reconnectTimer_->setSingleShot(true);

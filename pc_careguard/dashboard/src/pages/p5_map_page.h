@@ -11,6 +11,7 @@ class SlamMappingCard;
 class TeleopPanel;
 class MappingStatusOverlay;
 class QKeyEvent;
+class QFrame;
 class ApiClient;
 class WsClient;
 class QJsonObject;
@@ -43,6 +44,15 @@ private:
 
     QWidget* buildHeaderRow();
     QWidget* buildSaveInfoCard();
+    // WsClient가 끊기면(체크리스트 ⑩) 화면 상단에 보여줄 배너 — 재연결 시도 중임을
+    // 알린다. WsClient 자체는 내부적으로 재연결을 이미 하고 있었지만, 그 상태를 화면에
+    // 표시하는 곳이 없어 "화면이 멈췄는데 이유를 모르는" 증상으로만 보였다.
+    QFrame* buildConnectionBanner();
+    // 로봇(downlink_node)이 서버와 끊겼을 때 보여줄 배너 — connectionBanner_와 달리
+    // "PC는 서버에 붙어있는데 로봇만 명령을 못 받는" 상황(실제로 겪은 버그)을 알린다.
+    // teleop 실패가 조용히 무시되도록 짜여있어서, 이게 없으면 로봇이 안 움직이는데도
+    // 이유를 모른 채 계속 조작하게 되는 안전 문제였다.
+    QFrame* buildRobotOfflineBanner();
     void openFileRegisterDialog();
     void openMapPreviewDialog(const QString& robotId);
     void handleEmergencyStop();
@@ -63,6 +73,11 @@ private:
     // (체크리스트 ⑨).
     void handleWsMessage(const QJsonObject& message);
 
+    QFrame* connectionBanner_;
+    QFrame* robotOfflineBanner_;
+    // 서버로부터 robot_status를 아직 못 받았으면 "모른다"가 아니라 안전하게
+    // 오프라인으로 간주한다 — 그래서 기본값이 false다.
+    bool robotOnline_ = false;
     MappingStatusOverlay* statusOverlay_;
     SlamMappingCard* slamCard_;
     TeleopPanel* teleopPanel_;

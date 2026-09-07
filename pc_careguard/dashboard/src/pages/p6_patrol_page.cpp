@@ -14,6 +14,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QStackedLayout>
 #include <QStyle>
 #include <QTimeEdit>
@@ -46,6 +47,14 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     layout->setSpacing(Tokens::Layout::CARD_GAP);
 
     layout->addWidget(buildHeaderRow());
+
+    connectionBanner_ = buildConnectionBanner();
+    layout->addWidget(connectionBanner_);
+
+    // loadMapData(0)이 아래에서 곧바로 호출되므로(그 안에서 robotOfflineBanner_를
+    // 건드린다) wsClient_/apiClient_보다 먼저, 여기서 만들어둔다.
+    robotOfflineBanner_ = buildRobotOfflineBanner();
+    layout->addWidget(robotOfflineBanner_);
 
     auto* content = new QHBoxLayout();
     content->setSpacing(Tokens::Layout::CARD_GAP);
@@ -95,7 +104,51 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
 
     wsClient_ = new WsClient(this);
     connect(wsClient_, &WsClient::messageReceived, this, &P6PatrolPage::handleWsMessage);
+    connect(wsClient_, &WsClient::connectionStateChanged, this,
+            [this](bool connected) { connectionBanner_->setVisible(!connected); });
     wsClient_->connectToServer();
+}
+
+QFrame* P6PatrolPage::buildConnectionBanner() {
+    // P5MapPage::buildConnectionBanner()와 같은 이유·같은 패턴 — 이 페이지도 별도
+    // WsClient 연결을 쓰므로(P5와 독립) 끊김 표시도 각자 들고 있어야 한다.
+    auto* banner = new QFrame(this);
+    banner->setObjectName("banner");
+    banner->setProperty("level", "attention");
+    auto* bannerLayout = new QHBoxLayout(banner);
+    bannerLayout->setContentsMargins(10, 7, 10, 7);
+    bannerLayout->setSpacing(6);
+    auto* icon = new QLabel(banner);
+    icon->setPixmap(SimpleIcons::plugOff(Tokens::ATTENTION.main, 12).pixmap(12, 12));
+    bannerLayout->addWidget(icon);
+    auto* text = new QLabel(QStringLiteral("서버 연결 끊김 · 재연결 시도 중…"), banner);
+    text->setStyleSheet(QStringLiteral("font-weight:500;"));
+    bannerLayout->addWidget(text);
+    bannerLayout->addStretch();
+    banner->hide();
+    return banner;
+}
+
+QFrame* P6PatrolPage::buildRobotOfflineBanner() {
+    // P5MapPage::buildRobotOfflineBanner()와 같은 이유·같은 패턴 — "이동" 명령이 실제로
+    // 로봇에 안 먹히는데 사용자가 그걸 모른 채 계속 시도하는 걸 막는다. 아직 아무
+    // robot_status도 못 받은 시작 시점엔 안전하게 오프라인으로 간주해 보이는 채로 둔다
+    // (hide() 안 함) — handleWsMessage가 online:true를 받으면 숨긴다.
+    auto* banner = new QFrame(this);
+    banner->setObjectName("banner");
+    banner->setProperty("level", "emergency");
+    auto* bannerLayout = new QHBoxLayout(banner);
+    bannerLayout->setContentsMargins(10, 7, 10, 7);
+    bannerLayout->setSpacing(6);
+    auto* icon = new QLabel(banner);
+    icon->setPixmap(SimpleIcons::alertCircle(Tokens::EMERGENCY.main, 12).pixmap(12, 12));
+    bannerLayout->addWidget(icon);
+    auto* text =
+        new QLabel(QStringLiteral("로봇 오프라인 · 이동·순찰 명령이 전달되지 않습니다"), banner);
+    text->setStyleSheet(QStringLiteral("font-weight:500;"));
+    bannerLayout->addWidget(text);
+    bannerLayout->addStretch();
+    return banner;
 }
 
 QWidget* P6PatrolPage::buildHeaderRow() {
@@ -150,7 +203,9 @@ QWidget* P6PatrolPage::buildCanvasCard() {
     }
     addModeBtn->setProperty("pos", "first");
     moveModeBtn->setProperty("pos", "last");
-    addModeBtn->setChecked(true);
+    // WaypointCanvas의 기본 모드(mode_)를 MoveWaypoint로 바꿔서, 여기 버튼 체크
+    // 상태도 그에 맞춰 "이동"을 기본으로 보여준다.
+    moveModeBtn->setChecked(true);
     toolbar->addWidget(addModeBtn);
     toolbar->addWidget(moveModeBtn);
 
@@ -437,7 +492,7 @@ QString P6PatrolPage::chargingWaypointId() const {
 void P6PatrolPage::handleCanvasAddRequested(QPointF pos) {
     popover_->setForNewWaypoint(pos);
     const QPoint anchor = canvas_->mapTo(this, pos.toPoint());
-    popover_->move(qMin(anchor.x() + 12, width() - popover_->width() - 8), qMax(anchor.y() - 20, 0));
+    movePopoverNear(anchor);
     popover_->raise();
     popover_->show();
 }
@@ -447,9 +502,18 @@ void P6PatrolPage::handleCanvasEditRequested(const QString& id) {
     if (!wp) return;
     popover_->setForEditWaypoint(*wp);
     const QPoint anchor = canvas_->mapTo(this, wp->pos.toPoint());
-    popover_->move(qMin(anchor.x() + 12, width() - popover_->width() - 8), qMax(anchor.y() - 20, 0));
+    movePopoverNear(anchor);
     popover_->raise();
     popover_->show();
+}
+
+void P6PatrolPage::movePopoverNear(const QPoint& anchor) {
+    // 예전엔 아래쪽(y) 방향은 0 이상으로만 막고 화면 하단은 안 막아서, 지도 아래쪽을
+    // 클릭하면 팝업이 창 밖으로 넘어가 저장·취소 버튼이 잘려 보였다. x와 같은 방식으로
+    // 하단도 clamp한다.
+    const int x = qMin(anchor.x() + 12, width() - popover_->width() - 8);
+    const int y = qMin(qMax(anchor.y() - 20, 0), height() - popover_->height() - 8);
+    popover_->move(x, y);
 }
 
 void P6PatrolPage::handleCanvasDeleteRequested(const QString& id) {
@@ -622,6 +686,20 @@ bool P6PatrolPage::eventFilter(QObject* watched, QEvent* event) {
         }
     }
     return QWidget::eventFilter(watched, event);
+}
+
+void P6PatrolPage::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    // QStackedWidget이 이 페이지를 현재 화면으로 바꿀 때마다 호출된다 — "순찰
+    // 시작"/"이동"을 누르기 전에도 로봇 위치를 먼저 보고 싶다는 요청에 대응한다.
+    prepareNavigationForCurrentMap();
+}
+
+void P6PatrolPage::prepareNavigationForCurrentMap() {
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const MapData& current = maps_[currentMapIndex_];
+    if (current.serverMapId <= 0 || current.robotId.isEmpty()) return;
+    apiClient_->prepareNavigation(current.robotId, current.serverMapId);
 }
 
 void P6PatrolPage::rebuildRouteChips() {
@@ -903,13 +981,26 @@ void P6PatrolPage::runTestRun() {
 }
 
 void P6PatrolPage::driveToSingleWaypoint(const QString& id) {
-    const QString chargeId = chargingWaypointId();
-    if (chargeId.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("주행 불가"), QStringLiteral("충전 스테이션이 없습니다."));
-        return;
-    }
-    // 단일 웨이포인트 주행은 도착 후 복귀하지 않고 그 자리에 머문다.
-    canvas_->startTestRun({id}, chargeId, /*returnToCharging=*/false);
+    // 예전엔 여기서 canvas_->startTestRun(...)으로 화면 위에서만 다이얼 마커를 가짜로
+    // 움직였다 — 서버·로봇 어디에도 명령이 안 나가 실제 로봇은 그대로였다("wp 이동
+    // 명령을 내리면 실제 로봇이 이동하지 않아" 리포트). 이제 POST
+    // /patrol-runs/drive-to-point로 진짜 명령을 보낸다. 다이얼 마커는 이 클릭이 아니라
+    // 로봇이 실제로 보내는 robot_position WS 메시지(handleWsMessage)로만 움직인다 —
+    // 로컬 애니메이션과 섞이면 다시 "실제 위치와 다른 데 있는 마커" 문제가 재발한다.
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const WaypointCanvas::Waypoint* wp = canvas_->findWaypoint(id);
+    if (!wp) return;
+
+    const QString robotCode = maps_[currentMapIndex_].robotId;
+    const int mapId = maps_[currentMapIndex_].serverMapId;
+    apiClient_->driveToPoint(robotCode, mapId, wp->id, wp->pos.x() / kPxPerMeter, wp->pos.y() / kPxPerMeter,
+                              qDegreesToRadians(wp->yawDeg), [this](bool ok, const QString& err) {
+                                  if (!ok) {
+                                      QMessageBox::warning(
+                                          this, QStringLiteral("이동 실패"),
+                                          err.isEmpty() ? QStringLiteral("로봇이 연결되어 있지 않습니다.") : err);
+                                  }
+                              });
 }
 
 void P6PatrolPage::toggleScheduleForm(bool show) {
@@ -967,6 +1058,14 @@ void P6PatrolPage::loadMapData(int index) {
     if (index < 0 || index >= maps_.size()) return;
     MapData& m = maps_[index];
     currentMapIndex_ = index;
+
+    // 맵(=로봇)이 바뀌면 이전 로봇의 온라인 상태를 그대로 들고 있으면 안 된다 — 새
+    // robot_status가 올 때까지는 안전하게 오프라인으로 되돌린다.
+    robotOnline_ = false;
+    robotOfflineBanner_->setVisible(true);
+    // 다른 로봇의 맵으로 전환한 것 — 그 로봇의 Nav2도 미리 준비시킨다(showEvent와
+    // 같은 이유).
+    prepareNavigationForCurrentMap();
     waypoints_ = m.waypoints;
     routes_ = m.routes;
     currentRoute_ = m.currentRoute;
@@ -1081,6 +1180,28 @@ void P6PatrolPage::loadMapsFromServer() {
             maps->append(md);
         }
         loadServerMapDetails(maps, 0);
+    });
+}
+
+void P6PatrolPage::refreshMapForRobot(const QString& robotCode) {
+    if (robotCode.isEmpty()) return;
+
+    apiClient_->fetchActiveMaps([this, robotCode](bool ok, const QVector<ApiClient::MapInfo>& serverMaps) {
+        if (!ok) return;
+        for (const ApiClient::MapInfo& m : serverMaps) {
+            if (m.robotCode != robotCode) continue;
+
+            if (m.imageUrl.isEmpty()) {
+                upsertMap(QImage(), m.name, m.robotCode, m.recipientName);
+                return;
+            }
+            apiClient_->fetchBytes(m.imageUrl, [this, m](bool imgOk, const QByteArray& data) {
+                QImage image;
+                if (imgOk) image = PgmImageLoader::loadFromData(data);
+                upsertMap(image, m.name, m.robotCode, m.recipientName);
+            });
+            return;
+        }
     });
 }
 
@@ -1292,6 +1413,25 @@ void P6PatrolPage::finishDeploy(bool hadError) {
 
 void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
     const QString type = message.value(QStringLiteral("type")).toString();
+
+    if (type == QStringLiteral("slam_done")) {
+        // 예전엔 이 함수가 robot_position/camera_frame만 처리하고 나머지는 다 무시했다
+        // — 그래서 P5에서 SLAM 맵을 새로 저장해도 P6의 맵 드롭다운은 앱을 껐다 켤 때까지
+        // (loadMapsFromServer()가 생성자에서 딱 한 번만 불림) 절대 안 바뀌었다.
+        refreshMapForRobot(message.value(QStringLiteral("robot_code")).toString());
+        return;
+    }
+
+    if (type == QStringLiteral("robot_status")) {
+        // P5MapPage::handleWsMessage의 같은 처리와 같은 이유 — "이동" 버튼이 실제로는
+        // 안 먹히는데 그걸 모른 채 계속 누르는 상황을 막는다.
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].robotId != message.value(QStringLiteral("robot_code")).toString()) return;
+        robotOnline_ = message.value(QStringLiteral("online")).toBool();
+        robotOfflineBanner_->setVisible(!robotOnline_);
+        return;
+    }
+
     if (type != QStringLiteral("robot_position") && type != QStringLiteral("camera_frame")) return;
     if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
 
