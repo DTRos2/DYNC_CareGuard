@@ -117,14 +117,14 @@ QWidget* P2EventPage::buildFilterBar() {
 
     auto* periodTodayBtn = new QPushButton(QStringLiteral("오늘"), periodSeg);
     auto* periodWeekBtn = new QPushButton(QStringLiteral("7일"), periodSeg);
-    auto* periodMonthBtn = new QPushButton(QStringLiteral("30일"), periodSeg);
+    periodMonthBtn_ = new QPushButton(QStringLiteral("30일"), periodSeg);
     periodCustomBtn_ = new QPushButton(QStringLiteral("직접"), periodSeg);
     periodTodayBtn->setProperty("pos", "first");
     periodCustomBtn_->setProperty("pos", "last");
 
     periodGroup_ = new QButtonGroup(this);
     periodGroup_->setExclusive(true);
-    for (auto* btn : {periodTodayBtn, periodWeekBtn, periodMonthBtn, periodCustomBtn_}) {
+    for (auto* btn : {periodTodayBtn, periodWeekBtn, periodMonthBtn_, periodCustomBtn_}) {
         btn->setObjectName("segBtn");
         btn->setCheckable(true);
         periodSegLayout->addWidget(btn);
@@ -135,7 +135,7 @@ QWidget* P2EventPage::buildFilterBar() {
 
     connect(periodTodayBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(0); });
     connect(periodWeekBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(6); });
-    connect(periodMonthBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(29); });
+    connect(periodMonthBtn_, &QPushButton::clicked, this, [this] { applyPeriodPreset(29); });
     connect(periodCustomBtn_, &QPushButton::clicked, this, [this] { applyPeriodPreset(-1); });
 
     startDateEdit_ = new CareGuardDateEdit(today, bar);
@@ -401,6 +401,12 @@ bool P2EventPage::eventFilter(QObject* watched, QEvent* event) {
     }
 
     return QWidget::eventFilter(watched, event);
+}
+
+void P2EventPage::filterToRecipient(const QString& recipientName) {
+    periodMonthBtn_->setChecked(true);  // 오늘 범위 밖(어제 등) 이벤트도 가리지 않도록 30일로 확장
+    applyPeriodPreset(29);
+    searchEdit_->setText(recipientName);
 }
 
 void P2EventPage::showComingSoon(const QString& feature) {

@@ -284,3 +284,18 @@ class PatrolRunItem(BaseModel):
     started_at: datetime
     ended_at: Optional[datetime] = None
     robot_connected: bool = False
+
+
+class MissionCreate(BaseModel):
+    robot_code: str
+    kind: str = "medication"  # 이번 스코프에선 P3 "복약 재안내" 버튼만 이걸로 미션을 만든다
+
+
+class MissionItem(BaseModel):
+    id: int
+    robot_id: int
+    kind: str
+    status: str
+    created_at: datetime
+    dispatched_at: Optional[datetime] = None
+    robot_connected: bool = False

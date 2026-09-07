@@ -70,6 +70,13 @@ public:
         bool robotConnected = false;
     };
 
+    // server/app/schemas.py::MissionItem 대응.
+    struct MissionInfo {
+        int id = 0;
+        QString status;  // "dispatched" 등 mission.status 값
+        bool robotConnected = false;
+    };
+
     template <typename T>
     using ListCallback = std::function<void(bool success, const QVector<T>& items)>;
     template <typename T>
@@ -142,6 +149,11 @@ public:
 
     // POST /patrol-runs — 순찰 시작.
     void startPatrolRun(int robotId, int routeId, const QString& trigger, ItemCallback<PatrolRunInfo> callback);
+
+    // POST /missions — P3 "복약 재안내" 버튼. medication_scheduler가 없어 스케줄을 안 거치고
+    // 즉시 mission을 만들어 로봇에 다운링크를 보낸다(robots.py 스코프 밖이라 robot.code로 보냄).
+    // 로봇 쪽은 아직 이 명령을 실행하지 않는다 — mission 기록·다운링크 전송까지만 실동작.
+    void startMedicationMission(const QString& robotCode, ItemCallback<MissionInfo> callback);
 
     // POST /teleop/{robot_code} — 방향키 패널이 계산한 목표 속도를 로봇에 그대로 전달한다.
     void sendTeleop(const QString& robotCode, double linearMps, double angularRadps);

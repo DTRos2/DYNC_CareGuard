@@ -46,7 +46,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
     auto* eventPage = new P2EventPage(pageStack_);
     pageStack_->addWidget(eventPage);                        // idx 1
-    pageStack_->addWidget(new P3RecipientPage(pageStack_));  // idx 2
+    auto* recipientPage = new P3RecipientPage(pageStack_);
+    pageStack_->addWidget(recipientPage);                    // idx 2
     videoPage_ = new P4VideoPage(pageStack_);
     pageStack_->addWidget(videoPage_);                       // idx 3
     auto* mapPage = new P5MapPage(pageStack_);
@@ -65,6 +66,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             [this](int emergencyCount, int attentionCount) {
                 setEmergencyCount(emergencyCount);
                 setAttentionCount(attentionCount);
+            });
+
+    // P3 긴급 카드의 "이벤트 확인" → P2로 전환하고 그 대상자의 이벤트만 보이게 필터링.
+    connect(recipientPage, &P3RecipientPage::eventCheckRequested, this,
+            [this, eventPage](const QString& recipientName) {
+                switchToPage(1);
+                eventPage->filterToRecipient(recipientName);
             });
 
     rootLayout->addLayout(body, /*stretch=*/1);
@@ -133,9 +141,9 @@ QWidget* MainWindow::buildSidebar() {
     layout->setContentsMargins(0, 12, 0, 12);
     layout->setSpacing(2);
 
-    auto* navGroup = new QButtonGroup(this);
-    navGroup->setExclusive(true);
-    connect(navGroup, &QButtonGroup::idClicked, this,
+    navGroup_ = new QButtonGroup(this);
+    navGroup_->setExclusive(true);
+    connect(navGroup_, &QButtonGroup::idClicked, this,
             [this](int id) { pageStack_->setCurrentIndex(id); });
 
     auto addGroupLabel = [&](const QString& text) {
@@ -146,23 +154,23 @@ QWidget* MainWindow::buildSidebar() {
 
     addGroupLabel(QStringLiteral("관제"));
     addNavButton(layout, SimpleIcons::dashboard(Tokens::TEXT_SECONDARY, 14), QStringLiteral("통합 관제"),
-                 0, navGroup);
+                 0, navGroup_);
     addNavButton(layout, SimpleIcons::bell(Tokens::TEXT_SECONDARY, 14), QStringLiteral("이벤트"), 1,
-                 navGroup);
+                 navGroup_);
     addNavButton(layout, SimpleIcons::heart(Tokens::TEXT_SECONDARY, 14), QStringLiteral("대상자"), 2,
-                 navGroup);
+                 navGroup_);
 
     addGroupLabel(QStringLiteral("기록"));
     addNavButton(layout, SimpleIcons::video(Tokens::TEXT_SECONDARY, 14), QStringLiteral("영상"), 3,
-                 navGroup);
+                 navGroup_);
 
     addGroupLabel(QStringLiteral("설정"));
     addNavButton(layout, SimpleIcons::mapPin(Tokens::TEXT_SECONDARY, 14), QStringLiteral("맵·로봇"), 4,
-                 navGroup);
+                 navGroup_);
     addNavButton(layout, SimpleIcons::route(Tokens::TEXT_SECONDARY, 14), QStringLiteral("순찰·경로"), 5,
-                 navGroup);
+                 navGroup_);
     addNavButton(layout, SimpleIcons::settings(Tokens::TEXT_SECONDARY, 14), QStringLiteral("시스템"), 6,
-                 navGroup);
+                 navGroup_);
 
     layout->addStretch();
 
@@ -193,6 +201,11 @@ QWidget* MainWindow::buildSidebar() {
     });
 
     return sidebar;
+}
+
+void MainWindow::switchToPage(int pageIndex) {
+    pageStack_->setCurrentIndex(pageIndex);
+    if (auto* btn = navGroup_->button(pageIndex)) btn->setChecked(true);
 }
 
 void MainWindow::setUserName(const QString& name) {
