@@ -1,3 +1,5 @@
+import asyncio
+import time
 from typing import Dict, Optional
 
 import psycopg2.extras
@@ -12,6 +14,18 @@ router = APIRouter()
 # robot.code -> 연결된 소켓. 로봇 하나당 커넥션 하나만 유지한다(같은 코드로 다시 붙으면
 # 이전 항목을 덮어쓴다 — agent가 재연결할 때 흔히 벌어지는 상황).
 _connections: Dict[str, WebSocket] = {}
+
+# robot.code -> 마지막으로 알린 배터리 상태("normal"/"attention"/"return_needed").
+# 매 battery_state 메시지마다 시스템 로그를 남기면 스팸이 되므로, 상태가 바뀌는
+# 순간(경계를 넘는 순간)에만 한 번 남긴다.
+_battery_alert_state: Dict[str, str] = {}
+
+# robot.code -> 마지막으로 임계값을 확인한 시각(time.monotonic()). db.get_connection()이
+# 커넥션 풀 없이 매번 원격 DB(192.168.230.13)에 새 TCP 연결을 여는 방식이라, /battery_state가
+# 빠르게 계속 들어오면 이 확인 하나가 이벤트 루프를 막아 서버 전체(새 WS 접속 등)가
+# 멈추는 걸 실제로 확인했다 — 그래서 이 주기보다 자주는 절대 확인하지 않는다.
+_battery_check_interval_sec = 5.0
+_last_battery_check: Dict[str, float] = {}
 
 
 def is_connected(robot_code: str) -> bool:
@@ -127,6 +141,16 @@ async def _handle_message(robot_code: str, message: dict) -> None:
             }
         )
 
+    elif msg_type == "battery_state":
+        percentage = message.get("percentage")
+        now = time.monotonic()
+        last_checked = _last_battery_check.get(robot_code, 0.0)
+        if percentage is not None and now - last_checked >= _battery_check_interval_sec:
+            _last_battery_check[robot_code] = now
+            # db.get_connection()이 매번 원격 DB에 새로 접속하는 blocking 호출이라
+            # (§_battery_check_interval_sec 주석), 이벤트 루프를 막지 않게 스레드로 뺀다.
+            await asyncio.to_thread(_handle_battery_state, robot_code, percentage)
+
     elif msg_type == "patrol_done":
         status = message.get("status", "completed")
         _update_patrol_run(message.get("run_id"), status=status, ended=True)
@@ -195,6 +219,59 @@ def _save_slam_result(message: dict) -> Optional[int]:
         media.write_map_yaml_sidecar(file_id, message.get("raw_yaml", {}))
 
     return map_id
+
+
+def _handle_battery_state(robot_code: str, percentage: float) -> None:
+    """시스템 설정 > 임계값·알림의 "배터리 주의/복귀" 값과 비교해 임계값을 넘는
+    순간에만 system_event를 한 번 남긴다(§_battery_alert_state 주석 참고).
+
+    "복귀"는 로봇을 실제로 충전소로 돌려보내는 자동 주행까지는 아직 안 한다 —
+    통합 관제의 "충전 복귀" 버튼 자체가 아직 클릭해도 아무 일도 안 하는 목업이라
+    (P1OverviewPage::buildHeaderRow), 자동 주행 명령을 내릴 대상이 없다. 지금은
+    "복귀가 필요하다"는 경보만 남기고, 실제 자동 복귀 주행은 별도 작업으로 미룬다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
+        robot = cur.fetchone()
+        if robot is None:
+            return
+        robot_id = robot["id"]
+
+        cur.execute(
+            "SELECT battery_attention_pct, battery_return_pct FROM robot_threshold WHERE robot_id = %s",
+            (robot_id,),
+        )
+        thresholds = cur.fetchone()
+        attention_pct = thresholds["battery_attention_pct"] if thresholds else 30
+        return_pct = thresholds["battery_return_pct"] if thresholds else 20
+
+        if percentage <= return_pct:
+            new_state = "return_needed"
+        elif percentage <= attention_pct:
+            new_state = "attention"
+        else:
+            new_state = "normal"
+
+        previous_state = _battery_alert_state.get(robot_code, "normal")
+        _battery_alert_state[robot_code] = new_state
+        if new_state == previous_state:
+            return
+
+        if new_state == "attention":
+            event_type, severity = "battery_attention", "warn"
+            event_message = f"배터리 {percentage:.0f}% — 주의 임계값({attention_pct}%) 이하"
+        elif new_state == "return_needed":
+            event_type, severity = "battery_return_needed", "error"
+            event_message = f"배터리 {percentage:.0f}% — 복귀 임계값({return_pct}%) 이하, 충전 복귀 필요"
+        else:
+            event_type, severity = "battery_recovered", "info"
+            event_message = f"배터리 {percentage:.0f}% — 정상 범위로 회복"
+
+        cur.execute(
+            "INSERT INTO system_event (robot_id, event_type, severity, message) VALUES (%s, %s, %s, %s)",
+            (robot_id, event_type, severity, event_message),
+        )
+        conn.commit()
 
 
 def _update_patrol_run(run_id, **fields) -> None:
