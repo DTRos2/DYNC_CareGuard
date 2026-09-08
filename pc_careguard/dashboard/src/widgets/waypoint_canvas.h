@@ -11,7 +11,6 @@ class QPaintEvent;
 class QResizeEvent;
 class QShowEvent;
 class QContextMenuEvent;
-class QTimer;
 class CameraLiveView;
 
 // P6 웨이포인트 편집 캔버스 — p6_patrol_route_wireframe.html의 <svg> 영역.
@@ -121,12 +120,6 @@ public:
     // P5에서 파일로 등록한 실제 pgm 맵 이미지를 배경으로 표시한다 (없으면 목업 평면도).
     void setBackgroundImage(const QImage& image);
 
-    // "테스트 실행" — 충전 스테이션→경로 순서를 따라 현재위치 마커를 움직인다.
-    // returnToCharging=false면 목적지에 도착한 뒤 복귀하지 않고 그대로 머문다
-    // (단일 웨이포인트로 "이동"할 때 쓴다).
-    void startTestRun(const QVector<QString>& orderedIds, const QString& chargingId,
-                       bool returnToCharging = true);
-
     // backgroundImage_가 있을 때, 캔버스 좌표가 점유(벽/장애물) 픽셀 위인지 확인한다.
     // 배경 이미지가 없으면 항상 false (목업 모드에서는 제한 없음).
     bool isOccupiedAt(QPointF canvasPos) const;
@@ -138,7 +131,6 @@ public:
     void resetView();
 
 signals:
-    void testRunFinished();
     // "위치 보정"과 같은 방식 — 빈 곳을 클릭한 채 드래그하면 그 방향이 headingDeg로
     // 실린다(드래그가 너무 짧으면 0도). 예전엔 클릭만으로 위치를 정하고 방향은
     // 팝오버의 다이얼로 따로 설정해야 했다(불편하다는 요청으로 통합).
@@ -181,7 +173,6 @@ private:
     // 이미지 배치는 전부 월드 좌표계로 다루고, 화면에 그릴 때만 스케일·이동을 적용한다.
     QPointF toWorld(QPointF screenPt) const;
 
-    void updateRobotAlongTestPath();
     // 배경 이미지가 bounds 안에 KeepAspectRatio로 그려질 때의 (topLeft, 스케일된 크기)를 구한다.
     bool computeImagePlacement(QPointF* outTopLeft, QSize* outScaledSize) const;
 
@@ -228,10 +219,6 @@ private:
     QPointF mapOrigin_;
     bool pendingMetersResync_ = false;
     bool robotPosTracksChargingStation_ = false;
-
-    QTimer* testRunTimer_;
-    QVector<QPointF> testRunPath_;
-    qreal testRunT_;
 
     // 이 페이지가 처음 화면에 보일 때(showEvent) 딱 한 번, 웨이포인트를 설계 기준
     // 캔버스(380x330)에서 지금 실제 크기로 리매핑해 화면 전체를 채우도록 확대해 둔다.

@@ -25,6 +25,8 @@ from rclpy.action import ActionServer, GoalResponse
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from nav2_simple_commander.robot_navigator import TaskResult
+
 from careguard_msgs.action import Patrol
 from careguard_nav.dock_return import return_to_charging
 from careguard_nav.waypoint_manager import WaypointManager
@@ -79,14 +81,45 @@ class PatrolTask(Node):
             self.get_logger().info(f'순찰 시작: run_id={run_id} 지점 {waypoints_total}개')
 
             for i, wp in enumerate(waypoints, start=1):
-                self._waypoint_manager.navigate_poses([wp])
+                nav_result = self._waypoint_manager.navigate_poses([wp])
+                # 예전엔 이 결과를 아예 확인 안 했다 — Nav2 goal이 아무리 실패(FAILED)/
+                # 취소(CANCELED)돼도 그냥 다음 지점으로 넘어가거나 끝까지 다 돌고 나서
+                # goal_handle.succeed()+status='completed'로 끝냈다. 그래서 bt_navigator가
+                # 아직 안 떠서(예: AMCL 초기 위치 설정이 씹혀 costmap이 activating에 멈춘
+                # 경우 — 2026-09-08 실 로봇에서 겪음) goToPose가 즉시 실패해도 대시보드/DB
+                # 에는 "완료"로만 남고 로봇은 그 자리에서 전혀 안 움직인 채 순찰이 "성공"
+                # 처리되는 버그가 있었다. 실패하면 여기서 바로 중단하고 실패를 알린다.
+                if nav_result != TaskResult.SUCCEEDED:
+                    self.get_logger().error(
+                        f'{i}번째 웨이포인트({wp.code}) 이동 실패(result={nav_result}) — 순찰을 중단합니다')
+                    self._publish_status(type='patrol_done', run_id=run_id, status='failed')
+                    goal_handle.abort()
+                    result = Patrol.Result()
+                    result.status = 'failed'
+                    result.waypoints_done = i - 1
+                    return result
                 goal_handle.publish_feedback(Patrol.Feedback(waypoints_done=i, waypoints_total=waypoints_total))
                 self._publish_status(type='patrol_progress', run_id=run_id, waypoints_done=i)
 
             # P6 "이동"(단일 웨이포인트 주행, run_id=0)은 도착한 자리에 그대로 머물러야
             # 한다 — 원래 순찰(여러 지점을 돌고 항상 충전소로 복귀)과 이 필드로 구분한다.
             if goal_handle.request.return_to_charging:
-                return_to_charging(self._waypoint_manager)
+                # 위 웨이포인트 루프와 같은 이유로 결과를 확인한다 — 예전엔 이 반환값을
+                # 그냥 버려서, 복귀 이동이 Nav2에서 조용히 실패(aborted)해도 로그 한 줄
+                # 안 남고 goal_handle.succeed()+'completed'로 끝났다("wp3에서 충전소로
+                # 복귀를 안 함" 리포트, 2026-09-08). charge 웨이포인트 자체가 없는
+                # 경우(None)와 실제 이동 실패(FAILED/CANCELED)를 구분해서 로그를 남긴다.
+                charge_result = return_to_charging(self._waypoint_manager)
+                if charge_result is None:
+                    self.get_logger().warn('충전 스테이션 웨이포인트가 없어 복귀를 건너뜁니다')
+                elif charge_result != TaskResult.SUCCEEDED:
+                    self.get_logger().error(f'충전 스테이션 복귀 실패(result={charge_result})')
+                    self._publish_status(type='patrol_done', run_id=run_id, status='failed')
+                    goal_handle.abort()
+                    result = Patrol.Result()
+                    result.status = 'failed'
+                    result.waypoints_done = waypoints_total
+                    return result
 
             goal_handle.succeed()
             self._publish_status(type='patrol_done', run_id=run_id, status='completed')

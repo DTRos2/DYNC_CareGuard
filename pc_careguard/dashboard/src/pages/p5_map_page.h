@@ -11,6 +11,7 @@ class SlamMappingCard;
 class TeleopPanel;
 class MappingStatusOverlay;
 class QKeyEvent;
+class QShowEvent;
 class QFrame;
 class ApiClient;
 class WsClient;
@@ -31,6 +32,11 @@ signals:
 protected:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
+    // 방향키가 keyPressEvent까지 오려면 이 위젯이 실제로 키보드 포커스를 갖고 있어야
+    // 한다 — setFocusPolicy(Qt::StrongFocus)는 "포커스를 받을 수 있다"는 허락일 뿐,
+    // 실제로 포커스를 가져오는 건 아니다. QStackedWidget이 이 페이지로 전환될 때마다
+    // showEvent가 불리는 걸 이용해 그때마다 setFocus()를 호출한다.
+    void showEvent(QShowEvent* event) override;
 
 private:
     // 등록 화면(openFileRegisterDialog)에서 실제로 업로드된 맵 이미지를 robotId별로

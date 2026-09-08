@@ -41,6 +41,10 @@ NAV_MAP_DIR = os.path.expanduser('~/robot_careguard_ws/nav_maps')
 # 아직 안 맞춰본 값이라(빌드/실행 미검증) 넉넉하게 잡았다.
 NAV2_READY_TIMEOUT_SEC = 30.0
 
+# patrol_task가 떠서 /patrol 액션 서버를 advertise할 때까지 기다리는 최대 시간.
+# rclpy 노드 하나 뜨는 정도라 Nav2보다는 훨씬 빠르지만 여유를 둔다.
+PATROL_TASK_READY_TIMEOUT_SEC = 15.0
+
 
 class DownlinkNode(Node):
     def __init__(self):
@@ -49,6 +53,13 @@ class DownlinkNode(Node):
         self._slam_process = None
         self._nav_process = None
         self._nav_map_id = 0
+        # patrol_task는 CAREGUARD_MAP_ID 환경변수로 시작 시점에 한 번만 충전 스테이션
+        # 좌표를 캐시한다(WaypointManager.fetch) — 지도를 바꿀 때마다 사람이 직접 SSH로
+        # 맞는 map_id를 넣어 재시작해야 했고, 깜빡하면 캐시가 비어 "순찰 후 충전소 복귀"가
+        # 조용히 빈 동작으로 끝났다(2026-09-08 실 로봇에서 확인). _nav_process와 같은
+        # 패턴으로 이 노드가 대신 관리한다.
+        self._patrol_task_process = None
+        self._patrol_task_map_id = 0
         self._ws = None
         # P5 방향키 패널 -> 실제 구동. limo_base(/limo/limo_base)가 이미 /cmd_vel을
         # 구독하고 있다(실 로봇에서 topic info로 확인됨) — 네임스페이스 없이 그대로 쓴다.
@@ -134,6 +145,10 @@ class DownlinkNode(Node):
             self.get_logger().warn('nav_prepare에 유효한 map_id가 없습니다')
             return
         self._ensure_navigation_running(map_id)
+        # patrol_task도 같이 미리 띄워둔다 — 그래야 첫 "이동" 클릭 때 patrol_task
+        # 기동을 기다리는 지연이 없고, CAREGUARD_MAP_ID도 항상 지금 보고 있는 맵과
+        # 맞는 상태로 미리 맞춰진다.
+        self._ensure_patrol_task_running(map_id)
 
     def _set_initial_pose(self, message: dict):
         """P6 "위치 보정" — 지도 클릭+드래그로 사용자가 직접 지정한 위치·방향으로
@@ -158,12 +173,15 @@ class DownlinkNode(Node):
                 ['ros2', 'run', 'careguard_nav', 'initial_pose_setter'],
                 env={**os.environ, 'CAREGUARD_INIT_X': str(x), 'CAREGUARD_INIT_Y': str(y),
                      'CAREGUARD_INIT_YAW': str(yaw)},
-                capture_output=True, text=True, timeout=10,
+                # initial_pose_setter가 재시도 발행 구간을 3번/0.6초 -> 15번/약 3초로
+                # 늘렸다(DDS 디스커버리 직후 첫 메시지가 씹히는 문제 — 아래 이유 참고,
+                # SUBSCRIBER_WAIT_TIMEOUT_SEC 5초 + 발행 구간 약 3초 + 여유).
+                capture_output=True, text=True, timeout=20,
             )
             if result.returncode != 0:
                 self.get_logger().warn(f'초기 위치 수동 보정 실패(rc={result.returncode}): {result.stderr}')
         except subprocess.TimeoutExpired:
-            self.get_logger().warn('초기 위치 수동 보정이 10초를 넘어 중단했습니다')
+            self.get_logger().warn('초기 위치 수동 보정이 20초를 넘어 중단했습니다')
 
     def _start_patrol(self, message: dict):
         # amcl(Nav2)이 안 떠있으면 순찰 자체가 불가능하다 — 예전엔 사용자가 매번
@@ -176,7 +194,15 @@ class DownlinkNode(Node):
             self.get_logger().error('Nav2 준비 실패로 순찰을 시작하지 않습니다')
             return
 
-        if not self._patrol_client.wait_for_server(timeout_sec=2.0):
+        # patrol_task도 Nav2처럼 map_id 기준으로 (재)기동을 보장한다 — 아래 이유 참고.
+        if map_id > 0:
+            if not self._ensure_patrol_task_running(map_id):
+                self.get_logger().error('patrol_task 준비 실패로 순찰을 시작하지 않습니다')
+                return
+        elif not self._patrol_client.wait_for_server(timeout_sec=2.0):
+            # map_id가 없는 예전 호출부를 위한 폴백 — 이미 떠있는 patrol_task를
+            # 그대로 쓴다(자동 기동은 안 함, map_id를 몰라 CAREGUARD_MAP_ID를
+            # 정할 수 없다).
             self.get_logger().error('patrol_task 액션 서버를 찾을 수 없습니다')
             return
 
@@ -232,12 +258,19 @@ class DownlinkNode(Node):
         # "매핑 취소"/"매핑 재시작"(재시작은 서버가 취소 API 먼저 부른 뒤 slam_start를
         # 다시 보낸다) — 지금 떠 있는 cartographer_launch.py를 실제로 끈다. 이걸 안 하면
         # _start_slam이 "이미 SLAM 작업이 진행 중입니다"로 다음 시작을 계속 거부한다.
-        if self._slam_process is None or self._slam_process.poll() is not None:
-            self.get_logger().warn('취소할 SLAM 작업이 없습니다')
+        if self._slam_process is not None and self._slam_process.poll() is None:
+            self._terminate_process_group(self._slam_process, 'SLAM')
             self._slam_process = None
             return
-        self._terminate_process_group(self._slam_process, 'SLAM')
         self._slam_process = None
+        # self._slam_process가 없다고 cartographer가 안 떠있다는 뜻은 아니다 — 이
+        # 다운링크가 SLAM 도중 재시작된 적이 있으면(오늘 실 로봇 테스트로 여러 번
+        # 겪었다) Popen 핸들 자체가 사라져 이 함수가 조용히 아무 것도 안 죽이고
+        # "취소할 작업이 없습니다"만 남기고 끝났다 — 화면상 "매핑 취소"를 눌렀는데
+        # cartographer는 실제로 계속 돌아가는 버그. _ensure_navigation_running과 같은
+        # 이유로, 명령줄 패턴으로 찾아 정리하는 경로로 한 번 더 확인한다(없으면
+        # _kill_external_process_group이 조용히 아무 일도 안 한다).
+        self._kill_external_process_group('careguard_bringup cartographer_launch.py', 'SLAM(고아 프로세스)')
 
     def _terminate_process_group(self, process: subprocess.Popen, label: str):
         """process(start_new_session=True로 띄운 프로세스 그룹 리더)를 그룹
@@ -362,6 +395,10 @@ class DownlinkNode(Node):
         if self._slam_process is not None and self._slam_process.poll() is None:
             self._terminate_process_group(self._slam_process, 'SLAM')
             self._slam_process = None
+        if self._patrol_task_process is not None and self._patrol_task_process.poll() is None:
+            self._terminate_process_group(self._patrol_task_process, 'patrol_task')
+            self._patrol_task_process = None
+            self._patrol_task_map_id = 0
 
         self._kill_external_process_group('careguard_bringup teleop_launch.py', '베이스 구동')
         self._kill_external_process_group('careguard_agent uplink_node', '업링크')
@@ -449,13 +486,55 @@ class DownlinkNode(Node):
             result = subprocess.run(
                 ['ros2', 'run', 'careguard_nav', 'initial_pose_setter'],
                 env={**os.environ, 'CAREGUARD_MAP_ID': str(map_id)},
-                capture_output=True, text=True, timeout=10,
+                # initial_pose_setter.py::publish_when_ready 참고 — DDS 디스커버리
+                # 직후 첫 메시지 유실 문제로 재시도 구간을 늘려서(3번/0.6초 ->
+                # 15번/약 3초) 여기 timeout도 같이 늘렸다(SUBSCRIBER_WAIT_TIMEOUT_SEC
+                # 5초 + 발행 구간 약 3초 + 여유). 실 로봇에서 이 값이 짧아 초기 위치
+                # 설정이 조용히 실패 -> global_costmap이 activating에 멈추고
+                # bt_navigator가 inactive라 순찰이 전부 무동작으로 끝나는 버그를
+                # 실제로 겪었다(2026-09-08).
+                capture_output=True, text=True, timeout=20,
             )
             if result.returncode != 0:
                 self.get_logger().warn(f'초기 위치 설정 실패(rc={result.returncode}): {result.stderr}')
         except subprocess.TimeoutExpired:
-            self.get_logger().warn('초기 위치 설정이 10초를 넘어 중단했습니다')
+            self.get_logger().warn('초기 위치 설정이 20초를 넘어 중단했습니다')
 
+        return True
+
+    def _ensure_patrol_task_running(self, map_id: int) -> bool:
+        """patrol_task(careguard_mission)가 이 map_id로 이미 떠있는지 확인하고,
+        아니면 (재)시작한다 — CAREGUARD_MAP_ID를 정확히 넣어서.
+
+        patrol_task는 시작 시점에 딱 한 번 WaypointManager.fetch(CAREGUARD_MAP_ID)로
+        충전 스테이션 좌표를 캐시해두고, 순찰이 끝날 때 그 캐시로 복귀 지점을 찾는다
+        (careguard_nav/dock_return.py). 이 env var를 사람이 SSH로 직접 맞춰서 켜야
+        했는데, 지도를 바꾼 뒤 깜빡하거나 아예 안 넣고 켜면(2026-09-08 실 로봇에서
+        실제로 겪음) 캐시가 비어(또는 예전 지도 것으로 남아) "순찰 후 충전소 복귀"가
+        조용히 빈 동작으로 끝나거나 엉뚱한 좌표로 갔다 — _ensure_navigation_running과
+        같은 이유·같은 패턴으로 이 노드가 대신 관리해 사람이 신경 안 써도 되게 한다.
+        """
+        if self._patrol_task_process is not None and self._patrol_task_process.poll() is None:
+            if self._patrol_task_map_id == map_id:
+                return True  # 이미 이 맵으로 떠있다 — 재사용
+            self.get_logger().info(f'다른 맵으로 떠있던 patrol_task를 종료하고 map_id={map_id}로 다시 띄웁니다')
+            self._terminate_process_group(self._patrol_task_process, 'patrol_task')
+            self._patrol_task_process = None
+            self._patrol_task_map_id = 0
+
+        # _nav_process와 같은 이유 — 이 다운링크가 재시작된 적이 있으면 이전 생애에
+        # 띄운 patrol_task가 고아로 남아 잘못된(또는 비어있는) 캐시를 계속 들고 있을
+        # 수 있다. 새로 띄우기 전에 항상 먼저 정리한다.
+        self._kill_external_process_group('careguard_mission patrol_task', '(정리) 이전 patrol_task')
+
+        self._patrol_task_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_mission', 'patrol_task'],
+            env={**os.environ, 'CAREGUARD_MAP_ID': str(map_id)}, start_new_session=True)
+        self._patrol_task_map_id = map_id
+
+        if not self._patrol_client.wait_for_server(timeout_sec=PATROL_TASK_READY_TIMEOUT_SEC):
+            self.get_logger().error(f'{PATROL_TASK_READY_TIMEOUT_SEC:.0f}초 안에 patrol_task 액션 서버가 안 떴습니다')
+            return False
         return True
 
     def _download_map(self, map_id: int) -> str:

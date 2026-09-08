@@ -35,10 +35,19 @@ public:
     explicit P6PatrolPage(QWidget* parent = nullptr);
 
 public slots:
-    // P5MapPage::mapRegistered를 MainWindow가 중계해서 부른다. robotId가 이미 있는 맵이면
-    // 이름·대상자·배경 이미지를 갱신하고, 없으면 새 맵으로 추가한다.
+    // robotId가 이미 있는 맵이면 이름·대상자·배경 이미지·서버 id·좌표 환산 기준을
+    // 갱신하고, 없으면 새 맵으로 추가한다. serverMapId/resolution/originMeters를 같이
+    // 갱신해야 한다 — 예전엔 이 값들을 안 건드려서(이름·이미지만 갱신) "파일로 등록"
+    // 으로 다른 지도를 새로 불러와도 로봇은 여전히 예전 map_id로 알고 있어 Nav2(그
+    // 안의 rviz2)가 안 바뀌는 버그가 있었다("파일로 등록으로 다른 파일 불러오면
+    // rviz2가 안 바뀐다" 리포트, 2026-09-08). 이 맵이 지금 화면에 떠 있는 맵이면
+    // prepareNavigationForCurrentMap()으로 로봇에 새 map_id를 알려 Nav2를 다시 띄우게 한다.
     void upsertMap(const QImage& mapImage, const QString& mapName, const QString& robotId,
-                    const QString& recipientName);
+                    const QString& recipientName, int serverMapId, int serverRobotId, double resolution,
+                    QPointF originMeters);
+    // GET /maps/active에서 이 robotCode의 최신 맵 정보를 다시 조회해 upsertMap()으로
+    // 반영한다 — slam_done(새 SLAM 맵 저장)과 P5 "파일로 등록" 둘 다 이걸 거친다.
+    void refreshMapForRobot(const QString& robotCode);
 
 protected:
     // 웨이포인트 목록의 각 행(QFrame, "wpId" 프로퍼티로 표시)을 클릭하면 편집 팝오버를
@@ -167,11 +176,6 @@ private:
     // 순서대로 채운다. 다 채우면 다음 맵(index+1)으로 넘어간다.
     void loadServerRouteSchedules(std::shared_ptr<QVector<MapData>> maps, int mapIndex,
                                    QVector<ApiClient::PatrolRouteInfo> routes, int routeIndex);
-    // slam_done(다른 화면에서 SLAM 맵 저장이 끝남) 수신 시 이 robotCode의 맵 하나만
-    // 새로 조회해 upsertMap()으로 병합한다. loadMapsFromServer()를 통째로 다시 부르면
-    // maps_ 전체가 서버 스냅샷으로 교체되면서 사용자가 지금 편집 중인 다른 맵의
-    // 웨이포인트·경로가 날아가므로 쓰지 않는다.
-    void refreshMapForRobot(const QString& robotCode);
     // 지금 보고 있는 맵(currentMapIndex_)의 로봇에 nav_prepare를 보낸다 —
     // showEvent(페이지 전환)와 loadMapData(맵 전환) 둘 다에서 부른다. serverMapId가
     // 아직 없는(서버 미동기화) 맵이면 조용히 아무 것도 안 한다.
