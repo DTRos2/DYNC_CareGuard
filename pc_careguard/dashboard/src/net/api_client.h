@@ -84,6 +84,46 @@ public:
         bool robotConnected = false;
     };
 
+    // server/app/schemas.py::GuardianItem 대응.
+    struct GuardianInfo {
+        int id = 0;
+        QString name;
+        QString phone;
+        QString relation;
+        int priority = 1;
+        bool notifyEnabled = true;
+    };
+
+    // server/app/schemas.py::MedicationScheduleItem 대응.
+    struct MedicationScheduleInfo {
+        int id = 0;
+        int slotNo = 1;
+        QString drugName;
+        QString doseTime;    // "HH:mm" (서버는 "HH:MM:SS"로 내려주며 초는 잘라낸다)
+        int daysOfWeek = 127;  // 요일 비트마스크. 월=1 화=2 수=4 목=8 금=16 토=32 일=64
+    };
+
+    // server/app/schemas.py::RecipientItem 대응.
+    struct RecipientInfo {
+        int id = 0;
+        QString code;         // "C-001"
+        QString name;
+        int robotId = 0;      // 0 = 미배정
+        QString robotCode;    // 미배정이면 빈 문자열
+        QString gender;       // "male" / "female" / "other". 미상이면 빈 문자열
+        QString birthDate;    // "YYYY-MM-DD". 미상이면 빈 문자열
+        QString homeAddress;
+        QString diseases;
+        QString note;
+    };
+
+    // server/app/schemas.py::RecipientDetailItem 대응.
+    struct RecipientDetailInfo {
+        RecipientInfo recipient;
+        QVector<GuardianInfo> guardians;
+        QVector<MedicationScheduleInfo> schedules;
+    };
+
     template <typename T>
     using ListCallback = std::function<void(bool success, const QVector<T>& items)>;
     template <typename T>
@@ -162,6 +202,43 @@ public:
     // 로봇 쪽은 아직 이 명령을 실행하지 않는다 — mission 기록·다운링크 전송까지만 실동작.
     void startMedicationMission(const QString& robotCode, ItemCallback<MissionInfo> callback);
 
+    // GET /recipients — P3 대상자 목록. 위험도(level)·상태 요약·복약 배지는 care_event
+    // 연동이 아직 없어 이 응답에 없다 — 호출부가 등록 직후 기본값(정상/미확인)을 채운다.
+    void fetchRecipients(ListCallback<RecipientInfo> callback);
+    // GET /recipients/{id} — P3 상세 모달이 여는 대상자 1명의 보호자·복약 스케줄까지.
+    void fetchRecipientDetail(int recipientId, ItemCallback<RecipientDetailInfo> callback);
+
+    // POST /recipients — "대상자 등록" 모달. server/app/schemas.py::RecipientCreate 대응.
+    struct GuardianCreateParams {
+        QString name;
+        QString phone;
+        QString relation;
+        int priority = 1;
+        bool notifyEnabled = true;
+    };
+    struct MedicationScheduleCreateParams {
+        int slotNo = 1;
+        QString drugName;
+        QString doseTime;  // "HH:mm", 반드시 유효한 시각이어야 한다(호출 전 검증)
+        int daysOfWeek = 127;
+    };
+    struct RecipientCreateParams {
+        QString name;
+        QString gender;  // "male" / "female" / "other" / 빈 문자열(미상)
+        QString birthDate;  // "YYYY-MM-DD". 비어 있으면 서버에 안 보낸다
+        QString homeAddress;
+        QString diseases;
+        QString note;
+        QString robotCode;  // 비어 있으면 미배정
+        QVector<GuardianCreateParams> guardians;
+        QVector<MedicationScheduleCreateParams> schedules;
+    };
+    void createRecipient(const RecipientCreateParams& params, ItemCallback<RecipientDetailInfo> callback);
+    // PUT /recipients/{id} — P3 대상자 상세 모달의 "저장". 필드 구성은 등록과 동일 —
+    // 보호자·복약 스케줄은 지금 보낸 목록으로 서버가 통째로 교체한다.
+    void updateRecipient(int recipientId, const RecipientCreateParams& params,
+                          ItemCallback<RecipientDetailInfo> callback);
+
     // POST /patrol-runs/drive-to-point — P6 "이동"(단일 웨이포인트 주행). 순찰과 달리
     // patrol_run을 기록하지 않고, 도착해도 충전소로 복귀하지 않는다(제자리에 머묾).
     // mapId는 downlink_node가 Nav2를 자동으로 준비하는 데 필요하다(맵 다운로드+런치+
@@ -201,6 +278,8 @@ private:
     static MapInfo parseMap(const QJsonObject& o);
     static PatrolRouteInfo parsePatrolRoute(const QJsonObject& o);
     static PatrolScheduleInfo parsePatrolSchedule(const QJsonObject& o);
+    static RecipientInfo parseRecipient(const QJsonObject& o);
+    static RecipientDetailInfo parseRecipientDetail(const QJsonObject& o);
 
     QNetworkAccessManager* netManager_;
     QString serverUrl_;

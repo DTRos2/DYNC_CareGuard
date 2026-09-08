@@ -12,11 +12,14 @@
 #include <QHBoxLayout>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QPair>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QStyle>
+#include <QTime>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
@@ -272,9 +275,8 @@ RecipientDetail mockRecipientDetail(const RecipientCard& card) {
     RecipientDetail d;
     d.card = card;
 
-    static const GuardianContact kEmergencyRow{
-        0, QStringLiteral("119 · 112"), QString(), QStringLiteral("—"),
-        QStringLiteral("모의 신고 전용"), true};
+    static const GuardianContact kEmergencyRow{0, QStringLiteral("119 · 112"), QString(), QStringLiteral("—"),
+                                                true, true};
 
     if (card.code == QStringLiteral("C-001")) {
         d.gender = QStringLiteral("여");
@@ -283,9 +285,9 @@ RecipientDetail mockRecipientDetail(const RecipientCard& card) {
         d.note = QStringLiteral("거동이 느려 순찰 응답 대기 시간을 여유 있게 설정함");
         d.guardians = {
             {1, QStringLiteral("김민재"), QStringLiteral("아들"), QStringLiteral("010-2222-3333"),
-             QStringLiteral("문자 + 전화"), false},
+             true, false},
             {2, QStringLiteral("이복지"), QStringLiteral("복지사"), QStringLiteral("010-4444-5555"),
-             QStringLiteral("문자"), false},
+             true, false},
             kEmergencyRow,
         };
         d.schedules = {
@@ -301,9 +303,9 @@ RecipientDetail mockRecipientDetail(const RecipientCard& card) {
         d.note = QStringLiteral("청력 저하로 음성 안내 음량 크게 설정 필요");
         d.guardians = {
             {1, QStringLiteral("박민수"), QStringLiteral("아들"), QStringLiteral("010-1234-5678"),
-             QStringLiteral("문자 + 전화"), false},
+             true, false},
             {2, QStringLiteral("김복지"), QStringLiteral("복지사"), QStringLiteral("010-9876-5432"),
-             QStringLiteral("문자"), false},
+             true, false},
             kEmergencyRow,
         };
         d.schedules = {
@@ -319,7 +321,7 @@ RecipientDetail mockRecipientDetail(const RecipientCard& card) {
         d.note = QStringLiteral("특이사항 없음 · 순찰 협조적");
         d.guardians = {
             {1, QStringLiteral("이수진"), QStringLiteral("딸"), QStringLiteral("010-3333-7777"),
-             QStringLiteral("문자 + 전화"), false},
+             true, false},
             kEmergencyRow,
         };
         d.schedules = {
@@ -335,7 +337,7 @@ RecipientDetail mockRecipientDetail(const RecipientCard& card) {
         d.note = QStringLiteral("통신 불안정 지역 — 재연결 지연 시 유선 연락 우선");
         d.guardians = {
             {1, QStringLiteral("최영수"), QStringLiteral("아들"), QStringLiteral("010-5555-1111"),
-             QStringLiteral("문자 + 전화"), false},
+             true, false},
             kEmergencyRow,
         };
         d.schedules = {
@@ -357,8 +359,97 @@ RecipientDetail mockRecipientDetail(const RecipientCard& card) {
     return d;
 }
 
+QString normalizeDoseTime(const QString& raw) {
+    const QString trimmed = raw.trimmed();
+    if (trimmed.isEmpty()) return QString();
+
+    if (trimmed.contains(QChar(':'))) {
+        const QStringList parts = trimmed.split(QChar(':'));
+        if (parts.size() != 2) return QString();
+        bool hourOk = false, minOk = false;
+        const int hour = parts[0].trimmed().toInt(&hourOk);
+        const int minute = parts[1].trimmed().toInt(&minOk);
+        if (!hourOk || !minOk) return QString();
+        const QTime t(hour, minute);
+        return t.isValid() ? t.toString(QStringLiteral("HH:mm")) : QString();
+    }
+
+    // 콜론 없이 숫자만 입력한 경우 — 자릿수로 시:분을 추정한다.
+    // "9"/"09" → 09:00, "930" → 09:30, "0930" → 09:30.
+    for (const QChar& c : trimmed) {
+        if (!c.isDigit()) return QString();
+    }
+    int hour = 0, minute = 0;
+    switch (trimmed.size()) {
+        case 1:
+        case 2:
+            hour = trimmed.toInt();
+            break;
+        case 3:
+            hour = trimmed.left(1).toInt();
+            minute = trimmed.right(2).toInt();
+            break;
+        case 4:
+            hour = trimmed.left(2).toInt();
+            minute = trimmed.right(2).toInt();
+            break;
+        default:
+            return QString();
+    }
+    const QTime t(hour, minute);
+    return t.isValid() ? t.toString(QStringLiteral("HH:mm")) : QString();
+}
+
+QString formatGuardianPhone(const QString& raw) {
+    QString digits;
+    for (const QChar& c : raw) {
+        if (c.isDigit()) digits += c;
+    }
+    if (digits.isEmpty()) return QString();
+
+    // 서울(02)은 지역번호 2자리, 그 외(휴대폰 010~019·그 외 지역번호)는 3자리로 본다.
+    const bool isSeoul = digits.startsWith(QStringLiteral("02"));
+    const int prefixLen = isSeoul ? 2 : 3;
+    if (digits.size() <= prefixLen) return digits;
+
+    const QString prefix = digits.left(prefixLen);
+    const QString rest = digits.mid(prefixLen);
+    if (rest.size() <= 4) return prefix + QChar('-') + rest;
+
+    // 중간 그룹을 4자리까지 먼저 채우고 그 이후는 끝 그룹에 이어 붙인다 — 타이핑 중 이미
+    // 놓인 숫자가 그룹 사이를 오가며 자리가 안 바뀌게 하기 위한 선택(입력 중에도 실시간으로
+    // 하이픈을 넣어달라는 요청 — 가장 흔한 휴대폰 11자리(010-XXXX-XXXX)와 정확히 맞아떨어짐).
+    return prefix + QChar('-') + rest.left(4) + QChar('-') + rest.mid(4);
+}
+
+void installLivePhoneFormatting(QLineEdit* phoneEdit) {
+    // phoneEdit을 그 자신의 커넥션 컨텍스트로 써서(캡처하는 것도 phoneEdit 자신뿐) phoneEdit이
+    // 파괴되면 커넥션도 같이 자동 해제된다 — 호출부(다이얼로그)를 캡처할 필요가 없다.
+    QObject::connect(phoneEdit, &QLineEdit::textEdited, phoneEdit, [phoneEdit] {
+        const QString before = phoneEdit->text();
+        const int posBefore = phoneEdit->cursorPosition();
+        // 재포맷 후에도 "숫자 기준으로 몇 번째 자리에 커서가 있었는지"를 그대로 유지한다 —
+        // 하이픈이 새로 끼어들어도 커서가 뒤로 밀리거나 앞으로 튀지 않게 하기 위함.
+        int digitsBeforeCursor = 0;
+        for (int i = 0; i < posBefore && i < before.size(); ++i) {
+            if (before[i].isDigit()) ++digitsBeforeCursor;
+        }
+        const QString formatted = formatGuardianPhone(before);
+        if (formatted == before) return;
+        phoneEdit->setText(formatted);
+        int newPos = 0, seenDigits = 0;
+        while (newPos < formatted.size() && seenDigits < digitsBeforeCursor) {
+            if (formatted[newPos].isDigit()) ++seenDigits;
+            ++newPos;
+        }
+        phoneEdit->setCursorPosition(newPos);
+    });
+}
+
 P3RecipientPage::P3RecipientPage(QWidget* parent) : QWidget(parent) {
     apiClient_ = new ApiClient(this);
+    // GET /recipients가 비동기로 도착하기 전까지는 화면이 비어 보이므로, 응답 오기 전
+    // 첫 rebuildGrid()는 mock으로 그려두고 loadRecipientsFromServer()가 도착하는 대로 덮어쓴다.
     recipients_ = mockRecipients();
 
     auto* layout = new QVBoxLayout(this);
@@ -391,6 +482,33 @@ P3RecipientPage::P3RecipientPage(QWidget* parent) : QWidget(parent) {
     wsClient_->connectToServer();
 
     rebuildGrid();
+    loadRecipientsFromServer();
+}
+
+void P3RecipientPage::loadRecipientsFromServer() {
+    apiClient_->fetchRecipients([this](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
+        if (!ok) {
+            // 서버 미기동 등으로 실패해도 화면은 mock으로 계속 동작해야 한다 — 이미
+            // 생성자에서 mockRecipients()를 채워뒀으니 여기선 아무것도 안 해도 된다.
+            return;
+        }
+        QVector<RecipientCard> cards;
+        for (const auto& info : items) {
+            RecipientCard card;
+            card.id = info.id;
+            card.code = info.code;
+            card.name = info.name;
+            card.robotCode = info.robotCode.isEmpty() ? QStringLiteral("미배정") : info.robotCode;
+            card.address = info.homeAddress;
+            // level·statusSummary·meds는 care_event 연동이 없어(§P3RecipientPage 클래스 주석)
+            // 실제 위험 판정을 못 한다 — 등록 직후 기본값으로만 채운다.
+            card.level = Tokens::Level::Normal;
+            card.statusSummary = QStringLiteral("등록됨 · 아직 순찰 기록 없음");
+            cards.append(card);
+        }
+        recipients_ = cards;
+        rebuildGrid();
+    });
 }
 
 QWidget* P3RecipientPage::buildHeaderRow() {
@@ -674,43 +792,254 @@ void P3RecipientPage::handleWsMessage(const QJsonObject& message) {
     if (changed) rebuildGrid();
 }
 
-void P3RecipientPage::openDetail(int recipientIndex) {
-    if (recipientIndex < 0 || recipientIndex >= recipients_.size()) return;
+namespace {
 
-    const RecipientCard& card = recipients_[recipientIndex];
-    // "대상자 등록"으로 방금 만든 대상자는 mockRecipientDetail()이 코드를 못 알아봐 엉뚱한
-    // C-004 목데이터로 빠진다(그 함수의 else 분기) — customDetails_에 있으면 그걸 우선 쓰고,
-    // 카드 쪽 정보(이름·주소 등 상단 편집으로 바뀔 수 있는 값)만 최신으로 덮어쓴다.
-    RecipientDetail detail = customDetails_.contains(card.code) ? customDetails_[card.code]
-                                                                 : mockRecipientDetail(card);
-    detail.card = card;
-
-    auto* dialog = new P3RecipientDetailDialog(detail, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    connect(dialog, &P3RecipientDetailDialog::basicInfoSaved, this,
-            [this, recipientIndex](const QString& name, const QString& address) {
-                if (recipientIndex >= recipients_.size()) return;  // 다이얼로그가 떠 있는 동안 목록이 안 바뀌므로 방어용
-                recipients_[recipientIndex].name = name;
-                recipients_[recipientIndex].address = address;
-                const QString code = recipients_[recipientIndex].code;
-                if (customDetails_.contains(code)) {
-                    customDetails_[code].card.name = name;
-                    customDetails_[code].card.address = address;
-                }
-                rebuildGrid();
-            });
-    dialog->exec();
+QString genderLabelFromCode(const QString& code) {
+    if (code == QStringLiteral("male")) return QStringLiteral("남");
+    if (code == QStringLiteral("female")) return QStringLiteral("여");
+    if (code == QStringLiteral("other")) return QStringLiteral("기타");
+    return QString();
 }
 
+// P3RecipientCreateDialog::genderCombo_는 "남"/"여"만 필수 항목으로 강제하므로("선택"이면
+// 등록 버튼이 비활성) 여기 들어오는 값은 항상 이 둘 중 하나다.
+QString genderCodeFromLabel(const QString& label) {
+    if (label == QStringLiteral("남")) return QStringLiteral("male");
+    if (label == QStringLiteral("여")) return QStringLiteral("female");
+    return QString();
+}
+
+QString daysLabelFromBitmask(int mask) {
+    if (mask >= 127) return QStringLiteral("매일");
+    static const QVector<QPair<int, QChar>> kBits = {
+        {1, QChar(u'월')}, {2, QChar(u'화')}, {4, QChar(u'수')},  {8, QChar(u'목')},
+        {16, QChar(u'금')}, {32, QChar(u'토')}, {64, QChar(u'일')}};
+    QString label;
+    for (const auto& bit : kBits) {
+        if (mask & bit.first) {
+            if (!label.isEmpty()) label += QChar(u'·');
+            label += bit.second;
+        }
+    }
+    return label.isEmpty() ? QStringLiteral("매일") : label;
+}
+
+// 복약 스케줄의 "요일" 칸은 QLineEdit 자유 입력이라 "매일"/"월·수·금" 같은 임의 문자열이
+// 들어온다 — days_of_week 비트마스크가 표현 못 하는 패턴(예: "격일")은 인식된 요일만
+// 반영하고, 아예 못 알아보면 매일(127)로 보수적으로 채운다(스케줄 자체를 버리는 것보다 낫다).
+int bitmaskFromDaysLabel(const QString& label) {
+    if (label.trimmed().isEmpty() || label.contains(QStringLiteral("매일"))) return 127;
+    static const QVector<QPair<QChar, int>> kBits = {
+        {QChar(u'월'), 1}, {QChar(u'화'), 2}, {QChar(u'수'), 4},  {QChar(u'목'), 8},
+        {QChar(u'금'), 16}, {QChar(u'토'), 32}, {QChar(u'일'), 64}};
+    int mask = 0;
+    for (const auto& bit : kBits) {
+        if (label.contains(bit.first)) mask |= bit.second;
+    }
+    return mask == 0 ? 127 : mask;
+}
+
+RecipientDetail recipientDetailFromApi(const ApiClient::RecipientDetailInfo& info) {
+    RecipientDetail d;
+    d.card.id = info.recipient.id;
+    d.card.code = info.recipient.code;
+    d.card.name = info.recipient.name;
+    d.card.robotCode =
+        info.recipient.robotCode.isEmpty() ? QStringLiteral("미배정") : info.recipient.robotCode;
+    d.card.address = info.recipient.homeAddress;
+    // level·statusSummary·meds는 care_event 연동이 없어 실제 위험 판정을 못 한다(클래스 상단 주석 참고).
+    d.card.level = Tokens::Level::Normal;
+    d.card.statusSummary = QStringLiteral("등록됨 · 아직 순찰 기록 없음");
+
+    d.gender = genderLabelFromCode(info.recipient.gender);
+    d.birthYear = info.recipient.birthDate.left(4).toInt();
+    d.diseases = info.recipient.diseases;
+    d.note = info.recipient.note;
+
+    int priority = 1;
+    for (const auto& g : info.guardians) {
+        GuardianContact gc;
+        gc.priority = priority++;
+        gc.name = g.name;
+        gc.relation = g.relation;
+        gc.phone = g.phone;
+        gc.notifyEnabled = g.notifyEnabled;
+        gc.isEmergencyFixed = false;
+        d.guardians.append(gc);
+    }
+    // 119·112 고정 행은 DB에 없는 화면 전용 표시 — mockRecipientDetail()/생성 모달과 동일하게 덧붙인다.
+    d.guardians.append(
+        GuardianContact{0, QStringLiteral("119 · 112"), QString(), QStringLiteral("—"), true, true});
+
+    for (const auto& s : info.schedules) {
+        MedicationScheduleItem item;
+        item.slotNo = s.slotNo;
+        item.drugName = s.drugName;
+        item.doseTime = s.doseTime;
+        item.daysLabel = daysLabelFromBitmask(s.daysOfWeek);
+        d.schedules.append(item);
+    }
+
+    return d;
+}
+
+}  // namespace
+
+void P3RecipientPage::openDetail(int recipientIndex) {
+    if (recipientIndex < 0 || recipientIndex >= recipients_.size()) return;
+    const RecipientCard card = recipients_[recipientIndex];
+
+    auto openWithDetail = [this, recipientIndex](RecipientDetail detail) {
+        if (recipientIndex >= recipients_.size()) return;  // 조회 대기 중 목록이 바뀌었으면 방어
+        detail.card = recipients_[recipientIndex];  // 이름·주소 등 카드 쪽 최신값으로 덮어쓴다
+
+        auto* dialog = new P3RecipientDetailDialog(detail, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(dialog, &P3RecipientDetailDialog::saveRequested, this,
+                [this, recipientIndex](const RecipientDetail& saved) {
+                    if (recipientIndex < recipients_.size()) {
+                        // 서버 응답을 기다리는 동안에도 화면에 바로 반영한다 — 정확한 값은
+                        // saveRecipientUpdate()의 콜백이 도착하는 대로 한 번 더 덮어쓴다.
+                        recipients_[recipientIndex].name = saved.card.name;
+                        recipients_[recipientIndex].address = saved.card.address;
+                        rebuildGrid();
+                    }
+                    saveRecipientUpdate(saved);
+                });
+        dialog->exec();
+    };
+
+    if (card.id <= 0) {
+        // 서버 연결 실패로 남아있는 mock 카드 — DB에 없으니 조회할 수 없다.
+        openWithDetail(mockRecipientDetail(card));
+        return;
+    }
+
+    apiClient_->fetchRecipientDetail(
+        card.id, [this, openWithDetail, card](bool ok, const ApiClient::RecipientDetailInfo& info, const QString&) {
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("조회 실패"),
+                                      QStringLiteral("대상자 상세 정보를 불러오지 못했습니다."));
+                openWithDetail(mockRecipientDetail(card));
+                return;
+            }
+            openWithDetail(recipientDetailFromApi(info));
+        });
+}
+
+namespace {
+// RecipientDetail(다이얼로그가 들고 있는 화면 모델)을 서버 요청 파라미터로 변환한다.
+// 등록(POST)·수정(PUT) 둘 다 이 함수를 쓴다. 복약 스케줄 칸 번호·시각이 유효하지 않으면
+// errorOut을 채우고 false를 반환한다 — 호출부가 그 메시지로 QMessageBox를 띄우고 요청을 취소한다.
+bool buildRecipientParams(const RecipientDetail& detail, ApiClient::RecipientCreateParams* outParams,
+                           QString* errorOut) {
+    ApiClient::RecipientCreateParams params;
+    params.name = detail.card.name;
+    params.gender = genderCodeFromLabel(detail.gender);
+    if (detail.birthYear > 0) {
+        params.birthDate = QStringLiteral("%1-01-01").arg(detail.birthYear, 4, 10, QChar('0'));
+    }
+    params.homeAddress = detail.card.address;
+    params.diseases = detail.diseases;
+    params.note = detail.note;
+    if (detail.card.robotCode != QStringLiteral("미배정")) params.robotCode = detail.card.robotCode;
+
+    for (const auto& g : detail.guardians) {
+        if (g.isEmergencyFixed) continue;  // 119·112는 화면 전용 표시라 서버에 안 보낸다
+        ApiClient::GuardianCreateParams gp;
+        gp.name = g.name;
+        gp.phone = g.phone;
+        gp.relation = g.relation;
+        gp.priority = g.priority;
+        gp.notifyEnabled = g.notifyEnabled;
+        params.guardians.append(gp);
+    }
+
+    for (const auto& s : detail.schedules) {
+        if (s.slotNo < 1 || s.slotNo > 3) {
+            *errorOut = QStringLiteral(
+                            "복약 스케줄 칸 번호는 1~3만 가능합니다(약통 3칸 구성). 칸 번호를 고쳐 다시 시도해주세요.");
+            return false;
+        }
+        // 정상 흐름에선 다이얼로그의 스케줄 저장(💾) 버튼이 이미 normalizeDoseTime()으로
+        // 정규화해뒀어야 한다 — 여기서 다시 한번 돌리는 건 그 방어선이 뚫렸을 때(예: 값을
+        // 안 건드린 기본값)를 위한 이중 확인이다.
+        const QString normalizedTime = normalizeDoseTime(s.doseTime);
+        if (normalizedTime.isEmpty()) {
+            *errorOut = QStringLiteral("'%1' 복용 시각(%2)을 알아볼 수 없습니다. 다시 시도해주세요.")
+                            .arg(s.drugName.isEmpty() ? QStringLiteral("복약") : s.drugName, s.doseTime);
+            return false;
+        }
+        ApiClient::MedicationScheduleCreateParams sp;
+        sp.slotNo = s.slotNo;
+        sp.drugName = s.drugName;
+        sp.doseTime = normalizedTime;
+        sp.daysOfWeek = bitmaskFromDaysLabel(s.daysLabel);
+        params.schedules.append(sp);
+    }
+
+    *outParams = params;
+    return true;
+}
+}  // namespace
+
 void P3RecipientPage::registerRecipient() {
-    const QString nextCode = QStringLiteral("C-%1").arg(recipients_.size() + 1, 3, 10, QChar('0'));
-    P3RecipientCreateDialog dialog(nextCode, this);
+    // 서버가 실제 채번을 하므로 이건 사용자에게 보여주는 미리보기일 뿐이다 — 등록 완료 후
+    // 카드는 서버가 돌려준 진짜 code로 다시 채워진다(아래 createRecipient 콜백).
+    const QString nextCodePreview = QStringLiteral("C-%1").arg(recipients_.size() + 1, 3, 10, QChar('0'));
+    P3RecipientCreateDialog dialog(nextCodePreview, this);
     if (dialog.exec() != QDialog::Accepted) return;
 
     const RecipientDetail detail = dialog.resultDetail();
-    recipients_.append(detail.card);
-    customDetails_[detail.card.code] = detail;
-    rebuildGrid();
+
+    ApiClient::RecipientCreateParams params;
+    QString error;
+    if (!buildRecipientParams(detail, &params, &error)) {
+        QMessageBox::warning(this, QStringLiteral("등록 실패"), error);
+        return;
+    }
+
+    apiClient_->createRecipient(
+        params, [this](bool ok, const ApiClient::RecipientDetailInfo& info, const QString& err) {
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("등록 실패"),
+                                      QStringLiteral("대상자 등록에 실패했습니다: %1").arg(err));
+                return;
+            }
+            recipients_.append(recipientDetailFromApi(info).card);
+            rebuildGrid();
+        });
+}
+
+void P3RecipientPage::saveRecipientUpdate(const RecipientDetail& detail) {
+    const int recipientId = detail.card.id;
+    if (recipientId <= 0) return;  // 서버 연결 실패로 남은 mock 카드 — 저장할 원본이 없다
+
+    ApiClient::RecipientCreateParams params;
+    QString error;
+    if (!buildRecipientParams(detail, &params, &error)) {
+        QMessageBox::warning(this, QStringLiteral("저장 실패"), error);
+        return;
+    }
+
+    apiClient_->updateRecipient(
+        recipientId, params,
+        [this, recipientId](bool ok, const ApiClient::RecipientDetailInfo& info, const QString& err) {
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("저장 실패"),
+                                      QStringLiteral("대상자 정보를 저장하지 못했습니다: %1").arg(err));
+                return;
+            }
+            for (auto& card : recipients_) {
+                if (card.id != recipientId) continue;
+                const RecipientCard updated = recipientDetailFromApi(info).card;
+                card.name = updated.name;
+                card.address = updated.address;
+                card.robotCode = updated.robotCode;
+                break;
+            }
+            rebuildGrid();
+        });
 }
 
 #include "p3_recipient_page.moc"

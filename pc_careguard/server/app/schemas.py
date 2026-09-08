@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
@@ -341,3 +341,69 @@ class MissionItem(BaseModel):
     created_at: datetime
     dispatched_at: Optional[datetime] = None
     robot_connected: bool = False
+
+
+class GuardianCreate(BaseModel):
+    name: str
+    phone: str
+    relation: Optional[str] = None
+    priority: int = 1
+    notify_enabled: bool = True
+
+
+class GuardianItem(BaseModel):
+    id: int
+    name: str
+    phone: str
+    relation: Optional[str] = None
+    priority: int
+    notify_enabled: bool
+
+
+class MedicationScheduleCreate(BaseModel):
+    # medication_schedule.slot_no CHECK(1~3)과 동일한 제약. P3 등록 모달은 UI상 4번째
+    # 이상 칸도 만들 수 있어(대상자 상세 모달의 "칸 없으면 계속 증가" 정책과 동일) 그런
+    # 값이 오면 recipient.py가 사전에 걸러 422로 막는다.
+    slot_no: int
+    drug_name: str
+    dose_time: time  # "HH:MM"
+    days_of_week: int = 127  # 요일 비트마스크. 월=1 화=2 수=4 목=8 금=16 토=32 일=64, 매일=127
+
+
+class MedicationScheduleItem(BaseModel):
+    id: int
+    slot_no: int
+    drug_name: str
+    dose_time: time
+    days_of_week: int
+
+
+class RecipientCreate(BaseModel):
+    name: str
+    gender: Optional[str] = None  # 'male' / 'female' / 'other'. recipient.gender CHECK와 동일
+    birth_date: Optional[date] = None
+    home_address: Optional[str] = None
+    diseases: Optional[str] = None
+    note: Optional[str] = None
+    robot_code: Optional[str] = None  # 미배정이면 None
+    guardians: List[GuardianCreate] = []
+    schedules: List[MedicationScheduleCreate] = []
+
+
+class RecipientItem(BaseModel):
+    id: int
+    code: str
+    name: str
+    robot_id: Optional[int] = None
+    robot_code: Optional[str] = None
+    gender: Optional[str] = None
+    birth_date: Optional[date] = None
+    home_address: Optional[str] = None
+    diseases: Optional[str] = None
+    note: Optional[str] = None
+    created_at: datetime
+
+
+class RecipientDetailItem(RecipientItem):
+    guardians: List[GuardianItem] = []
+    schedules: List[MedicationScheduleItem] = []

@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDate>
 #include <QDateTime>
@@ -24,6 +25,7 @@
 #include <QVBoxLayout>
 
 #include "theme/tokens.h"
+#include "widgets/careguard_combo_box.h"
 #include "widgets/simple_icons.h"
 
 namespace {
@@ -112,8 +114,8 @@ P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, QWidge
 
     // 항상 있는 긴급 고정 행 — p3_recipient_page.cpp mockRecipientDetail()의 kEmergencyRow와
     // 같은 값(별도 export 없이 그대로 복제 — 위 헬퍼들과 같은 이유).
-    detail_.guardians = {GuardianContact{0, QStringLiteral("119 · 112"), QString(), QStringLiteral("—"),
-                                          QStringLiteral("모의 신고 전용"), true}};
+    detail_.guardians = {
+        GuardianContact{0, QStringLiteral("119 · 112"), QString(), QStringLiteral("—"), true, true}};
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -181,7 +183,7 @@ P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, QWidge
     connect(birthYearEdit_, &QLineEdit::textChanged, this, &P3RecipientCreateDialog::refreshValidation);
     row2->addWidget(makeFieldBlock(QStringLiteral("생년"), true, birthYearEdit_, body), 1);
 
-    genderCombo_ = new QComboBox(body);
+    genderCombo_ = new CareGuardComboBox(body);
     genderCombo_->addItems({QStringLiteral("선택"), QStringLiteral("남"), QStringLiteral("여")});
     connect(genderCombo_, &QComboBox::currentIndexChanged, this, &P3RecipientCreateDialog::refreshValidation);
     row2->addWidget(makeFieldBlock(QStringLiteral("성별"), true, genderCombo_, body), 1);
@@ -216,12 +218,12 @@ P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, QWidge
 
     auto* robotMapRow = new QHBoxLayout();
     robotMapRow->setSpacing(10);
-    robotCombo_ = new QComboBox(body);
+    robotCombo_ = new CareGuardComboBox(body);
     robotCombo_->addItem(QStringLiteral("로봇 선택"));
     robotCombo_->addItems(kRobotCodes);
     robotMapRow->addWidget(robotCombo_, 1);
 
-    mapCombo_ = new QComboBox(body);
+    mapCombo_ = new CareGuardComboBox(body);
     mapCombo_->addItem(QStringLiteral("맵 선택"));
     robotMapRow->addWidget(mapCombo_, 1);
     layout->addLayout(robotMapRow);
@@ -504,7 +506,9 @@ void P3RecipientCreateDialog::refreshGuardianTable() {
             nameLabel->setText(QFontMetrics(nameLabel->font()).elidedText(nameText, Qt::ElideRight, kNameW));
             nameLabel->setToolTip(nameText);
             phoneLabel->setText(gg.phone);
-            channelLabel->setText(gg.notifyChannel);
+            channelLabel->setText(gg.isEmergencyFixed
+                                       ? QStringLiteral("모의 신고 전용")
+                                       : (gg.notifyEnabled ? QStringLiteral("수신") : QStringLiteral("미수신")));
         };
         refreshViewLabels();
 
@@ -551,9 +555,12 @@ void P3RecipientCreateDialog::refreshGuardianTable() {
             editLayout->addSpacing(kGapNamePhone);
             auto* phoneEdit = new QLineEdit(editPage);
             phoneEdit->setFixedWidth(kPhoneW);
+            installLivePhoneFormatting(phoneEdit);  // 입력하는 즉시 하이픈이 보이도록
             editLayout->addWidget(phoneEdit);
             editLayout->addSpacing(kGapPhoneChannel);
-            auto* channelEdit = new QLineEdit(editPage);
+            // DB의 guardian.notify_enabled가 boolean이라 입력도 체크박스로 맞춘다(예전엔
+            // "문자 + 전화" 같은 자유 텍스트였는데 저장할 칸이 없어 결국 boolean으로 뭉개졌다).
+            auto* channelEdit = new QCheckBox(QStringLiteral("수신"), editPage);
             channelEdit->setFixedWidth(kChannelW);
             editLayout->addWidget(channelEdit);
             editLayout->addSpacing(kGapChannelEdit);
@@ -584,7 +591,7 @@ void P3RecipientCreateDialog::refreshGuardianTable() {
                                                       : QStringLiteral("%1 (%2)").arg(gg.name, gg.relation);
                         nameEdit->setText(nameText);
                         phoneEdit->setText(gg.phone);
-                        channelEdit->setText(gg.notifyChannel);
+                        channelEdit->setChecked(gg.notifyEnabled);
                         stack->setCurrentIndex(1);
                     });
 
@@ -602,8 +609,10 @@ void P3RecipientCreateDialog::refreshGuardianTable() {
                         }
                         detail_.guardians[r].name = name;
                         detail_.guardians[r].relation = relation;
-                        detail_.guardians[r].phone = phoneEdit->text().trimmed();
-                        detail_.guardians[r].notifyChannel = channelEdit->text().trimmed();
+                        // "-" 없이 숫자만 입력해도 저장 시점에 하이픈을 넣어준다(요청: 노출
+                        // 형식 가독성).
+                        detail_.guardians[r].phone = formatGuardianPhone(phoneEdit->text());
+                        detail_.guardians[r].notifyEnabled = channelEdit->isChecked();
                         refreshViewLabels();
                         stack->setCurrentIndex(0);
                         refreshValidation();
@@ -621,7 +630,7 @@ void P3RecipientCreateDialog::refreshGuardianTable() {
                 autoEditGuardianIndex_ = -1;
                 nameEdit->setText(QString());
                 phoneEdit->setText(QString());
-                channelEdit->setText(QString());
+                channelEdit->setChecked(true);
                 stack->setCurrentIndex(1);
                 nameEdit->setFocus();
             }
@@ -707,11 +716,19 @@ void P3RecipientCreateDialog::refreshScheduleTable() {
     }
 
     // p3_recipient_detail_dialog.cpp populateScheduleTable()과 같은 열 폭/아이콘 배치.
-    static const int kSlotW = 36, kTimeW = 76, kDaysW = 80;
+    // kTimeW는 콤보박스 드롭다운 화살표까지 들어가야 해서 QLineEdit 시절(76px)보다 넓혔다.
+    static const int kSlotW = 36, kTimeW = 96, kDaysW = 80;
     static const int kIconW = 24, kIconGap = 6;
     static const int kActionsW = kIconW * 2 + kIconGap;
     static const QStringList kDefaultTimes = {QStringLiteral("08:00"), QStringLiteral("13:00"),
                                                QStringLiteral("19:00")};
+    // 자유 입력(normalizeDoseTime()이 "9"/"930"/"9:30" 등도 받아준다)과 함께, 자주 쓰는
+    // 시각을 바로 고를 수 있게 드롭다운도 제공한다(요청: 입력만 되던 걸 선택도 가능하게).
+    static const QStringList kTimePresets = {
+        QStringLiteral("06:00"), QStringLiteral("07:00"), QStringLiteral("07:30"), QStringLiteral("08:00"),
+        QStringLiteral("08:30"), QStringLiteral("09:00"), QStringLiteral("12:00"), QStringLiteral("12:30"),
+        QStringLiteral("13:00"), QStringLiteral("18:00"), QStringLiteral("18:30"), QStringLiteral("19:00"),
+        QStringLiteral("19:30"), QStringLiteral("20:00"), QStringLiteral("21:00"), QStringLiteral("22:00")};
 
     auto* box = scheduleTableBox_;
     auto* boxLayout = new QVBoxLayout(box);
@@ -834,7 +851,12 @@ void P3RecipientCreateDialog::refreshScheduleTable() {
         auto* drugEdit = new QLineEdit(editPage);
         drugEdit->setPlaceholderText(QStringLiteral("미설정"));
         editLayout->addWidget(drugEdit, 1);
-        auto* timeEdit = new QLineEdit(editPage);
+        // 편집 가능한 콤보박스 — 목록에서 골라도 되고, normalizeDoseTime()이 받아주는
+        // 형식이면 뭐든 직접 타이핑해도 된다(예: "9", "930").
+        auto* timeEdit = new CareGuardComboBox(editPage);
+        timeEdit->setEditable(true);
+        timeEdit->addItems(kTimePresets);
+        timeEdit->setCurrentText(QString());
         timeEdit->setFixedWidth(kTimeW);
         editLayout->addWidget(timeEdit);
         auto* daysEdit = new QLineEdit(editPage);
@@ -860,7 +882,7 @@ void P3RecipientCreateDialog::refreshScheduleTable() {
         connect(editBtn, &QPushButton::clicked, this, [this, r, stack, drugEdit, timeEdit, daysEdit] {
             const MedicationScheduleItem& ss = detail_.schedules[r];
             drugEdit->setText(ss.drugName);
-            timeEdit->setText(ss.doseTime);
+            timeEdit->setCurrentText(ss.doseTime);
             daysEdit->setText(ss.daysLabel);
             stack->setCurrentIndex(1);
         });
@@ -871,15 +893,30 @@ void P3RecipientCreateDialog::refreshScheduleTable() {
                                                                QStringLiteral("19:00")};
                     const QString drugName = drugEdit->text().trimmed();
                     if (drugName.isEmpty()) return;
-                    detail_.schedules[r].drugName = drugName;
-                    const QString time = timeEdit->text().trimmed();
-                    if (!time.isEmpty()) {
-                        detail_.schedules[r].doseTime = time;
+
+                    // 저장 버튼을 누르는 즉시 검사한다 — 시각 형식이 이상하면 등록까지
+                    // 안 가고 이 자리에서 바로 고칠 수 있게(요청: 저장 시점부터 유효성 검사).
+                    const QString rawTime = timeEdit->currentText().trimmed();
+                    QString normalizedTime;
+                    if (!rawTime.isEmpty()) {
+                        normalizedTime = normalizeDoseTime(rawTime);
+                        if (normalizedTime.isEmpty()) {
+                            QMessageBox::warning(
+                                this, QStringLiteral("복용 시각 오류"),
+                                QStringLiteral("'%1'을(를) 시각으로 알아볼 수 없습니다.\n9, 09:30, 930처럼 "
+                                               "입력하거나 목록에서 골라주세요.")
+                                    .arg(rawTime));
+                            return;  // 수정 모드 유지 — 바로 고칠 수 있게
+                        }
                     } else if (detail_.schedules[r].doseTime.isEmpty()) {
                         const int slotNo = detail_.schedules[r].slotNo;
-                        detail_.schedules[r].doseTime =
-                            (slotNo >= 1 && slotNo <= 3) ? kDefaultTimes[slotNo - 1] : QString();
+                        normalizedTime = (slotNo >= 1 && slotNo <= 3) ? kDefaultTimes[slotNo - 1] : QString();
+                    } else {
+                        normalizedTime = detail_.schedules[r].doseTime;  // 안 건드렸으면 기존 값 유지
                     }
+
+                    detail_.schedules[r].drugName = drugName;
+                    detail_.schedules[r].doseTime = normalizedTime;
                     const QString days = daysEdit->text().trimmed();
                     if (!days.isEmpty()) {
                         detail_.schedules[r].daysLabel = days;
@@ -902,8 +939,11 @@ void P3RecipientCreateDialog::refreshScheduleTable() {
             autoEditScheduleIndex_ = -1;
             const int slotNo = detail_.schedules[r].slotNo;
             drugEdit->setText(QString());
-            timeEdit->setText(QString());
-            timeEdit->setPlaceholderText(slotNo >= 1 && slotNo <= 3 ? kDefaultTimes[slotNo - 1] : QString());
+            timeEdit->setCurrentText(QString());
+            if (timeEdit->lineEdit()) {
+                timeEdit->lineEdit()->setPlaceholderText(
+                    slotNo >= 1 && slotNo <= 3 ? kDefaultTimes[slotNo - 1] : QString());
+            }
             daysEdit->setText(QString());
             daysEdit->setPlaceholderText(QStringLiteral("매일"));
             stack->setCurrentIndex(1);
