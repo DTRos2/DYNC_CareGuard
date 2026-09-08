@@ -70,6 +70,14 @@ async def _tick() -> None:
 
 
 def _is_due(run_time: time_cls, now_time: time_cls) -> bool:
+    # 예전엔 이 창 폭이 POLL_INTERVAL_SEC(20초)와 똑같았다 — _tick() 자체도 정확히
+    # 20초마다 도는데, 서버가 언제 시작됐냐에 따라 그 20초 틱이 벽시계 20초 경계와
+    # 안 맞아떨어지면 run_time~run_time+20s 사이에 틱이 단 한 번도 안 걸릴 수 있고,
+    # 그러면 그날은 영영 트리거가 안 됐다 — 실사용 중 실제로 겪은 버그(2026-09-08,
+    # 19:35 스케줄이 19:36까지 계속 안 켜짐). 창을 좁게 유지할 이유가 없다: 같은 날
+    # 중복 실행은 _tick()의 already_run(DB 조회)이 이미 따로 막고 있으므로, 여기서는
+    # "오늘 run_time이 이미 지났는지"만 보면 된다 — 서버가 잠깐 멈췄다 늦게 봐도 그날
+    # 안에는 늦게라도 한 번은 도는 게, 아예 안 도는 것보다 낫다.
     run_sec = run_time.hour * 3600 + run_time.minute * 60 + run_time.second
     now_sec = now_time.hour * 3600 + now_time.minute * 60 + now_time.second
-    return 0 <= now_sec - run_sec < POLL_INTERVAL_SEC
+    return now_sec >= run_sec

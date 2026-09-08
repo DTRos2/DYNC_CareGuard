@@ -72,8 +72,19 @@ class InitialPoseSetter(Node):
     def publish_when_ready(self, timeout_sec: float = SUBSCRIBER_WAIT_TIMEOUT_SEC) -> bool:
         """AMCL의 /initialpose 구독이 실제로 맺어질 때까지 기다린 뒤 발행한다.
         타임아웃 안에 구독자가 안 잡혀도(예: amcl이 아직 안 떴다) 마지막엔 밑져야
-        본전으로 한 번 발행은 시도한다. 매칭 직후에도 한 번의 publish가 씹히는
-        경우를 대비해 몇 번 더 발행해 안전판을 둔다.
+        본전으로 한 번 발행은 시도한다.
+
+        get_subscription_count()가 0보다 커진 시점 == DDS가 서로를 "발견"한
+        시점이지, 실제로 신뢰성 있게 주고받을 수 있는 채널이 완전히 준비된
+        시점은 아니다 — 그 직후 곧바로 보낸 메시지 몇 개가 씹히는 경우가 실제로
+        있었다(2026-09-08 실 로봇에서 재현: 예전엔 여기서 3번(약 0.6초)만
+        발행했는데, 그 3번이 전부 씹혀서 initial_pose_setter는 "성공"으로 로그를
+        남겼지만 AMCL은 끝내 /amcl_pose를 한 번도 발행하지 않았다 — 그 여파로
+        global_costmap이 map 좌표계를 못 얻어 activating에서 멈추고, 그 뒤에
+        걸린 bt_navigator도 계속 inactive라 순찰 명령이 전부 조용히 실패했다.
+        같은 상황에서 이 스크립트를 다시 한 번 실행하면(이번엔 채널이 이미 데워져
+        있어서) 바로 성공하는 것으로 확인됨 — 재시도 횟수·기간을 넉넉히 늘려
+        같은 프로세스 안에서 이 워밍업 구간을 확실히 넘기게 한다.
         """
         if self._pose is None:
             return False
@@ -91,7 +102,9 @@ class InitialPoseSetter(Node):
         msg.pose.pose.position.y = y
         msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        for _ in range(3):
+        # 3번/0.6초 -> 15번/약 3초로 늘렸다 — downlink_node.py 쪽 subprocess
+        # timeout도 같이 늘려야 한다(_ensure_navigation_running/_set_initial_pose).
+        for _ in range(15):
             msg.header.stamp = self.get_clock().now().to_msg()
             self._pub.publish(msg)
             rclpy.spin_once(self, timeout_sec=0.2)
