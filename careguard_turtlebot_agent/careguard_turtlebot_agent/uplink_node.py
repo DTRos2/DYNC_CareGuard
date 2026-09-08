@@ -16,8 +16,10 @@ map->base_link TF도, /amcl_pose도 존재하지 않는다. 그래서 map 프레
 좁게 잡은 의도적 1단계 결정이다. AMCL/맵 정렬 위치가 필요해지면 LIMO의
 _on_slam_overlay_tick처럼 map->base_link TF 구독으로 교체하면 된다.
 
-지도·카메라·배터리 등 다른 토픽 릴레이는 이번 범위 밖이라 구독하지 않는다 —
-필요해지면 careguard_agent/uplink_node.py를 참고해 여기에 추가하면 된다.
+지도·카메라 등 다른 토픽 릴레이는 이번 범위 밖이라 구독하지 않는다 — 필요해지면
+careguard_agent/uplink_node.py를 참고해 여기에 추가하면 된다. /battery_state만
+"배터리 주의/복귀" 임계값 판단(서버 쪽, robot_ws.py::_handle_battery_state)에
+써야 해서 예외적으로 relay한다.
 """
 import asyncio
 import json
@@ -28,6 +30,7 @@ import rclpy
 import requests
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from sensor_msgs.msg import BatteryState
 
 from . import ws_config
 
@@ -77,6 +80,7 @@ class UplinkNode(Node):
         self._reconnect_delay_sec = _fetch_reconnect_delay_sec(self.get_logger())
 
         self.create_subscription(Odometry, '/odom', self._on_odom, 10)
+        self.create_subscription(BatteryState, '/battery_state', self._on_battery_state, 10)
 
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
@@ -89,6 +93,13 @@ class UplinkNode(Node):
             'y': msg.pose.pose.position.y,
             'yaw': yaw,
         })
+
+    def _on_battery_state(self, msg: BatteryState):
+        # 드라이버에 따라 percentage를 0.0~1.0(REP 표준) 또는 0~100 그대로 발행하는
+        # 경우가 섞여 있어(turtlebot3_node가 후자인 경우가 실제로 관찰됨), 1.0 이하면
+        # 비율로 보고 100을 곱한다.
+        percentage = msg.percentage * 100.0 if msg.percentage <= 1.0 else msg.percentage
+        self._send({'type': 'battery_state', 'percentage': percentage})
 
     def _send(self, payload: dict):
         if not self._connected or self._ws is None:

@@ -3,11 +3,13 @@
 <package format="3">
   <name>careguard_turtlebot_agent</name>
   <version>0.1.0</version>
-  <description>TurtleBot 최소 업링크 — 서버 /ws/robot에 접속해 온라인 상태를 알린다. robot_careguard_ws/src/careguard_agent(LIMO)의 연결 유지 패턴을 재사용했다.</description>
+  <description>TurtleBot 업링크 — 서버 /ws/robot에 접속해 온라인 상태를 알리고 /odom 기반 위치·/battery_state를 relay한다. robot_careguard_ws/src/careguard_agent(LIMO)의 연결 유지 패턴을 재사용했다.</description>
   <maintainer email="ajtwlscldjs@gmail.com">postwo</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
 
   <test_depend>python3-pytest</test_depend>
 
