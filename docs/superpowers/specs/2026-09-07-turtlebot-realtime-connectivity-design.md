@@ -190,6 +190,12 @@ careguard_turtlebot_agent/
 
 ## 라즈베리파이 설정 (코드 변경 아님 — 안내 사항)
 
+> **2026-09-07 갱신**: 아래는 PIVOT(구현 계획 문서 상단 "PIVOT" 절 참고 — 서버·대시보드
+> WebSocket을 새로 만들지 않고 `origin/develop`에 이미 있던 LIMO용 시스템을 그대로
+> 재사용하기로 한 결정) 반영 후의 실제 절차다. 이전 버전은 존재하지 않는
+> `requirements.txt`, `websocket-client`, `--ros-args -p robot_code:=...` 등 실제 구현과
+> 다른 내용이 있었다 — 아래로 대체한다.
+
 전제: 라즈베리파이에 ROS2와 터틀봇 드라이버는 이미 설치돼 있고, 부팅만 한 상태.
 
 1. **코드 가져오기**: 이 저장소를 Pi에서 `git pull` (Pi에 이미 클론돼 있다고 가정 — 사용자가
@@ -197,36 +203,62 @@ careguard_turtlebot_agent/
 2. **콜콘 워크스페이스 준비**: `careguard_turtlebot_agent`는 `src/`로 감싸여 있지 않으므로,
    별도 워크스페이스(예: `~/turtlebot_ws/src/`)를 만들고 그 안에 이 폴더를 심볼릭 링크
    (`ln -s ~/<repo>/careguard_turtlebot_agent ~/turtlebot_ws/src/careguard_turtlebot_agent`)
-3. **파이썬 의존성**: `pip install -r ~/<repo>/careguard_turtlebot_agent/requirements.txt`
-   (`websocket-client`)
+3. **파이썬 의존성**: `pip install --user websockets` (비동기 WebSocket 클라이언트 —
+   LIMO용 `careguard_agent`가 쓰는 것과 동일한 라이브러리. `requirements.txt` 파일은 없다 —
+   `package.xml`이 rosdep 키로 선언하지 않은 순수 PyPI 패키지라 수동 설치가 필요하다)
 4. **빌드**: `cd ~/turtlebot_ws && colcon build --packages-select careguard_turtlebot_agent`
 5. **네트워크**: Pi와 PC 서버가 같은 LAN/Wi-Fi에 있어야 함. PC 서버의 실제 IP를 확인해서
-   다음 실행 인자에 넣는다 (`hostname -I` 등)
-6. **로봇 등록(먼저)**: 대시보드 "로봇 관리" 탭 → "로봇 등록"에서 모델을 `turtlebot`으로,
-   코드(예: `R-05`)와 `ROS_DOMAIN_ID`를 정해서 등록. 이 코드가 다음 실행 인자의
-   `robot_code`가 됨
-7. **실행**:
+   다음 실행 시 환경변수에 넣는다 (`hostname -I` 등)
+6. **로봇 등록(먼저 해도, 나중에 해도 됨)**: 대시보드 "로봇 관리" 탭 → "로봇 등록"에서
+   모델을 `turtlebot`으로, 코드(예: `R-05`, 16자 이하)와 `ROS_DOMAIN_ID`(0~232)를 정해서
+   등록. 이 코드가 다음 실행의 `CAREGUARD_ROBOT_CODE`가 됨. **주의**: 재사용 중인 기존
+   `/ws/robot?robot_code=...` 엔드포인트는 미등록 코드도 그냥 받아준다(등록 여부를
+   확인하지 않음) — 그래서 등록 전에 노드를 먼저 켜도 접속 자체는 된다. 다만 그 상태에선
+   `GET /robots` 목록에 아예 없는 코드라 대시보드 "로봇 관리" 탭에는 안 보인다. 그러니
+   대시보드에 보이게 하려면 등록을 반드시 해야 한다(접속 거부 때문이 아니라 목록에
+   나타나게 하기 위해서).
+7. **실행** — ROS2 파라미터가 아니라 환경변수로 설정한다:
    ```bash
    source ~/turtlebot_ws/install/setup.bash
-   ros2 run careguard_turtlebot_agent uplink_node \
-     --ros-args -p robot_code:=R-05 -p server_host:=<PC IP> -p server_port:=8000
+   CAREGUARD_ROBOT_CODE=R-05 CAREGUARD_SERVER_URL=http://<PC IP>:8000 \
+     ros2 run careguard_turtlebot_agent uplink_node
    ```
-8. 등록 전에 먼저 켰다면 접속이 거부되고 백오프 재시도만 반복한다 — 대시보드에서 등록하면
-   재시작 없이 다음 재시도 때 자동으로 붙는다
-9. `ROS_DOMAIN_ID`는 이 워크스페이스의 다른 ROS2 노드(터틀봇 bringup 등)와 통일해서 써야
-   같은 도메인 안에서 서로 통신 가능 — 대시보드에 등록한 값과 실제 Pi에서 `export
-   ROS_DOMAIN_ID=<값>`으로 export하는 값을 맞춰둔다 (uplink_node 자체는 heartbeat만 보내
-   ROS2 토픽을 쓰지 않으므로 이 값에 직접 의존하진 않지만, 같은 로봇의 다른 노드들과의
-   일관성을 위해 등록 시점에 실제 값을 적어두는 것)
+   `CAREGUARD_ROBOT_CODE`를 안 주면(빈 문자열) 노드가 에러 로그를 남기고 즉시 종료된다.
+8. 서버가 아직 안 떠 있거나 네트워크가 잠깐 끊겨도 노드는 3초 간격으로 계속 재연결을
+   시도한다(죽지 않음) — 서버가 뜨면 다음 재시도 때 자동으로 붙는다.
+9. **온라인 여부는 heartbeat가 아니라 TCP 연결 자체로 판단**한다 — 재사용 중인
+   `robot_ws.py`엔 타임아웃 로직이 없다. 노드가 접속해 있는 동안은 계속 온라인, 연결이
+   끊기면(Ctrl+C 등) 즉시(수 초 안에) 오프라인으로 바뀐다. 로봇 쪽에서 별도 heartbeat
+   메시지를 보낼 필요가 없다.
+10. `ROS_DOMAIN_ID`는 이 워크스페이스의 다른 ROS2 노드(터틀봇 bringup 등)와 통일해서 써야
+    같은 도메인 안에서 서로 통신 가능 — 대시보드에 등록한 값과 실제 Pi에서 `export
+    ROS_DOMAIN_ID=<값>`으로 export하는 값을 맞춰둔다 (uplink_node 자체는 이번 범위에선
+    ROS2 토픽을 구독하지 않으므로 이 값에 직접 의존하진 않지만, 같은 로봇의 다른
+    노드들과의 일관성을 위해 등록 시점에 실제 값을 적어두는 것)
 
 ## 테스트 계획
 
-- **서버**: `robots.py`에 대해 등록/중복 코드 409/목록 조회(온라인 포함) 단위 테스트.
-  `robot_ws.py`는 `TestClient`의 WebSocket 테스트로 (a) 미등록 코드 접속 거부, (b) 등록된
-  코드 접속 시 registry 반영 + dashboard 소켓에 broadcast, (c) heartbeat 끊기면(15초 경과)
-  offline으로 바뀌는지 확인
-- **대시보드**: `RobotWsClient`의 메시지 파싱(snapshot/robot_status) 단위 테스트. 실제 서버
-  연결은 수동 확인(로컬에서 서버 띄우고 대시보드 실행 후 표 갱신 확인)
-- **엔드투엔드 수동 확인**: 서버 기동 → 대시보드에서 로봇 등록 → 라즈베리파이에서
-  `uplink_node` 실행 → 대시보드 표에 "온라인"으로 바뀌는지, 노드 종료 시 15초 안에
-  "오프라인"으로 바뀌는지 눈으로 확인
+> 2026-09-07 갱신: PIVOT 이후 서버·대시보드 쪽 WebSocket은 새로 만들지 않고 기존
+> `app/ws/robot_ws.py`/`dashboard_ws.py`, 대시보드 `WsClient`를 재사용한다 — 아래는 실제로
+> 구현·실행된 테스트 기준이다.
+
+- **서버**: `pc_careguard/server/tests/test_robots.py` — `POST/GET/DELETE /robots` 전체
+  (등록, 중복 코드 409, `ros_domain_id`/`code` 범위를 벗어나면 422, 목록 조회, 등록
+  해제 후 목록에서 빠지는지, 존재하지 않는 id 삭제 시 404), 그리고 `is_online`이 실제
+  `/ws/robot?robot_code=...` WebSocket 연결 여부(재사용 중인 기존 `robot_ws.is_connected`)를
+  정확히 반영하는지. 실행: `cd pc_careguard/server && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
+  .venv/bin/pytest tests/ -v` (이 환경은 ROS2가 전역 `PYTHONPATH`를 오염시켜 그 환경변수가
+  없으면 pytest 플러그인 로딩이 깨진다 — 로컬 Postgres가 떠 있어야 함).
+- **로봇 에이전트**: `careguard_turtlebot_agent`엔 자동 테스트가 없다 — 재사용한 LIMO용
+  `careguard_agent`도 마찬가지 관례(빌드/실행 검증만). `colcon build` 성공 + 수동 실행으로
+  검증(환경변수 없을 때 에러 종료, 있을 때 재연결 루프가 안 죽는지).
+- **대시보드**: C++ 자동 테스트 프레임워크가 이 리포에 없다 — 빌드 성공 + 수동 스모크
+  테스트로 검증. `pc_careguard/dashboard/src/net/ws_client.{h,cpp}`(기존, 이번에 안 건드림)
+  자체는 이미 P5 페이지에서 쓰이고 있어 별도 테스트를 새로 만들지 않았다.
+- **엔드투엔드 수동 확인**: 서버 기동 → 대시보드에서 로봇 등록 → 라즈베리파이(또는 같은
+  네트워크의 아무 PC)에서 `CAREGUARD_ROBOT_CODE=<코드> ros2 run careguard_turtlebot_agent
+  uplink_node` 실행 → 대시보드 "로봇 관리" 탭에 "온라인"으로 바뀌는지, 노드 종료 시 몇
+  초 안에 "오프라인"으로 바뀌는지 눈으로 확인. **2026-09-07 기준 이 구간은 샌드박스
+  환경에 GUI 자동화 도구가 없어 로그인 화면 이후를 실제로 구동해 확인하지는
+  못했다** — 코드 리딩으로는 문제없어 보이지만(전체 브랜치 리뷰에서 별도로 재확인함),
+  실제 배포 전에 사람이 한 번 직접 로그인해서 눈으로 확인하는 걸 권장한다.
