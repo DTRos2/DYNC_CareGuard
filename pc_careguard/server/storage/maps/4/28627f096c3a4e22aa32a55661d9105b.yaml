@@ -1,0 +1,7 @@
+free_thresh: 0.25
+image: 28627f096c3a4e22aa32a55661d9105b.pgm
+mode: trinary
+negate: 0
+occupied_thresh: 0.65
+origin: [-35.7, -19.4, 0]
+resolution: 0.05

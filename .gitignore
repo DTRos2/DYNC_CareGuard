@@ -4,7 +4,7 @@ log/
 __pycache__/
 *.pyc
 dashboard/build/
-pc_careguard/server/storage/
+# pc_careguard/server/storage/
 *.bag
 *.db3
 *.pt
