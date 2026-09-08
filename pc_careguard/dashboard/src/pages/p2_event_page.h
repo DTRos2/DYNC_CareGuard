@@ -22,6 +22,10 @@ class P2EventPage : public QWidget {
 public:
     explicit P2EventPage(QWidget* parent = nullptr);
 
+    // P3 대상자 카드의 "이벤트 확인" 클릭 진입점. 검색창에 대상자 이름을 채워 그 대상자의
+    // 이벤트만 보이게 하고, 기간을 30일로 넓혀 오늘 범위 밖 이벤트도 가리지 않게 한다.
+    void filterToRecipient(const QString& recipientName);
+
 signals:
     // MainWindow가 TopBar 뱃지(setEmergencyCount/setAttentionCount)에 연결한다.
     void unresolvedCountsChanged(int emergencyCount, int attentionCount);
@@ -59,6 +63,7 @@ private:
     QPushButton* unresolvedOnlyChip_;
     LiveSearchLineEdit* searchEdit_;
     QButtonGroup* periodGroup_;
+    QPushButton* periodMonthBtn_;
     QPushButton* periodCustomBtn_;
     CareGuardDateEdit* startDateEdit_;
     CareGuardDateEdit* endDateEdit_;

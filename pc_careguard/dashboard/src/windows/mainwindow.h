@@ -29,8 +29,12 @@ private:
     QWidget* buildSidebar();
     void addNavButton(class QVBoxLayout* sidebarLayout, const QIcon& icon, const QString& text,
                        int pageIndex, QButtonGroup* group);
+    // 사이드바 클릭이 아닌 코드에서 페이지를 전환할 때(P3 "이벤트 확인" 등) 사이드바 체크
+    // 상태도 같이 맞춰준다.
+    void switchToPage(int pageIndex);
 
     QStackedWidget* pageStack_;
+    QButtonGroup* navGroup_ = nullptr;
     P4VideoPage* videoPage_ = nullptr;
     P7SettingsPage* settingsPage_ = nullptr;
     QLabel* clockLabel_;

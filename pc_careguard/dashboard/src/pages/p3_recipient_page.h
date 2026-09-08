@@ -15,6 +15,9 @@ class QFrame;
 class QResizeEvent;
 class QTimer;
 class LiveSearchLineEdit;
+class ApiClient;
+class WsClient;
+class QJsonObject;
 
 // P3 대상자 관리. gui/wireframe/v1/p3_recipient_management_wireframe.html,
 // CareGuard_DESIGN_SYSTEM.md §5-2(대상자 카드)·§6(idx 2)·§7-1/7-2(상태 판정·퀵액션) 기준.
@@ -95,6 +98,10 @@ class P3RecipientPage : public QWidget {
 public:
     explicit P3RecipientPage(QWidget* parent = nullptr);
 
+signals:
+    // 긴급 카드의 "이벤트 확인" 클릭. MainWindow가 P2 이벤트 페이지로 전환 + 필터링에 연결한다.
+    void eventCheckRequested(const QString& recipientName);
+
 protected:
     // 창 크기가 바뀔 때마다 카드 그리드 열 수를 다시 계산해 반응형으로 재배치한다 (P4와 동일 패턴).
     void resizeEvent(QResizeEvent* event) override;
@@ -106,10 +113,17 @@ private:
     void rebuildGrid();
     int computeColumnCount() const;
     QVector<int> visibleIndexesSorted() const;
-    void showComingSoon(const QString& feature);
     void openDetail(int recipientIndex);
     void registerRecipient();
+    // ATTENTION 카드 "복약 재안내" 클릭. POST /missions로 실제 mission을 만들고 로봇에
+    // 다운링크를 보낸다 — medication_scheduler가 없어 스케줄을 거치지 않는 즉시 실행.
+    void requestMedicationReannounce(const QString& robotCode, const QString& recipientName);
+    // /ws/dashboard가 push하는 robot_status(로봇 연결/해제)를 받아 OFFLINE 카드를 자동으로
+    // 갱신한다 — "재연결 시도" 버튼 없이 로봇이 실제로 재연결되면 카드가 저절로 바뀐다.
+    void handleWsMessage(const QJsonObject& message);
 
+    ApiClient* apiClient_ = nullptr;
+    WsClient* wsClient_ = nullptr;
     QVector<RecipientCard> recipients_;
     // "대상자 등록"으로 만든 대상자의 guardians/schedules 등 상세 데이터. mockRecipientDetail()은
     // C-001~004 외 코드를 모르므로(TODO: API 붙으면 이 지도는 통째로 삭제), 여기 있으면 이걸

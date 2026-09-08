@@ -30,6 +30,9 @@ base64만 씌워 보낸다(대시보드 P5/P6 우측 상단 카메라 라이브 
 /plan(nav2_planner, nav_msgs/Path)도 relay한다 — 순찰(Nav2) 중 로봇이 실제로
 따라가려는 전역 경로를 대시보드 P6에 rviz2처럼 선으로 그려주기 위함
 (2026-09-08 요청으로 추가, 실 로봇 미검증).
+
+video_recorder.py가 남긴 mp4+json 업로드도 이 노드가 같이 맡는다 —
+media_uploader.start_video_upload_watcher() 백그라운드 스레드 하나만 띄운다.
 """
 import asyncio
 import base64
@@ -48,7 +51,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, LaserScan
 from std_msgs.msg import String
 
-from . import ws_config
+from . import media_uploader, ws_config
 
 RECONNECT_DELAY_SEC = 3.0
 
@@ -126,6 +129,9 @@ class UplinkNode(Node):
 
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
+
+        # 영상 업로드 워처. WS 연결과 무관한 별개의 백그라운드 스레드.
+        media_uploader.start_video_upload_watcher(self.get_logger())
 
     # ---------- ROS2 콜백: 들어오는 대로 asyncio 루프에 넘겨서 전송한다 ----------
 
