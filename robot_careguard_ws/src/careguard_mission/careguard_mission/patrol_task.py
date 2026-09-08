@@ -21,7 +21,7 @@ import json
 import os
 
 import rclpy
-from rclpy.action import ActionServer
+from rclpy.action import ActionServer, GoalResponse
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -45,7 +45,25 @@ class PatrolTask(Node):
             except Exception as exc:  # noqa: BLE001 - 최소 구현, 실패해도 액션 서버는 띄운다
                 self.get_logger().warn(f'웨이포인트 캐시 갱신 실패: {exc}')
 
-        self._action_server = ActionServer(self, Patrol, 'patrol', self._execute)
+        # rclpy ActionServer는 기본적으로 받아들인 목표마다 execute_callback을 별도
+        # 스레드에서 동시에 실행한다 — goal_callback을 안 두면(예전 코드) 사용자가
+        # 짧은 시간에 웨이포인트를 두세 번 클릭했을 때 각 요청이 전부 accept되어
+        # 동시에 _execute가 돌기 시작한다. 그런데 self._waypoint_manager 안의
+        # BasicNavigator 인스턴스는 하나뿐이고 goal_handle/result_future 같은 상태를
+        # 인스턴스 변수로 들고 있어서, 두 스레드가 동시에 goToPose를 부르면 서로의
+        # 목표를 가로채며 방해해 결국 아무 목표도 끝까지 못 간다 — 실제로 겪은 버그
+        # (2026-09-08): "이동"을 짧은 간격으로 여러 번 눌렀더니 로봇이 아예 안 움직임.
+        # _handle_goal_request가 이미 실행 중이면 새 요청을 거절해 한 번에 하나만
+        # 돌게 막는다.
+        self._executing = False
+        self._action_server = ActionServer(
+            self, Patrol, 'patrol', self._execute, goal_callback=self._handle_goal_request)
+
+    def _handle_goal_request(self, goal_request):
+        if self._executing:
+            self.get_logger().warn('이미 순찰/이동 중이라 새 요청을 거부합니다 — 끝난 뒤 다시 시도하세요')
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
 
     def _publish_status(self, **fields):
         msg = String()
@@ -53,28 +71,32 @@ class PatrolTask(Node):
         self._status_pub.publish(msg)
 
     def _execute(self, goal_handle):
-        run_id = goal_handle.request.run_id
-        waypoints = goal_handle.request.waypoints
-        waypoints_total = len(waypoints)
-        self.get_logger().info(f'순찰 시작: run_id={run_id} 지점 {waypoints_total}개')
+        self._executing = True
+        try:
+            run_id = goal_handle.request.run_id
+            waypoints = goal_handle.request.waypoints
+            waypoints_total = len(waypoints)
+            self.get_logger().info(f'순찰 시작: run_id={run_id} 지점 {waypoints_total}개')
 
-        for i, wp in enumerate(waypoints, start=1):
-            self._waypoint_manager.navigate_poses([wp])
-            goal_handle.publish_feedback(Patrol.Feedback(waypoints_done=i, waypoints_total=waypoints_total))
-            self._publish_status(type='patrol_progress', run_id=run_id, waypoints_done=i)
+            for i, wp in enumerate(waypoints, start=1):
+                self._waypoint_manager.navigate_poses([wp])
+                goal_handle.publish_feedback(Patrol.Feedback(waypoints_done=i, waypoints_total=waypoints_total))
+                self._publish_status(type='patrol_progress', run_id=run_id, waypoints_done=i)
 
-        # P6 "이동"(단일 웨이포인트 주행, run_id=0)은 도착한 자리에 그대로 머물러야
-        # 한다 — 원래 순찰(여러 지점을 돌고 항상 충전소로 복귀)과 이 필드로 구분한다.
-        if goal_handle.request.return_to_charging:
-            return_to_charging(self._waypoint_manager)
+            # P6 "이동"(단일 웨이포인트 주행, run_id=0)은 도착한 자리에 그대로 머물러야
+            # 한다 — 원래 순찰(여러 지점을 돌고 항상 충전소로 복귀)과 이 필드로 구분한다.
+            if goal_handle.request.return_to_charging:
+                return_to_charging(self._waypoint_manager)
 
-        goal_handle.succeed()
-        self._publish_status(type='patrol_done', run_id=run_id, status='completed')
+            goal_handle.succeed()
+            self._publish_status(type='patrol_done', run_id=run_id, status='completed')
 
-        result = Patrol.Result()
-        result.status = 'completed'
-        result.waypoints_done = waypoints_total
-        return result
+            result = Patrol.Result()
+            result.status = 'completed'
+            result.waypoints_done = waypoints_total
+            return result
+        finally:
+            self._executing = False
 
 
 def main(args=None):

@@ -150,6 +150,18 @@ async def _handle_message(robot_code: str, message: dict) -> None:
             }
         )
 
+    elif msg_type == "patrol_path_update":
+        # 순찰(Nav2) 중 planner_server가 발행하는 전역 경로 — rviz2가 보여주는 "로봇이
+        # 가려는 길" 선과 같은 것. slam_map_update/slam_scan_update와 같은 이유로
+        # 순수 중계만 하고 DB에는 안 남긴다(경로가 매 goal마다 계속 바뀌는 실시간 값).
+        await dashboard_ws.broadcast(
+            {
+                "type": "patrol_path_update",
+                "robot_code": robot_code,
+                "points": message.get("points"),
+            }
+        )
+
     elif msg_type == "camera_frame":
         # 카메라 실시간 미리보기 — slam_map_update/slam_scan_update와 같은 이유로
         # DB에는 안 남기고 순수 중계만 한다.

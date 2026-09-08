@@ -297,6 +297,22 @@ class PrepareNavigationRequest(BaseModel):
     map_id: int
 
 
+class SetInitialPoseRequest(BaseModel):
+    # P6 "위치 보정" — 지도 클릭+드래그로 로봇의 실제 현재 위치·방향을 직접 지정해
+    # AMCL 초기 위치를 다시 잡는다. nav_prepare(자동, 충전 스테이션 좌표 가정)가
+    # 로봇이 충전소 밖에서 켜졌을 때 틀리는 문제의 수동 보정 경로.
+    robot_code: str
+    map_id: int
+    x: float
+    y: float
+    yaw: float = 0.0
+
+
+class ShutdownRobotRequest(BaseModel):
+    # P6 "로봇 종료" 버튼 — 베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크를 전부 내린다.
+    robot_code: str
+
+
 class PatrolRunItem(BaseModel):
     id: int
     robot_id: int
