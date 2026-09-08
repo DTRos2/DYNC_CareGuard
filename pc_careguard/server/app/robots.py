@@ -62,5 +62,19 @@ def register_robot(payload: RegisterRobotRequest):
         name=payload.name,
         model=payload.model,
         ros_domain_id=payload.ros_domain_id,
-        is_online=False,
+        is_online=is_connected(payload.code),
     )
+
+
+@router.delete("/{robot_id}", status_code=204)
+def deregister_robot(robot_id: int):
+    """로봇 등록 해제 — 계정 삭제와 동일하게 실제 행을 지우지 않고 deregistered_at만 채운다."""
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE robot SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL",
+            (robot_id,),
+        )
+        if cur.rowcount == 0:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+        conn.commit()

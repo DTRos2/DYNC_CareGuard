@@ -49,6 +49,37 @@ def test_list_robots_includes_registered_robot(client, cleanup_robot):
     assert code in codes
 
 
+def test_register_robot_ros_domain_id_out_of_range_returns_422(client):
+    response = client.post("/robots", json={
+        "code": _unique_code(), "name": "로봇", "model": "turtlebot", "ros_domain_id": 500,
+    })
+    assert response.status_code == 422
+
+
+def test_register_robot_code_too_long_returns_422(client):
+    response = client.post("/robots", json={
+        "code": "X" * 17, "name": "로봇", "model": "turtlebot",
+    })
+    assert response.status_code == 422
+
+
+def test_deregister_robot_removes_it_from_list(client, cleanup_robot):
+    code = _unique_code()
+    cleanup_robot.append(code)
+    created = client.post("/robots", json={"code": code, "name": "로봇4", "model": "turtlebot"}).json()
+
+    response = client.delete(f"/robots/{created['id']}")
+
+    assert response.status_code == 204
+    codes = [r["code"] for r in client.get("/robots").json()]
+    assert code not in codes
+
+
+def test_deregister_robot_unknown_id_returns_404(client):
+    response = client.delete("/robots/999999999")
+    assert response.status_code == 404
+
+
 def test_list_robots_is_online_reflects_real_ws_connection(client, cleanup_robot):
     code = _unique_code()
     cleanup_robot.append(code)

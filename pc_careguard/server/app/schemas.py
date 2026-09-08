@@ -1,7 +1,7 @@
 from datetime import datetime, time
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
@@ -296,10 +296,13 @@ class RobotItem(BaseModel):
 
 
 class RegisterRobotRequest(BaseModel):
-    code: str
+    # DB 제약(robot.code VARCHAR(16), robot.ros_domain_id CHECK 0~232)과 동일한 범위를
+    # 여기서도 검증한다 — 안 그러면 DB 제약 위반이 그대로 처리 안 된 예외로 터져 500이
+    # 되고, 클라이언트는 "서버에 연결할 수 없습니다" 같은 엉뚱한 메시지를 보게 된다.
+    code: str = Field(max_length=16)
     name: str
     model: str = "limo"
-    ros_domain_id: Optional[int] = None
+    ros_domain_id: Optional[int] = Field(default=None, ge=0, le=232)
 
 
 class RegisterRobotResponse(RobotItem):
