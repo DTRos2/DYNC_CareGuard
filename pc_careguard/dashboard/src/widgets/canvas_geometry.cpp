@@ -1,5 +1,7 @@
 #include "widgets/canvas_geometry.h"
 
+#include <QtMath>
+
 namespace CanvasGeometry {
 
 bool imagePlacement(const QRectF& bounds, const QImage& image, QPointF* outTopLeft, QSize* outScaledSize) {
@@ -56,5 +58,9 @@ QPointF canvasToMeters(const QPointF& canvasPos, qreal resolution, const QPointF
     const qreal imgRow = local.y() * sy;
     return QPointF(origin.x() + imgCol * resolution, origin.y() + (image.height() - imgRow) * resolution);
 }
+
+qreal canvasYawDegToMapYawRad(qreal canvasYawDeg) { return qDegreesToRadians(-canvasYawDeg); }
+
+qreal mapYawRadToCanvasYawDeg(qreal mapYawRad) { return -qRadiansToDegrees(mapYawRad); }
 
 }  // namespace CanvasGeometry

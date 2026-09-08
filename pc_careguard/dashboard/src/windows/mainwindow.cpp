@@ -58,8 +58,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     pageStack_->addWidget(settingsPage_);                    // idx 6
     body->addWidget(pageStack_, /*stretch=*/1);
 
-    // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 같은 이름·대상자·이미지로 반영한다.
-    connect(mapPage, &P5MapPage::mapRegistered, patrolPage, &P6PatrolPage::upsertMap);
+    // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 반영한다. mapRegistered 시그널엔
+    // 서버 map.id/resolution/origin이 안 실려 있어(이미지·이름만) upsertMap을 직접 못
+    // 부른다 — refreshMapForRobot(robotId)로 서버에서 이 로봇의 최신 맵을 통째로 다시
+    // 조회해(그 안에서 정확한 id/resolution/origin까지 받아) upsertMap에 반영한다.
+    // 이렇게 해야 P6이 지금 이 맵을 보고 있을 때 로봇에 새 map_id로 nav_prepare가
+    // 나가서 Nav2(그 안의 rviz2)도 새 지도로 다시 뜬다 — 예전엔 이미지만 바뀌고
+    // 로봇은 계속 이전 맵으로 알고 있었다.
+    connect(mapPage, &P5MapPage::mapRegistered, patrolPage,
+            [patrolPage](const QImage&, const QString&, const QString& robotId, const QString&) {
+                patrolPage->refreshMapForRobot(robotId);
+            });
 
     // P2의 미처리 이벤트 집계를 TopBar 뱃지에 반영한다.
     connect(eventPage, &P2EventPage::unresolvedCountsChanged, this,

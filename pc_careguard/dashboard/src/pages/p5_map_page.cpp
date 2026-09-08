@@ -562,3 +562,12 @@ void P5MapPage::keyReleaseEvent(QKeyEvent* event) {
     }
     QWidget::keyReleaseEvent(event);
 }
+
+void P5MapPage::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    // setFocusPolicy(Qt::StrongFocus)만으로는 방향키가 안 온다 — 실제로 setFocus()를
+    // 불러줘야 한다. QStackedWidget이 이 페이지로 전환할 때마다 showEvent가 다시 불리니
+    // 여기서 매번 포커스를 가져온다("방향키 눌러도 안 움직여" 리포트 — P6PatrolPage도
+    // 같은 문제/같은 수정).
+    setFocus();
+}

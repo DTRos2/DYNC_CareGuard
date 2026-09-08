@@ -20,8 +20,6 @@
 namespace {
 constexpr qreal kHitRadius = 20.0;
 constexpr qreal kMarkerRadius = 15.0;
-constexpr int kTestRunTickMs = 30;
-constexpr qreal kTestRunSpeed = 0.00035;  // t(0..1) 증가량 per tick, 대략 3~4초 완주
 constexpr qreal kMinZoom = 0.5;
 constexpr qreal kMaxZoom = 4.0;
 constexpr qreal kZoomStepFactor = 1.15;
@@ -48,9 +46,7 @@ WaypointCanvas::WaypointCanvas(QWidget* parent)
       panning_(false),
       panMoved_(false),
       currentRobotHeadingDeg_(0.0),
-      hasRobotPos_(false),
-      testRunTimer_(new QTimer(this)),
-      testRunT_(-1.0) {
+      hasRobotPos_(false) {
     setObjectName("slamCanvas");
     setMinimumHeight(320);
     setMouseTracking(false);
@@ -61,21 +57,6 @@ WaypointCanvas::WaypointCanvas(QWidget* parent)
     cameraView_ = new CameraLiveView(this);
     cameraView_->move(static_cast<int>(floorBounds().right()) - cameraView_->width() - 8,
                        static_cast<int>(floorBounds().top()) + 8);
-
-    connect(testRunTimer_, &QTimer::timeout, this, [this] {
-        testRunT_ += kTestRunSpeed * kTestRunTickMs;
-        if (testRunT_ >= 1.0) {
-            testRunT_ = 1.0;
-            updateRobotAlongTestPath();
-            testRunT_ = -1.0;
-            testRunTimer_->stop();
-            update();
-            emit testRunFinished();
-            return;
-        }
-        updateRobotAlongTestPath();
-        update();
-    });
 }
 
 void WaypointCanvas::setWaypoints(const QVector<Waypoint>& wps) {
@@ -202,10 +183,10 @@ void WaypointCanvas::resizeEvent(QResizeEvent* event) {
         return;
     }
 
-    // 창 크기 변경 전/후 그리기 영역을 각각 계산해, 웨이포인트·로봇 위치·테스트 주행
-    // 경로를 지도(또는 목업 바닥) 위 상대 위치를 보존한 채로 옮긴다. 안 하면 캔버스
-    // 절대 픽셀 좌표라서 창을 최대화했을 때 배경 지도만 다시 배치되고 마커는 옛 자리에
-    // 남아 지도에서 어긋나 보인다.
+    // 창 크기 변경 전/후 그리기 영역을 각각 계산해, 웨이포인트·로봇 위치를 지도(또는
+    // 목업 바닥) 위 상대 위치를 보존한 채로 옮긴다. 안 하면 캔버스 절대 픽셀 좌표라서
+    // 창을 최대화했을 때 배경 지도만 다시 배치되고 마커는 옛 자리에 남아 지도에서
+    // 어긋나 보인다.
     const QRectF oldBounds = QRectF(QPointF(0, 0), oldSize).adjusted(22, 16, -22, -16);
     const QRectF newBounds = floorBounds();
 
@@ -214,9 +195,6 @@ void WaypointCanvas::resizeEvent(QResizeEvent* event) {
     }
     if (hasRobotPos_) {
         currentRobotPos_ = CanvasGeometry::remapOnResize(currentRobotPos_, oldBounds, newBounds, backgroundImage_);
-    }
-    for (QPointF& p : testRunPath_) {
-        p = CanvasGeometry::remapOnResize(p, oldBounds, newBounds, backgroundImage_);
     }
 
     // 확대/패닝 상태는 리사이즈 전 배치 기준이라 그대로 두면 새 배치와 어긋난다.
@@ -262,9 +240,6 @@ void WaypointCanvas::showEvent(QShowEvent* event) {
     }
     if (hasRobotPos_) {
         currentRobotPos_ = CanvasGeometry::remapOnResize(currentRobotPos_, designBounds, newBounds, backgroundImage_);
-    }
-    for (QPointF& p : testRunPath_) {
-        p = CanvasGeometry::remapOnResize(p, designBounds, newBounds, backgroundImage_);
     }
 
     emit viewRescaled();
@@ -319,37 +294,6 @@ QPointF WaypointCanvas::nearestFreePoint(QPointF canvasPos) const {
         }
     }
     return canvasPos;  // 못 찾으면 원래 위치 유지 (최선의 노력).
-}
-
-void WaypointCanvas::startTestRun(const QVector<QString>& orderedIds, const QString& chargingId,
-                                   bool returnToCharging) {
-    testRunPath_.clear();
-    if (const Waypoint* c = findWaypoint(chargingId)) testRunPath_.append(c->pos);
-    for (const QString& id : orderedIds) {
-        if (const Waypoint* w = findWaypoint(id)) testRunPath_.append(w->pos);
-    }
-    if (returnToCharging) {
-        if (const Waypoint* c = findWaypoint(chargingId)) testRunPath_.append(c->pos);
-    }
-
-    if (testRunPath_.size() < 2) return;
-    testRunT_ = 0.0;
-    testRunTimer_->start(kTestRunTickMs);
-}
-
-void WaypointCanvas::updateRobotAlongTestPath() {
-    if (testRunPath_.size() < 2) return;
-    const qreal segCount = testRunPath_.size() - 1;
-    const qreal scaled = qBound(0.0, testRunT_, 1.0) * segCount;
-    int seg = qMin(static_cast<int>(scaled), static_cast<int>(segCount) - 1);
-    const qreal localT = scaled - seg;
-    const QPointF a = testRunPath_[seg];
-    const QPointF b = testRunPath_[seg + 1];
-    const QPointF pt = a + (b - a) * localT;
-    const qreal headingRad = std::atan2(b.y() - a.y(), b.x() - a.x());
-    currentRobotPos_ = pt;
-    currentRobotHeadingDeg_ = headingRad * 180.0 / M_PI;
-    hasRobotPos_ = true;
 }
 
 QRectF WaypointCanvas::floorBounds() const { return rect().adjusted(22, 16, -22, -16); }

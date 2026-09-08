@@ -93,9 +93,6 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
         QMessageBox::information(this, QStringLiteral("충전 스테이션"),
                                   QStringLiteral("충전 스테이션은 경로 순서에 포함할 수 없습니다 (자동 출발·복귀)."));
     });
-    connect(canvas_, &WaypointCanvas::testRunFinished, this, [this] {
-        QMessageBox::information(this, QStringLiteral("주행 완료"), QStringLiteral("목적지까지 주행을 마쳤습니다."));
-    });
     // 창 크기 변경으로 캔버스가 웨이포인트 좌표를 다시 배치했다 — 이 페이지가 들고
     // 있는 사본과 현재 맵 데이터도 같이 갱신해야 다음 편집에서 되돌아가지 않는다.
     connect(canvas_, &WaypointCanvas::viewRescaled, this, [this] {
@@ -630,9 +627,18 @@ void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos, qreal headi
         if (w.id == id) {
             w.pos = pos;
             w.yawDeg = headingDeg;
+            // metersPos도 같이 갱신해야 한다 — 이게 실제 map 프레임 좌표의 유일한 출처라,
+            // 여기서 안 맞춰두면 다음에 위젯이 리사이즈될 때(예: "경로 편집" 모드 진입으로
+            // 우측 패널 폭이 바뀌는 경우) requestMetersResync()가 이 웨이포인트를 옛 metersPos
+            // (드래그 전 값, 새로 추가된 경우 기본값 0,0)로 되돌려버린다.
+            w.metersPos = canvas_->canvasToMapMeters(pos);
             break;
         }
     }
+    // canvas_ 자신의 내부 waypoints_ 사본은 드래그로 이미 pos가 맞지만 metersPos는
+    // 안 바뀐 채로 남아있다 — 방금 고친 값을 canvas_ 쪽에도 반영해야, 그 사본을
+    // 기준으로 도는 requestMetersResync()도 정확한 metersPos를 쓰게 된다.
+    canvas_->setWaypoints(waypoints_);
     rebuildWpList();
 }
 
@@ -656,6 +662,11 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
 
     if (id.isEmpty()) {
         WaypointCanvas::Waypoint wp{nextWaypointId(), name, charging, pos, yaw};
+        // handleCanvasMoved와 같은 이유 — 로컬에서 새로 만든 웨이포인트는 metersPos가
+        // 기본값(0,0)인 채로 남아서, 다음 리사이즈(예: "경로 편집" 모드 진입) 때
+        // requestMetersResync()가 지도 원점(0,0m)으로 순간이동시켜버리는 버그가 있었다
+        // ("WP 추가 후 경로 이름 입력하면 웨이포인트들이 다 이상한 곳에 모임" 리포트).
+        wp.metersPos = canvas_->canvasToMapMeters(pos);
         ++nextWpSeq_;
         waypoints_.append(wp);
     } else {
@@ -785,6 +796,11 @@ void P6PatrolPage::showEvent(QShowEvent* event) {
     // QStackedWidget이 이 페이지를 현재 화면으로 바꿀 때마다 호출된다 — "순찰
     // 시작"/"이동"을 누르기 전에도 로봇 위치를 먼저 보고 싶다는 요청에 대응한다.
     prepareNavigationForCurrentMap();
+    // setFocusPolicy(Qt::StrongFocus)만으로는 방향키가 keyPressEvent까지 안 온다 —
+    // 실제로 setFocus()를 불러줘야 한다("방향키 눌러도 안 움직여" 리포트, P5MapPage도
+    // 같은 문제/같은 수정). 페이지 전환마다 다시 불러야 다른 위젯(웨이포인트 캔버스,
+    // 사이드바 버튼 등)이 그 사이 포커스를 가져간 것도 되돌려진다.
+    setFocus();
 }
 
 void P6PatrolPage::prepareNavigationForCurrentMap() {
@@ -1053,19 +1069,35 @@ void P6PatrolPage::runTestRun() {
                                   QStringLiteral("경로에 웨이포인트가 없거나 충전 스테이션이 없습니다."));
         return;
     }
-    // 화면상 애니메이션은 서버 연동 여부와 무관하게 항상 재생한다(시각 피드백).
-    canvas_->startTestRun(order, chargeId);
+    // 예전엔 여기서 canvas_->startTestRun(order, chargeId)로 화면 위에서만 다이얼 마커를
+    // 가짜로 움직였다 — 서버 연동 여부와 무관하게 항상 재생돼서, 실제로는 로봇이 안
+    // 움직이는데(아래 route_id 없음으로 조용히 return하는 경우 등) 대시보드만 순찰이
+    // 진행되는 것처럼 보이는 문제가 있었다("순찰시작을 누르면 대시보드의 현재위치는
+    // 움직이는데 실제 로봇은 안 움직여" 리포트). driveToSingleWaypoint와 같은 이유로
+    // 제거 — 현재위치 마커는 이제 로봇이 실제로 보내는 robot_position WS 메시지로만
+    // 움직인다.
 
     // 서버에 배포된 맵·경로일 때만 실제 POST /patrol-runs로 로봇에 순찰 시작을 지시한다
     // (로컬 데모 맵이거나 아직 "저장·배포"를 누르지 않은 경로면 서버에 route_id가 없다).
     const MapData& current = maps_[currentMapIndex_];
-    if (current.serverRobotId <= 0 || !current.routeServerIds.contains(currentRoute_)) return;
+    if (current.serverRobotId <= 0 || !current.routeServerIds.contains(currentRoute_)) {
+        QMessageBox::information(
+            this, QStringLiteral("순찰 시작"),
+            QStringLiteral("이 경로가 아직 서버에 저장·배포되지 않아 로봇에 순찰 명령을 보낼 수 없습니다. "
+                            "먼저 경로를 저장·배포해주세요."));
+        return;
+    }
 
     const int routeId = current.routeServerIds.value(currentRoute_);
     apiClient_->startPatrolRun(
         current.serverRobotId, routeId, QStringLiteral("manual"),
         [this](bool ok, const ApiClient::PatrolRunInfo& run, const QString& err) {
-            if (!ok) return;  // 서버가 없거나 실패해도 화면 애니메이션은 이미 재생 중이므로 조용히 무시
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("순찰 시작 실패"),
+                                      err.isEmpty() ? QStringLiteral("서버에 순찰 시작 요청을 보내지 못했습니다.")
+                                                    : err);
+                return;
+            }
             if (!run.robotConnected) {
                 QMessageBox::information(
                     this, QStringLiteral("순찰 시작"),
@@ -1088,7 +1120,8 @@ void P6PatrolPage::driveToSingleWaypoint(const QString& id) {
     const QString robotCode = maps_[currentMapIndex_].robotId;
     const int mapId = maps_[currentMapIndex_].serverMapId;
     const QPointF meters = canvas_->canvasToMapMeters(wp->pos);
-    apiClient_->driveToPoint(robotCode, mapId, wp->id, meters.x(), meters.y(), qDegreesToRadians(wp->yawDeg),
+    apiClient_->driveToPoint(robotCode, mapId, wp->id, meters.x(), meters.y(),
+                              CanvasGeometry::canvasYawDegToMapYawRad(wp->yawDeg),
                               [this](bool ok, const QString& err) {
                                   if (!ok) {
                                       QMessageBox::warning(
@@ -1112,7 +1145,7 @@ void P6PatrolPage::handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg
 
     const QPointF meters = canvas_->canvasToMapMeters(canvasPos);
     apiClient_->setInitialPose(current.robotId, current.serverMapId, meters.x(), meters.y(),
-                                qDegreesToRadians(headingDeg),
+                                CanvasGeometry::canvasYawDegToMapYawRad(headingDeg),
                                 [this](bool ok, const QString& err) {
                                     if (!ok) {
                                         QMessageBox::warning(
@@ -1327,7 +1360,8 @@ void P6PatrolPage::rebuildMapMenu() {
 }
 
 void P6PatrolPage::upsertMap(const QImage& mapImage, const QString& mapName, const QString& robotId,
-                              const QString& recipientName) {
+                              const QString& recipientName, int serverMapId, int serverRobotId, double resolution,
+                              QPointF originMeters) {
     int foundIndex = -1;
     for (int i = 0; i < maps_.size(); ++i) {
         if (maps_[i].robotId == robotId) {
@@ -1342,6 +1376,10 @@ void P6PatrolPage::upsertMap(const QImage& mapImage, const QString& mapName, con
         m.robotId = robotId;
         m.recipientName = recipientName;
         m.backgroundImage = mapImage;
+        m.serverMapId = serverMapId;
+        m.serverRobotId = serverRobotId;
+        m.resolution = resolution;
+        m.originMeters = originMeters;
         m.waypoints = {
             {QStringLiteral("WP_01"), QStringLiteral("충전 스테이션"), true, QPointF(90, 260), 0}};
         m.nextWpSeq = 2;
@@ -1350,15 +1388,27 @@ void P6PatrolPage::upsertMap(const QImage& mapImage, const QString& mapName, con
     } else {
         // 같은 로봇에 이미 있던 맵 — 이름·대상자·배경 이미지만 갱신하고 웨이포인트/경로/
         // 스케줄은 그대로 둔다 (사용자가 P6에서 미리 만들어둔 것을 지우지 않기 위해).
+        // 하지만 serverMapId/resolution/originMeters는 반드시 새 값으로 덮어써야 한다 —
+        // 이게 예전엔 안 바뀌어서 로봇이 계속 옛 map_id로 알고 있던 버그였다(클래스
+        // 코멘트 참고).
         maps_[foundIndex].mapName = mapName;
         maps_[foundIndex].recipientName = recipientName;
         maps_[foundIndex].backgroundImage = mapImage;
+        maps_[foundIndex].serverMapId = serverMapId;
+        maps_[foundIndex].serverRobotId = serverRobotId;
+        maps_[foundIndex].resolution = resolution;
+        maps_[foundIndex].originMeters = originMeters;
     }
 
     rebuildMapMenu();
 
     if (foundIndex == currentMapIndex_) {
         loadMapData(currentMapIndex_);
+        // loadMapData는 캔버스/웨이포인트 목록만 다시 그린다 — 로봇에게 "이 map_id로
+        // Nav2 바꿔라"라고 알려주는 건 별도로 nav_prepare를 보내야 한다. 이게 빠지면
+        // 화면(이미지)은 새 지도로 바뀌어 보이는데 로봇의 Nav2·rviz2는 여전히 예전
+        // 지도로 떠 있는 상태로 남는다.
+        prepareNavigationForCurrentMap();
     }
 }
 
@@ -1394,13 +1444,15 @@ void P6PatrolPage::refreshMapForRobot(const QString& robotCode) {
             if (m.robotCode != robotCode) continue;
 
             if (m.imageUrl.isEmpty()) {
-                upsertMap(QImage(), m.name, m.robotCode, m.recipientName);
+                upsertMap(QImage(), m.name, m.robotCode, m.recipientName, m.id, m.robotId, m.resolution,
+                          QPointF(m.originX, m.originY));
                 return;
             }
             apiClient_->fetchBytes(m.imageUrl, [this, m](bool imgOk, const QByteArray& data) {
                 QImage image;
                 if (imgOk) image = PgmImageLoader::loadFromData(data);
-                upsertMap(image, m.name, m.robotCode, m.recipientName);
+                upsertMap(image, m.name, m.robotCode, m.recipientName, m.id, m.robotId, m.resolution,
+                          QPointF(m.originX, m.originY));
             });
             return;
         }
@@ -1442,7 +1494,8 @@ void P6PatrolPage::loadServerMapImageDone(std::shared_ptr<QVector<MapData>> maps
                 const bool charging = w.kind == QStringLiteral("charge");
                 const QPointF meters(w.posX, w.posY);
                 md.waypoints.append(WaypointCanvas::Waypoint{
-                    w.code, w.name, charging, designMapMetersToCanvas(md, meters), qRadiansToDegrees(w.yaw),
+                    w.code, w.name, charging, designMapMetersToCanvas(md, meters),
+                    CanvasGeometry::mapYawRadToCanvasYawDeg(w.yaw),
                     // metersPos: canvas_->showEvent()가 이 위젯이 처음으로 유효한 실제
                     // 크기를 갖게 되는 시점에 pos를 이 값으로부터 정확히 다시 계산한다
                     // (designMapMetersToCanvas가 지금 계산한 pos는 이 시점에 위젯 크기가
@@ -1572,7 +1625,7 @@ void P6PatrolPage::deployCreateWaypoints(std::shared_ptr<QVector<WaypointCanvas:
     const QPointF meters = canvas_->canvasToMapMeters(w.pos);
     apiClient_->createWaypoint(
         current.serverMapId, w.id, w.name, w.charging ? QStringLiteral("charge") : QStringLiteral("patrol"),
-        meters.x(), meters.y(), qDegreesToRadians(w.yawDeg),
+        meters.x(), meters.y(), CanvasGeometry::canvasYawDegToMapYawRad(w.yawDeg),
         [this, list, index, hadError](bool ok, const ApiClient::WaypointInfo& info, const QString&) {
             if (ok) {
                 maps_[currentMapIndex_].waypointServerIds[info.code] = info.id;
@@ -1678,5 +1731,5 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
     const qreal yMeters = message.value(QStringLiteral("y")).toDouble();
     const qreal yawRad = message.value(QStringLiteral("yaw")).toDouble();
     canvas_->setCurrentRobotPosition(canvas_->mapMetersToCanvas(QPointF(xMeters, yMeters)),
-                                      qRadiansToDegrees(yawRad));
+                                      CanvasGeometry::mapYawRadToCanvasYawDeg(yawRad));
 }
