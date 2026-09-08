@@ -18,6 +18,8 @@ class QEvent;
 class LiveSearchLineEdit;
 class WsClient;
 class QJsonObject;
+class QLineEdit;
+class QComboBox;
 
 // P7 시스템 설정 — 로봇 관리 / 계정 관리 / 임계값·알림 / 감사 로그 4탭.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 6), §7 참고.
@@ -122,6 +124,11 @@ private:
     void handleRecipientsReply(QNetworkReply* reply);
     void assignRecipients(int userId, const QVector<int>& recipientIds);  // PUT /accounts/{id}/recipients
 
+    void refreshThresholdRobotCombo();  // robots_ 갱신될 때마다 콤보 항목도 다시 채운다
+    void fetchRobotThresholds(int robotDbId);  // GET /robots/{id}/thresholds — 콤보 선택 바뀔 때
+    void saveThresholdsForCurrentRobot();  // PUT /robots/{id}/thresholds — "이 로봇에 저장"
+    void applyThresholdsToAllRobots();  // PUT /robots/thresholds/apply-all — "전체 로봇에 적용"
+
     QTableWidget* robotTable_ = nullptr;
     QLabel* robotCountLabel_ = nullptr;
     QTableWidget* accountTable_ = nullptr;
@@ -138,6 +145,14 @@ private:
     QString auditSearchText_;
     // setCurrentUserLoginId()로 실제 로그인 ID가 들어오기 전까지의 기본값.
     QString currentUserLoginId_ = QStringLiteral("admin");
+
+    QComboBox* thresholdRobotCombo_ = nullptr;
+    QLineEdit* batteryAttentionEdit_ = nullptr;
+    QLineEdit* batteryReturnEdit_ = nullptr;
+    QLineEdit* voiceWaitEdit_ = nullptr;
+    QLineEdit* reconnectRetryEdit_ = nullptr;
+    QLineEdit* medMissedWaitEdit_ = nullptr;
+    QLineEdit* medReannounceEdit_ = nullptr;
 
     QNetworkAccessManager* netManager_ = nullptr;
     QString serverUrl_;

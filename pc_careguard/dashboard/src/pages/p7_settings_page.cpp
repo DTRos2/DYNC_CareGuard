@@ -10,6 +10,7 @@
 #include <QEvent>
 #include <QFont>
 #include <QFrame>
+#include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -35,6 +36,7 @@
 #include "theme/calendar_style.h"
 #include "theme/tokens.h"
 #include "widgets/careguard_date_edit.h"
+#include "widgets/dropdown_fix_combo_box.h"
 #include "widgets/live_search_line_edit.h"
 #include "widgets/simple_icons.h"
 
@@ -133,6 +135,29 @@ QWidget* thresholdRow(const QString& label, QLineEdit* field, const QString& uni
     layout->addWidget(unitLabel);
     return row;
 }
+
+// 임계값 탭 로봇 선택 팝업 전용 — 카드 위에 "얹힌" 느낌이 나도록 은은한 그림자를 더한다
+// (Tokens SHADOW_MD와 동일한 값: blur 24, dy 4, rgba(22,32,43,0.10) — CareGuard_DESIGN_
+// SYSTEM.md §3 "드롭다운" 용도로 이미 정의된 토큰). 다른 콤보 박스(로봇 등록 모달 등)엔
+// 영향 없게 이 파일 안에서만 쓰는 별도 서브클래스로 뒀다.
+class ShadowedDropDownComboBox : public DropDownFixComboBox {
+public:
+    using DropDownFixComboBox::DropDownFixComboBox;
+    void showPopup() override {
+        QWidget* popup = view()->window();
+        // WA_TranslucentBackground는 네이티브 창이 만들어지기 전에 설정해야 효과가
+        // 있다 — showPopup() 호출로 창이 실제로 뜨기 전에 먼저 켠다. 그림자가 팝업
+        // 테두리 바깥으로 번지려면 이게 필요하다(기본은 불투명 창이라 바깥이 잘림,
+        // GNOME Shell/Mutter가 컴포지터로 떠 있어 알파 블렌딩은 지원됨).
+        popup->setAttribute(Qt::WA_TranslucentBackground);
+        DropDownFixComboBox::showPopup();
+        auto* shadow = new QGraphicsDropShadowEffect(popup);
+        shadow->setBlurRadius(24);
+        shadow->setOffset(0, 4);
+        shadow->setColor(QColor(22, 32, 43, 26));
+        popup->setGraphicsEffect(shadow);
+    }
+};
 
 }  // namespace
 
@@ -365,6 +390,23 @@ QWidget* P7SettingsPage::buildThresholdTab() {
     layout->setContentsMargins(0, 12, 0, 0);
     layout->setSpacing(Tokens::Layout::CARD_GAP);
 
+    // 로봇 선택 — 임계값은 로봇별로 저장되므로 어떤 로봇을 보고/고칠지 먼저 고른다.
+    auto* robotSelectColumn = new QWidget(tab);
+    auto* robotSelectLayout = new QVBoxLayout(robotSelectColumn);
+    robotSelectLayout->setContentsMargins(0, 0, 0, 0);
+    robotSelectLayout->setSpacing(4);
+    robotSelectLayout->addWidget(sectionLabel(QStringLiteral("로봇 선택")));
+    thresholdRobotCombo_ = new ShadowedDropDownComboBox(robotSelectColumn);
+    thresholdRobotCombo_->setObjectName(QStringLiteral("thresholdRobotCombo"));
+    thresholdRobotCombo_->setMinimumWidth(220);
+    connect(thresholdRobotCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+                if (index < 0) return;
+                fetchRobotThresholds(thresholdRobotCombo_->itemData(index).toInt());
+            });
+    robotSelectLayout->addWidget(thresholdRobotCombo_);
+    layout->addWidget(robotSelectColumn);
+
     auto* cardsRow = new QWidget(tab);
     auto* cardsLayout = new QHBoxLayout(cardsRow);
     cardsLayout->setContentsMargins(0, 0, 0, 0);
@@ -377,13 +419,17 @@ QWidget* P7SettingsPage::buildThresholdTab() {
                                      Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
     robotLayout->setSpacing(8);
     robotLayout->addWidget(sectionLabel(QStringLiteral("로봇 공통")));
-    robotLayout->addWidget(thresholdRow(QStringLiteral("배터리 주의 / 복귀"), thresholdField("30"),
-                                         QStringLiteral("%"), thresholdField("20")));
+    batteryAttentionEdit_ = thresholdField("30");
+    batteryReturnEdit_ = thresholdField("20");
+    robotLayout->addWidget(thresholdRow(QStringLiteral("배터리 주의 / 복귀"), batteryAttentionEdit_,
+                                         QStringLiteral("%"), batteryReturnEdit_));
+    voiceWaitEdit_ = thresholdField("8");
     robotLayout->addWidget(
-        thresholdRow(QStringLiteral("음성 응답 대기"), thresholdField("8"), QStringLiteral("초")));
+        thresholdRow(QStringLiteral("음성 응답 대기"), voiceWaitEdit_, QStringLiteral("초")));
+    reconnectRetryEdit_ = thresholdField("30");
     robotLayout->addWidget(
-        thresholdRow(QStringLiteral("재연결 재시도 주기"), thresholdField("30"), QStringLiteral("초")));
-    cardsLayout->addWidget(robotCard);
+        thresholdRow(QStringLiteral("재연결 재시도 주기"), reconnectRetryEdit_, QStringLiteral("초")));
+    cardsLayout->addWidget(robotCard, 1);
 
     // 복약 공통
     auto* medCard = card(cardsRow);
@@ -392,41 +438,36 @@ QWidget* P7SettingsPage::buildThresholdTab() {
                                    Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
     medLayout->setSpacing(8);
     medLayout->addWidget(sectionLabel(QStringLiteral("복약 공통")));
+    medMissedWaitEdit_ = thresholdField("10");
     medLayout->addWidget(
-        thresholdRow(QStringLiteral("미수령 판정 시간"), thresholdField("10"), QStringLiteral("분")));
+        thresholdRow(QStringLiteral("미수령 판정 시간"), medMissedWaitEdit_, QStringLiteral("분")));
+    medReannounceEdit_ = thresholdField("2");
     medLayout->addWidget(
-        thresholdRow(QStringLiteral("재안내 횟수"), thresholdField("2"), QStringLiteral("회")));
-    cardsLayout->addWidget(medCard);
+        thresholdRow(QStringLiteral("재안내 횟수"), medReannounceEdit_, QStringLiteral("회")));
+    cardsLayout->addWidget(medCard, 1);
 
     layout->addWidget(cardsRow);
 
-    // SMS 발신
-    auto* smsCard = card(tab);
-    auto* smsLayout = new QHBoxLayout(smsCard);
-    smsLayout->setContentsMargins(Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING,
-                                   Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
-    smsLayout->setSpacing(10);
+    auto* buttonRow = new QWidget(tab);
+    auto* buttonLayout = new QHBoxLayout(buttonRow);
+    buttonLayout->setContentsMargins(0, 0, 0, 0);
+    buttonLayout->setSpacing(10);
+    buttonLayout->addStretch();
 
-    auto* smsLabel = new QLabel(QStringLiteral("SMS 발신"), smsCard);
-    smsLabel->setProperty("role", "label");
-    smsLayout->addWidget(smsLabel);
-
-    auto* smsNumber = new QLineEdit(QStringLiteral("031-000-0000"), smsCard);
-    smsNumber->setFixedWidth(120);
-    smsLayout->addWidget(smsNumber);
-
-    auto* testSendBtn = new QPushButton(QStringLiteral("테스트 발송"), smsCard);
-    testSendBtn->setProperty("variant", "secondary");
-    smsLayout->addWidget(testSendBtn);
-
-    smsLayout->addStretch();
-
-    auto* saveBtn = new QPushButton(QStringLiteral("저장"), smsCard);
+    auto* saveBtn = new QPushButton(QStringLiteral("이 로봇에 저장"), buttonRow);
     saveBtn->setProperty("variant", "primary");
-    smsLayout->addWidget(saveBtn);
+    connect(saveBtn, &QPushButton::clicked, this, &P7SettingsPage::saveThresholdsForCurrentRobot);
+    buttonLayout->addWidget(saveBtn);
 
-    layout->addWidget(smsCard);
+    auto* applyAllBtn = new QPushButton(QStringLiteral("전체 로봇에 적용"), buttonRow);
+    applyAllBtn->setProperty("variant", "secondary");
+    connect(applyAllBtn, &QPushButton::clicked, this, &P7SettingsPage::applyThresholdsToAllRobots);
+    buttonLayout->addWidget(applyAllBtn);
+
+    layout->addWidget(buttonRow);
     layout->addStretch();
+
+    refreshThresholdRobotCombo();
 
     return tab;
 }
@@ -735,6 +776,7 @@ void P7SettingsPage::handleRobotsReply(QNetworkReply* reply) {
     }
     robots_ = rows;
     if (robotTable_ != nullptr) refreshRobotTable();
+    if (thresholdRobotCombo_ != nullptr) refreshThresholdRobotCombo();
 }
 
 void P7SettingsPage::registerRobot(const RobotDialog::RobotData& data) {
@@ -1330,4 +1372,89 @@ void P7SettingsPage::openAccountDialog(int rowIndex) {
             });
     dialog->exec();
     dialog->deleteLater();
+}
+
+void P7SettingsPage::refreshThresholdRobotCombo() {
+    const int previousDbId = thresholdRobotCombo_->count() > 0
+                                  ? thresholdRobotCombo_->currentData().toInt()
+                                  : -1;
+    thresholdRobotCombo_->blockSignals(true);
+    thresholdRobotCombo_->clear();
+    int restoreIndex = -1;
+    for (const RobotRow& row : robots_) {
+        thresholdRobotCombo_->addItem(row.id, row.dbId);
+        if (row.dbId == previousDbId) restoreIndex = thresholdRobotCombo_->count() - 1;
+    }
+    thresholdRobotCombo_->blockSignals(false);
+    if (thresholdRobotCombo_->count() == 0) return;
+    const int indexToSelect = restoreIndex >= 0 ? restoreIndex : 0;
+    thresholdRobotCombo_->setCurrentIndex(indexToSelect);
+    fetchRobotThresholds(thresholdRobotCombo_->itemData(indexToSelect).toInt());
+}
+
+void P7SettingsPage::fetchRobotThresholds(int robotDbId) {
+    QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2/thresholds").arg(serverUrl_).arg(robotDbId)));
+    QNetworkReply* reply = netManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusCode == 200) {
+            const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
+            batteryAttentionEdit_->setText(QString::number(body.value("battery_attention_pct").toInt(30)));
+            batteryReturnEdit_->setText(QString::number(body.value("battery_return_pct").toInt(20)));
+            voiceWaitEdit_->setText(QString::number(body.value("voice_wait_sec").toInt(8)));
+            reconnectRetryEdit_->setText(QString::number(body.value("reconnect_retry_sec").toInt(30)));
+            medMissedWaitEdit_->setText(QString::number(body.value("med_missed_wait_min").toInt(10)));
+            medReannounceEdit_->setText(QString::number(body.value("med_reannounce_count").toInt(2)));
+        }
+        reply->deleteLater();
+    });
+}
+
+namespace {
+QJsonObject collectThresholdBody(QLineEdit* batteryAttention, QLineEdit* batteryReturn, QLineEdit* voiceWait,
+                                  QLineEdit* reconnectRetry, QLineEdit* medMissedWait, QLineEdit* medReannounce) {
+    return QJsonObject{
+        {"battery_attention_pct", batteryAttention->text().trimmed().toInt()},
+        {"battery_return_pct", batteryReturn->text().trimmed().toInt()},
+        {"voice_wait_sec", voiceWait->text().trimmed().toInt()},
+        {"reconnect_retry_sec", reconnectRetry->text().trimmed().toInt()},
+        {"med_missed_wait_min", medMissedWait->text().trimmed().toInt()},
+        {"med_reannounce_count", medReannounce->text().trimmed().toInt()},
+    };
+}
+}  // namespace
+
+void P7SettingsPage::saveThresholdsForCurrentRobot() {
+    if (thresholdRobotCombo_->count() == 0) return;
+    const int robotDbId = thresholdRobotCombo_->currentData().toInt();
+    const QJsonObject body = collectThresholdBody(batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
+                                                   reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_);
+    QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2/thresholds").arg(serverUrl_).arg(robotDbId)));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusCode != 204) {
+            QMessageBox::warning(this, QStringLiteral("임계값 저장 실패"), QStringLiteral("서버에 연결할 수 없습니다"));
+        }
+        reply->deleteLater();
+    });
+}
+
+void P7SettingsPage::applyThresholdsToAllRobots() {
+    const QJsonObject body = collectThresholdBody(batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
+                                                   reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_);
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/robots/thresholds/apply-all")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusCode != 204) {
+            QMessageBox::warning(this, QStringLiteral("전체 적용 실패"), QStringLiteral("서버에 연결할 수 없습니다"));
+        } else {
+            QMessageBox::information(this, QStringLiteral("전체 적용"),
+                                      QStringLiteral("현재 등록된 모든 로봇에 임계값을 적용했습니다"));
+        }
+        reply->deleteLater();
+    });
 }
