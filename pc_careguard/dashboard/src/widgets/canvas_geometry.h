@@ -19,4 +19,17 @@ bool imagePlacement(const QRectF& bounds, const QImage& image, QPointF* outTopLe
 // 비율로 보존해 newBounds 기준 좌표로 옮긴다.
 QPointF remapOnResize(const QPointF& p, const QRectF& oldBounds, const QRectF& newBounds, const QImage& image);
 
+// 실제 map 프레임 미터 좌표 <-> 캔버스(화면) 좌표 환산. resolution(m/px)·origin은
+// map_server .yaml과 같은 값(서버 map.resolution/origin_x/origin_y), bounds/image는
+// imagePlacement가 이미지를 그리는 데 쓰는 것과 같은 값이어야 한다 — 그래야 화면에
+// 그려지는 자리와 실제로 계산되는 좌표가 일치한다. resolution<=0이거나 image가
+// 비어 있으면(아직 서버에서 못 받음) (0,0)을 반환한다 — 호출자가 폴백을 결정한다.
+//
+// image는 좌상단 원점(row 0 = 이미지 맨 위)인데 map 프레임은 좌하단 원점·Y 위쪽
+// 증가라서 세로를 한 번 뒤집어야 한다(SlamMapView::mapMetersToCanvas와 같은 공식).
+QPointF metersToCanvas(const QPointF& meters, qreal resolution, const QPointF& origin, const QRectF& bounds,
+                       const QImage& image);
+QPointF canvasToMeters(const QPointF& canvasPos, qreal resolution, const QPointF& origin, const QRectF& bounds,
+                       const QImage& image);
+
 }  // namespace CanvasGeometry

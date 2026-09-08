@@ -341,6 +341,7 @@ QPushButton#segBtn {
 }
 QPushButton#segBtn[pos="first"] { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
 QPushButton#segBtn[pos="last"]  { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+QPushButton#segBtn[pos="only"]  { border-radius: 6px; }
 QPushButton#segBtn:checked { background: #E0F5F2; color: #0B7A6E; font-weight: 500; }
 
 /* ---------- 배너 ---------- */

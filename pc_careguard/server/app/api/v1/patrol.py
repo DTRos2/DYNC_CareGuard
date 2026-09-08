@@ -16,6 +16,8 @@ from ...schemas import (
     PatrolScheduleItem,
     PatrolScheduleUpdate,
     PrepareNavigationRequest,
+    SetInitialPoseRequest,
+    ShutdownRobotRequest,
 )
 from ...ws import robot_ws
 
@@ -317,6 +319,41 @@ async def prepare_navigation(payload: PrepareNavigationRequest):
         payload.robot_code,
         {"type": "nav_prepare", "map_id": payload.map_id},
     )
+    return DriveToPointResponse(robot_connected=connected)
+
+
+@runs_router.post("/set-initial-pose", response_model=DriveToPointResponse)
+async def set_initial_pose(payload: SetInitialPoseRequest):
+    """P6 "위치 보정" — 지도 클릭+드래그로 사용자가 직접 지정한 로봇의 실제 위치·
+    방향으로 AMCL 초기 위치를 즉석에서 다시 잡는다. nav_prepare/drive-to-point와
+    달리 Nav2를 새로 켜지 않는다(이미 떠 있다고 가정) — 자동 초기 위치 추정(충전
+    스테이션 좌표)이 로봇이 실제로 그 자리에 없어서 틀렸을 때 쓰는 수동 보정.
+    """
+    connected = await robot_ws.send_command(
+        payload.robot_code,
+        {
+            "type": "set_initial_pose",
+            "map_id": payload.map_id,
+            "x": payload.x,
+            "y": payload.y,
+            "yaw": payload.yaw,
+        },
+    )
+    if not connected:
+        raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
+    return DriveToPointResponse(robot_connected=connected)
+
+
+@runs_router.post("/shutdown-robot", response_model=DriveToPointResponse)
+async def shutdown_robot(payload: ShutdownRobotRequest):
+    """P6 "로봇 종료" 버튼 — 베이스 구동(teleop_launch.py)·Nav2/SLAM·rviz2·업링크·
+    다운링크를 전부 내린다. 명령을 처리하는 다운링크 자신도 마지막에 스스로
+    끝나므로(downlink_node.py::_shutdown_everything), 이 호출 직후 로봇 연결이
+    끊기는 것이 정상이다 — 대시보드는 그걸로 "완전히 꺼졌다"고 판단한다.
+    """
+    connected = await robot_ws.send_command(payload.robot_code, {"type": "shutdown_all"})
+    if not connected:
+        raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
     return DriveToPointResponse(robot_connected=connected)
 
 

@@ -111,6 +111,10 @@ class DownlinkNode(Node):
             self._handle_cmd_vel(message)
         elif msg_type == 'nav_prepare':
             self._prepare_navigation(message)
+        elif msg_type == 'set_initial_pose':
+            self._set_initial_pose(message)
+        elif msg_type == 'shutdown_all':
+            self._shutdown_everything(message)
 
     def _handle_cmd_vel(self, message: dict):
         twist = Twist()
@@ -130,6 +134,36 @@ class DownlinkNode(Node):
             self.get_logger().warn('nav_prepare에 유효한 map_id가 없습니다')
             return
         self._ensure_navigation_running(map_id)
+
+    def _set_initial_pose(self, message: dict):
+        """P6 "위치 보정" — 지도 클릭+드래그로 사용자가 직접 지정한 위치·방향으로
+        AMCL 초기 위치를 즉석에서 다시 잡는다. _ensure_navigation_running이 하는
+        자동 세팅(충전 스테이션 웨이포인트 좌표 가정)과 달리 여기선 map_id로 DB를
+        다시 조회하지 않고 대시보드가 보낸 x/y/yaw를 그대로 쓴다 — 로봇이 실제로
+        충전 스테이션이 아닌 곳에서 Nav2가 켜져 AMCL이 엉뚱한 위치로 수렴해 있을 때
+        쓰는 수동 보정 경로다. Nav2 자체는 이미 떠 있어야 한다(여기서 새로 켜지 않음).
+        """
+        if self._nav_process is None or self._nav_process.poll() is not None:
+            self.get_logger().warn('Nav2가 떠있지 않아 초기 위치를 보정할 수 없습니다')
+            return
+
+        x = float(message.get('x', 0.0) or 0.0)
+        y = float(message.get('y', 0.0) or 0.0)
+        yaw = float(message.get('yaw', 0.0) or 0.0)
+        # initial_pose_setter를 재사용한다(careguard_agent는 서버/WS만 다루고 실제
+        # Nav2 조작은 careguard_nav에 맡긴다는 기존 원칙 — _ensure_navigation_running과
+        # 같은 이유). CAREGUARD_INIT_*이 있으면 그 노드가 DB 조회 대신 이 값을 그대로 쓴다.
+        try:
+            result = subprocess.run(
+                ['ros2', 'run', 'careguard_nav', 'initial_pose_setter'],
+                env={**os.environ, 'CAREGUARD_INIT_X': str(x), 'CAREGUARD_INIT_Y': str(y),
+                     'CAREGUARD_INIT_YAW': str(yaw)},
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                self.get_logger().warn(f'초기 위치 수동 보정 실패(rc={result.returncode}): {result.stderr}')
+        except subprocess.TimeoutExpired:
+            self.get_logger().warn('초기 위치 수동 보정이 10초를 넘어 중단했습니다')
 
     def _start_patrol(self, message: dict):
         # amcl(Nav2)이 안 떠있으면 순찰 자체가 불가능하다 — 예전엔 사용자가 매번
@@ -184,6 +218,11 @@ class DownlinkNode(Node):
             self._terminate_process_group(self._nav_process, 'Nav2')
             self._nav_process = None
             self._nav_map_id = 0
+        # _ensure_navigation_running과 같은 이유 — 이 노드가 재시작된 적이 있다면
+        # 이전 생애에 띄운 SLAM/Nav2가 고아로 남아있을 수 있다. 새로 띄우기 전에
+        # 항상 먼저 정리한다(_kill_external_process_group 문서 참고).
+        self._kill_external_process_group('careguard_bringup cartographer_launch.py', '(정리) 이전 SLAM')
+        self._kill_external_process_group('careguard_bringup navigation_diff_launch.py', '(정리) 이전 Nav2')
         # start_new_session=True로 이 프로세스를 새 프로세스 그룹의 리더로 만든다 —
         # _stop_slam이 SIGINT를 "그룹 전체"에 보낼 수 있어야 한다(아래 이유 참고).
         self._slam_process = subprocess.Popen(
@@ -235,6 +274,101 @@ class DownlinkNode(Node):
         except ProcessLookupError:
             pass  # 이미 죽어 있었음
 
+    def _find_process_groups(self, pattern: str) -> set:
+        """명령줄에 pattern이 들어간 프로세스들을 찾아 그 프로세스 그룹 id 집합을
+        반환한다(중복 제거됨). 없으면 빈 집합.
+        """
+        try:
+            result = subprocess.run(['pgrep', '-f', pattern], capture_output=True, text=True, timeout=5)
+            pids = [int(p) for p in result.stdout.split()]
+        except (subprocess.TimeoutExpired, ValueError):
+            return set()
+        pgids = set()
+        for pid in pids:
+            try:
+                pgids.add(os.getpgid(pid))
+            except ProcessLookupError:
+                pass
+        return pgids
+
+    def _kill_external_process_group(self, pattern: str, label: str, wait_timeout_sec: float = 8.0):
+        """이 노드가 PID를 들고 있지 않은(사용자가 다른 터미널에서 직접 켰거나,
+        이 노드 자신이 재시작되기 전 생애에 띄워서 지금은 기억을 못 하는) 프로세스를
+        명령줄 패턴(pgrep -f)으로 찾아 그 프로세스 그룹 전체에 SIGINT를 보낸다 —
+        _terminate_process_group과 같은 이유(그룹 리더 하나만 죽이면 자식들이 고아로
+        남는다. 예: `ros2 run` 래퍼만 죽이면 그 밑의 실제 노드 프로세스가 안 죽는다).
+        base bringup(teleop_launch.py)·uplink_node·Nav2/SLAM launch처럼 "다른
+        터미널에서 이미 켜져 있다고 가정하고 이 노드가 직접 시작하지 않는(또는
+        직접 시작했지만 그 사실을 더는 기억 못 하는)" 프로세스를 정리할 때 쓴다.
+
+        _terminate_process_group과 달리 이 경로로 정리하는 프로세스는 Popen 핸들이
+        없어 process.wait()을 못 쓴다 — 대신 pgrep으로 폴링해서 실제로 다 죽을
+        때까지 기다린다. 안 기다리고 바로 돌아가면(예전 구현), 호출부가 "정리
+        요청은 보냈으니 새로 띄워도 되겠지"라고 바로 새 프로세스를 띄우다가 아직
+        안 죽은 이전 인스턴스와 잠깐 두 벌이 겹쳐 뜨는 경우가 실제로 있었다
+        (2026-09-08 — Nav2가 두 벌 떠서 amcl·costmap이 충돌, 라이다가 지도와 안
+        맞아 보이는 버그로 이어짐). 이미 꺼져 있으면 조용히 넘어간다.
+        """
+        pgids = self._find_process_groups(pattern)
+        if not pgids:
+            self.get_logger().info(f'{label}: 실행 중이 아닙니다')
+            return
+
+        for pgid in pgids:
+            try:
+                os.killpg(pgid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+        self.get_logger().info(f'{label} 종료 신호를 보냈습니다 — 완전히 끝날 때까지 기다립니다')
+
+        deadline = time.monotonic() + wait_timeout_sec
+        while time.monotonic() < deadline:
+            if not self._find_process_groups(pattern):
+                return
+            time.sleep(0.3)
+
+        remaining = self._find_process_groups(pattern)
+        if remaining:
+            self.get_logger().warn(f'{label}이(가) {wait_timeout_sec:.0f}초 내에 안 죽어 강제 종료합니다')
+            for pgid in remaining:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            time.sleep(1.0)
+
+    def _shutdown_everything(self, message: dict):
+        """대시보드 "로봇 종료" 버튼 — 이 로봇에서 켜져 있는 소프트웨어를 전부
+        내린다: Nav2/SLAM(+그 안의 rviz2), 베이스 구동(teleop_launch.py), 그리고
+        이 명령을 처리하는 다운링크 자신과 uplink_node까지. 지금까지는 이걸 전부
+        사용자가 손으로 하나씩 켜고 꺼야 했다.
+
+        Nav2/SLAM은 이미 이 노드가 PID를 들고 있어 기존 _terminate_process_group
+        으로 정리한다(_stop_slam과 동일한 경로). 베이스 구동·uplink_node는 이
+        노드가 시작하지 않아 PID를 모르므로 _kill_external_process_group으로
+        명령줄 패턴을 찾아 정리한다.
+
+        마지막에 다운링크 프로세스 자신을 os._exit()으로 즉시 끝낸다 — 이 메서드가
+        rclpy.spin()이 도는 메인 스레드가 아니라 WS 수신 전용 스레드(asyncio
+        이벤트루프)에서 돌기 때문에 정상적인 rclpy 종료 경로(main()의 finally)를
+        타지 않고, 애초에 "전부 끄기"가 목적이라 이 프로세스 자체의 정상 종료
+        절차를 굳이 지킬 이유가 없다. WS 연결이 끊기는 것 자체가 서버/대시보드에
+        "이 로봇이 완전히 꺼졌다"는 신호가 된다.
+        """
+        if self._nav_process is not None and self._nav_process.poll() is None:
+            self._terminate_process_group(self._nav_process, 'Nav2')
+            self._nav_process = None
+            self._nav_map_id = 0
+        if self._slam_process is not None and self._slam_process.poll() is None:
+            self._terminate_process_group(self._slam_process, 'SLAM')
+            self._slam_process = None
+
+        self._kill_external_process_group('careguard_bringup teleop_launch.py', '베이스 구동')
+        self._kill_external_process_group('careguard_agent uplink_node', '업링크')
+
+        self.get_logger().info('종료 명령 처리 완료 — 다운링크를 종료합니다')
+        os._exit(0)
+
     def _ensure_navigation_running(self, map_id: int) -> bool:
         """순찰(patrol_start)/이동 명령 전에 Nav2가 이 map_id로 이미 떠있는지
         확인하고, 아니면 새로 띄운다 — 맵 다운로드 -> Nav2 런치 -> amcl이 뜬 것
@@ -276,6 +410,16 @@ class DownlinkNode(Node):
             return False
 
         self.get_logger().info(f'Nav2 시작: map_id={map_id} ({yaml_path})')
+        # self._nav_process가 None인 건 "Nav2가 안 떠있다"가 아니라 "이 다운링크가
+        # 그걸 기억 못 한다"는 뜻일 수도 있다 — 다운링크 자신이 재시작되면(업링크/
+        # 다운링크만 다시 켠 경우 등) _nav_process는 항상 새로 None으로 시작하지만,
+        # 이전 생애에 띄운 Nav2는 고아로 계속 떠 있을 수 있다. 확인 없이 새로
+        # 띄우면 두 벌의 amcl·costmap이 같은 /scan·/amcl_pose·TF를 놓고 서로
+        # 충돌해서 위치 추정이 엉망이 된다 — 실제로 겪은 버그(2026-09-08): 라이다와
+        # 지도가 안 맞아 보여서 봤더니 navigation_diff_launch.py가 두 개 떠 있었음.
+        # 새로 띄우기 전에 항상 먼저 같은 패턴의 고아 프로세스를 정리한다(없으면
+        # _kill_external_process_group이 조용히 아무 일도 안 한다).
+        self._kill_external_process_group('careguard_bringup navigation_diff_launch.py', '(정리) 이전 Nav2')
         # start_new_session=True — SLAM과 같은 이유(_terminate_process_group가
         # 그룹 전체를 죽일 수 있어야 한다).
         self._nav_process = subprocess.Popen(

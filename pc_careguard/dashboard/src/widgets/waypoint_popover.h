@@ -15,7 +15,11 @@ class WaypointPopover : public QFrame {
 public:
     explicit WaypointPopover(QWidget* parent);
 
-    void setForNewWaypoint(QPointF canvasPos);
+    // meters는 canvasPos를 실제 map 프레임 미터로 환산한 값(표시용 — 저장은 여전히
+    // canvasPos 기준). yawDeg는 "WP 추가" 드래그로 이미 잡은 방향(WaypointCanvas::
+    // waypointAddRequested) — 다이얼을 처음부터 그 방향으로 채워서, 드래그로 방향까지
+    // 정한 경우 다이얼을 또 따로 만질 필요가 없게 한다(여전히 조정은 가능).
+    void setForNewWaypoint(QPointF canvasPos, QPointF meters, qreal yawDeg);
     void setForEditWaypoint(const WaypointCanvas::Waypoint& wp);
 
 signals:

@@ -1,5 +1,7 @@
 #include "waypoint_popover.h"
 
+#include <cmath>
+
 #include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -121,16 +123,18 @@ void WaypointPopover::setType(bool charging) {
     typeChargingBtn_->setChecked(charging);
 }
 
-void WaypointPopover::setForNewWaypoint(QPointF canvasPos) {
+void WaypointPopover::setForNewWaypoint(QPointF canvasPos, QPointF meters, qreal yawDeg) {
     editingId_.clear();
     canvasPos_ = canvasPos;
     titleLabel_->setText(QStringLiteral("새 웨이포인트  x %1, y %2")
-                              .arg(canvasPos.x() / 40.0, 0, 'f', 1)
-                              .arg(canvasPos.y() / 40.0, 0, 'f', 1));
+                              .arg(meters.x(), 0, 'f', 1)
+                              .arg(meters.y(), 0, 'f', 1));
     nameEdit_->setText(QString());
     nameEdit_->setFocus();
     setType(false);
-    yawSpin_->setValue(0);
+    // yawDeg는 atan2 결과라 (-180, 180] 범위 — 다이얼/스핀박스는 [0, 359]라 감아준다.
+    const int deg = ((static_cast<int>(std::lround(yawDeg)) % 360) + 360) % 360;
+    yawSpin_->setValue(deg);
     deleteBtn_->hide();
     adjustSize();
 }
@@ -141,7 +145,10 @@ void WaypointPopover::setForEditWaypoint(const WaypointCanvas::Waypoint& wp) {
     titleLabel_->setText(QStringLiteral("웨이포인트 편집  %1").arg(wp.id));
     nameEdit_->setText(wp.name);
     setType(wp.charging);
-    yawSpin_->setValue(static_cast<int>(wp.yawDeg));
+    // wp.yawDeg는 드래그(atan2)로 잡혔으면 (-180, 180] 범위일 수 있다 — 스핀박스
+    // range(0, 359)에 그냥 넣으면 음수가 0으로 clamp돼 버려(감아주지 않고 잘림)
+    // 실제 방향과 다르게 보인다. setForNewWaypoint와 같은 방식으로 감아준다.
+    yawSpin_->setValue(((static_cast<int>(std::lround(wp.yawDeg)) % 360) + 360) % 360);
     deleteBtn_->setVisible(!wp.charging);
     adjustSize();
 }

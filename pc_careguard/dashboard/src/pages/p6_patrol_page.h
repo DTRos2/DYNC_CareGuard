@@ -24,6 +24,8 @@ class QMenu;
 class QFrame;
 class WsClient;
 class QJsonObject;
+class TeleopPanel;
+class QKeyEvent;
 
 // P6 순찰·경로 — 웨이포인트 편집 캔버스 + WP 목록/경로/스케줄.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 5), §7 참고.
@@ -48,6 +50,11 @@ protected:
     // 누르기 전에도 로봇 현재 위치를 먼저 보고 싶다는 요청 — 여기서 Nav2를 미리
     // 준비시킨다(순찰 명령은 안 보냄).
     void showEvent(QShowEvent* event) override;
+    // P5MapPage와 같은 이유·같은 패턴 — 방향키(↑↓←→)/Space로 teleopPanel_을
+    // 조작한다. 포커스를 받으려면 생성자에서 setFocusPolicy(Qt::StrongFocus)가
+    // 필요하다.
+    void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
 
 private:
     struct Schedule {
@@ -74,6 +81,11 @@ private:
                             // backgroundImage를 채운 뒤엔 더 안 쓴다 — 로컬 데모 맵이면 빈 문자열
         int serverMapId = -1;    // GET /maps/active로 받아온 맵이면 서버 map.id, 로컬 데모 맵이면 -1
         int serverRobotId = -1;  // 서버 robot.id (POST /patrol-runs 등에 필요). 로컬 데모 맵이면 -1
+        // 캔버스 픽셀<->실제 미터 환산 기준(서버 map.resolution/origin_x/origin_y).
+        // resolution<=0이면 서버에서 아직 못 받음(로컬 데모 맵 등) — WaypointCanvas/
+        // designMapMetersToCanvas가 이 경우 고정 배율로 폴백한다.
+        double resolution = 0.0;
+        QPointF originMeters;
         // 마지막으로 서버와 동기화됐을 때의 코드/이름 -> 서버 PK. "저장·배포"가 델타 계산에 쓴다.
         QMap<QString, int> waypointServerIds;  // waypoint.code -> waypoint.id
         QMap<QString, int> routeServerIds;     // route 이름 -> patrol_route.id
@@ -102,13 +114,19 @@ private:
     QString nextWaypointId() const;
     QString chargingWaypointId() const;
 
-    void handleCanvasAddRequested(QPointF pos);
+    // loadServerMapImageDone이 아직 canvas_에 올라가지 않은(currentMapIndex_가 아닌)
+    // 맵의 서버 웨이포인트(미터)를 캔버스 좌표로 미리 배치할 때 쓴다 — canvas_는
+    // "현재" 맵 하나만 표시하므로 그 live 상태(canvas_->mapMetersToCanvas)를 쓸 수
+    // 없어, showEvent가 쓰는 것과 같은 설계 기준 캔버스(380x330)로 직접 계산한다.
+    QPointF designMapMetersToCanvas(const MapData& md, QPointF meters) const;
+
+    void handleCanvasAddRequested(QPointF pos, qreal headingDeg);
     void handleCanvasEditRequested(const QString& id);
     // popover_를 anchor 근처(오른쪽 아래)에 띄우되, 창 오른쪽·아래 경계를 넘지 않게
     // clamp한다 — handleCanvasAddRequested/handleCanvasEditRequested가 공유한다.
     void movePopoverNear(const QPoint& anchor);
     void handleCanvasDeleteRequested(const QString& id);
-    void handleCanvasMoved(const QString& id, QPointF pos);
+    void handleCanvasMoved(const QString& id, QPointF pos, qreal headingDeg);
     void handlePopoverSave(const QString& id, const QString& name, bool charging, qreal yaw, QPointF pos);
 
     void enterRouteEditMode(const QString& routeName);
@@ -118,6 +136,15 @@ private:
     void deleteCurrentRoute();
     void runTestRun();
     void driveToSingleWaypoint(const QString& id);
+    // "위치 보정" — 캔버스에서 클릭+드래그로 잡은 위치·방향을 서버에 보내 AMCL 초기
+    // 위치를 즉석에서 다시 잡는다(자동 세팅이 충전 스테이션 좌표를 가정하는 것과 달리,
+    // 로봇이 실제로 있는 임의의 위치를 사용자가 직접 지정할 때 쓴다).
+    void handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg);
+    // "로봇 종료" 버튼 — 확인 후 apiClient_->shutdownRobot()으로 이 로봇에서 켜진
+    // 모든 것(베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크)을 한 번에 끈다.
+    void shutdownCurrentRobot();
+    // "비상정지" 버튼/Space — P5MapPage::handleEmergencyStop과 같은 이유·패턴.
+    void handleEmergencyStop();
 
     void toggleScheduleForm(bool show);
     void addScheduleFromForm();
@@ -193,6 +220,11 @@ private:
     WaypointCanvas* canvas_;
     WaypointPopover* popover_;
     QWidget* canvasToolbarRow_;
+    QPushButton* poseCaptureBtn_;
+    // P5MapPage와 같은 방향키패드+속도 프리셋 위젯 — 순찰 페이지에서도 원격 조종이
+    // 필요하다는 요청으로 추가. velocityChanged를 현재 맵의 로봇 코드로
+    // apiClient_->sendTeleop()에 그대로 연결한다.
+    TeleopPanel* teleopPanel_;
     QFrame* routeEditBanner_;
     QFrame* connectionBanner_;
     QFrame* robotOfflineBanner_;

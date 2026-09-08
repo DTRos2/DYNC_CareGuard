@@ -8,12 +8,14 @@
 #include <QAction>
 #include <QImage>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QShowEvent>
 #include <QStackedLayout>
 #include <QStyle>
@@ -27,16 +29,28 @@
 
 #include "net/ws_client.h"
 #include "theme/tokens.h"
+#include "widgets/canvas_geometry.h"
 #include "widgets/pgm_image_loader.h"
 #include "widgets/simple_icons.h"
+#include "widgets/teleop_panel.h"
 #include "widgets/toggle_switch.h"
 #include "widgets/waypoint_popover.h"
 
 namespace {
+// designMapMetersToCanvas()의 폴백 전용 — 서버 map.resolution/origin_x/origin_y를 아직
+// 못 받은 맵(로컬 데모 맵 등)에서만 쓰인다. 실제 지도가 있는 맵은 canvas_->
+// canvasToMapMeters()/mapMetersToCanvas()가 그 맵의 진짜 resolution/origin으로 정확히
+// 환산한다 — 예전엔 이 고정 배율(40px=1m)을 모든 맵에 무조건 썼는데, 실제 지도
+// 해상도(대개 0.05m/px=20px/m)와 달라 "이동" 목표가 화면에서 클릭한 지점과 실제
+// 로봇이 가는 곳이 어긋나는 원인이었다(2026-09-08 실 로봇 테스트로 확인).
 constexpr qreal kPxPerMeter = 40.0;
 }
 
 P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(0), routeEditMode_(false) {
+    // P5MapPage와 같은 이유 — teleopPanel_의 방향키(↑↓←→)/Space를 이 페이지가
+    // 받아서 전달하려면 포커스가 필요하다.
+    setFocusPolicy(Qt::StrongFocus);
+
     // maps_는 여기서 더미로 채우지 않는다 — 생성자 끝의 loadMapsFromServer()가
     // GET /maps/active로 실제 서버 데이터를 받아와야만 채워진다. DB에 맵이 없으면
     // 이 페이지는 그대로 빈 상태로 남는다(가짜 데모 맵으로 대체하지 않는다).
@@ -71,6 +85,9 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     connect(canvas_, &WaypointCanvas::waypointDeleteRequested, this, &P6PatrolPage::handleCanvasDeleteRequested);
     connect(canvas_, &WaypointCanvas::waypointMoved, this, &P6PatrolPage::handleCanvasMoved);
     connect(canvas_, &WaypointCanvas::waypointDriveRequested, this, &P6PatrolPage::driveToSingleWaypoint);
+    connect(canvas_, &WaypointCanvas::initialPoseCaptureFinished, this, &P6PatrolPage::handleInitialPoseCaptured);
+    connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
+            [this] { poseCaptureBtn_->setChecked(false); });
     connect(canvas_, &WaypointCanvas::routeWaypointClicked, this, &P6PatrolPage::handleRouteWaypointClicked);
     connect(canvas_, &WaypointCanvas::chargingClickBlocked, this, [this] {
         QMessageBox::information(this, QStringLiteral("충전 스테이션"),
@@ -90,7 +107,7 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
         // 확실하게 맞춰준다.
         const QString chargeId = chargingWaypointId();
         if (const WaypointCanvas::Waypoint* c = canvas_->findWaypoint(chargeId)) {
-            canvas_->setCurrentRobotPosition(c->pos, 0.0);
+            canvas_->setCurrentRobotPositionToChargingStation(c->pos);
         }
         saveCurrentMapData();
         rebuildWpList();
@@ -172,6 +189,20 @@ QWidget* P6PatrolPage::buildHeaderRow() {
     layout->addWidget(mapChipBtn_);
     layout->addStretch();
 
+    auto* estopBtn = new QPushButton(QStringLiteral("비상정지"), row);
+    estopBtn->setProperty("variant", "danger");
+    estopBtn->setProperty("size", "l");
+    connect(estopBtn, &QPushButton::clicked, this, &P6PatrolPage::handleEmergencyStop);
+    layout->addWidget(estopBtn);
+
+    auto* shutdownBtn = new QPushButton(QStringLiteral("로봇 종료"), row);
+    shutdownBtn->setProperty("variant", "danger");
+    shutdownBtn->setToolTip(
+        QStringLiteral("이 로봇에서 켜져 있는 모든 것(베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크)을\n"
+                        "한 번에 끕니다. 순찰/이동 중이면 먼저 안전하게 멈춘 뒤 끕니다."));
+    connect(shutdownBtn, &QPushButton::clicked, this, &P6PatrolPage::shutdownCurrentRobot);
+    layout->addWidget(shutdownBtn);
+
     auto* deployBtn = new QPushButton(SimpleIcons::deviceFloppy(Tokens::TEXT_INVERSE, 12),
                                        QStringLiteral("저장 · 로봇에 배포"), row);
     deployBtn->setProperty("variant", "primary");
@@ -222,8 +253,24 @@ QWidget* P6PatrolPage::buildCanvasCard() {
         canvas_->setInteractionMode(WaypointCanvas::InteractionMode::MoveWaypoint);
     });
 
+    // "위치 보정" — WP 추가/이동과 배타적인 세그먼트 그룹에는 넣지 않는다(그 둘은 계속
+    // 유지되는 모드지만, 이건 드래그 한 번으로 끝나는 단발성 동작이라 캔버스가 알아서
+    // 끝나면 poseCaptureMode를 꺼버린다 — initialPoseCaptureFinished/Cancelled에서 이
+    // 버튼 체크 상태만 되돌려주면 된다).
+    poseCaptureBtn_ = new QPushButton(QStringLiteral("위치 보정"), canvasToolbarRow_);
+    poseCaptureBtn_->setObjectName("segBtn");
+    poseCaptureBtn_->setProperty("pos", "only");
+    poseCaptureBtn_->setCheckable(true);
+    poseCaptureBtn_->setToolTip(
+        QStringLiteral("로봇이 실제로 있는 위치를 지도에서 클릭한 채 드래그해 방향까지 지정하면,\n"
+                        "그 자리로 AMCL 초기 위치를 다시 잡습니다(충전 스테이션 자동 추정이 틀렸을 때)."));
+    toolbar->addWidget(poseCaptureBtn_);
+    connect(poseCaptureBtn_, &QPushButton::clicked, this, [this](bool checked) {
+        canvas_->setPoseCaptureMode(checked);
+    });
+
     auto* hint = new QLabel(
-        QStringLiteral("휠 확대/축소 · 빈 곳 드래그로 이동 · 더블클릭 원상복귀 — 그 외 모드별 안내는 지도 하단 참고"),
+        QStringLiteral("휠 확대/축소 · 휠 버튼 드래그로 이동 · 더블클릭 원상복귀 — 그 외 모드별 안내는 지도 하단 참고"),
         canvasToolbarRow_);
     hint->setProperty("role", "muted");
     hint->setStyleSheet(QStringLiteral("font-size:11px;"));
@@ -259,18 +306,40 @@ QWidget* P6PatrolPage::buildCanvasCard() {
 }
 
 QWidget* P6PatrolPage::buildRightColumn() {
-    auto* wrap = new QWidget(this);
-    wrap->setFixedWidth(236);
+    auto* wrap = new QWidget();
     auto* layout = new QVBoxLayout(wrap);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(Tokens::Layout::CARD_GAP);
+
+    teleopPanel_ = new TeleopPanel(wrap);
+    connect(teleopPanel_, &TeleopPanel::velocityChanged, this, [this](qreal linearMps, qreal angularRadps) {
+        // P5MapPage와 같은 경로(POST /teleop/{robot_code} -> robot_ws ->
+        // downlink_node -> /cmd_vel) — 다만 P6은 로봇이 고정이 아니라 지금 보고
+        // 있는 맵의 로봇으로 매번 새로 조회해서 보낸다(맵 전환 중 방향키를 누른
+        // 경우에도 항상 지금 화면의 로봇에게 나가도록).
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        apiClient_->sendTeleop(maps_[currentMapIndex_].robotId, linearMps, angularRadps);
+    });
+    layout->addWidget(teleopPanel_);
 
     layout->addWidget(buildWpListCard());
     layout->addWidget(buildRouteCard());
     layout->addWidget(buildScheduleCard());
     layout->addStretch();
 
-    return wrap;
+    // 원격 조작 패널이 추가되면서 오른쪽 칼럼 콘텐츠(패널+WP목록+경로+스케줄) 총
+    // 세로 높이가 창 높이를 넘어설 수 있게 됐다 — 스크롤 없이 그대로 두면 QVBoxLayout이
+    // 모든 카드를 실제 크기보다 눌러서 찌그러뜨린다("방향키 패드가 완전 납작해"
+    // 리포트, TeleopPanel의 setFixedHeight(32) 버튼조차 그 안에서 뭉개져 보였다).
+    // 넘치는 만큼 스크롤되게 해서 각 카드가 항상 자기 실제 크기를 유지하게 한다.
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName("patrolRightColumnScroll");
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setFixedWidth(236);
+    scroll->setWidget(wrap);
+    return scroll;
 }
 
 QWidget* P6PatrolPage::buildWpListCard() {
@@ -489,8 +558,29 @@ QString P6PatrolPage::chargingWaypointId() const {
     return QString();
 }
 
-void P6PatrolPage::handleCanvasAddRequested(QPointF pos) {
-    popover_->setForNewWaypoint(pos);
+QPointF P6PatrolPage::designMapMetersToCanvas(const MapData& md, QPointF meters) const {
+    if (md.resolution <= 0.0 || md.backgroundImage.isNull()) {
+        return QPointF(meters.x() * kPxPerMeter, meters.y() * kPxPerMeter);
+    }
+    // canvas_->displayBounds()(위젯의 실제 현재 크기) 기준으로 계산한다 — canvas_는
+    // "현재" 맵의 배경 이미지만 표시 중이지만, 그리기 가능 영역 자체(카드 여백을 뺀
+    // 크기)는 어떤 맵을 보고 있든 동일하므로 아직 화면에 없는 다른 맵의 좌표를 미리
+    // 계산해도 안전하다.
+    //
+    // 예전엔 여기서 와이어프레임 설계 기준의 고정 크기(380x330)를 쓰고 나중에
+    // showEvent/resizeEvent의 remapOnResize가 실제 창 크기로 다시 배치해줄 거라고
+    // 가정했는데 — 서버에서 웨이포인트를 비동기로 받아오는 시점(loadServerMapImageDone)
+    // 은 보통 이 페이지가 이미 한 번 보여진 뒤라 hasFitInitialView_ 가드 때문에
+    // showEvent의 재배치가 다시 실행되지 않는다. 그 결과 웨이포인트가 380x330 기준
+    // 좌표 그대로 훨씬 큰 실제 캔버스에 찍혀 전부 왼쪽 위 구석에 뭉쳐 보였다
+    // (2026-09-08 실사용 리포트로 확인 — 사용자가 지도 아래쪽에 찍은 웨이포인트가
+    // "저장·배포" 후 다시 불러오니 왼쪽 위에 뭉쳐서 나타남).
+    return CanvasGeometry::metersToCanvas(meters, md.resolution, md.originMeters, canvas_->displayBounds(),
+                                           md.backgroundImage);
+}
+
+void P6PatrolPage::handleCanvasAddRequested(QPointF pos, qreal headingDeg) {
+    popover_->setForNewWaypoint(pos, canvas_->canvasToMapMeters(pos), headingDeg);
     const QPoint anchor = canvas_->mapTo(this, pos.toPoint());
     movePopoverNear(anchor);
     popover_->raise();
@@ -535,10 +625,11 @@ void P6PatrolPage::handleCanvasDeleteRequested(const QString& id) {
     refreshCanvasPreview();
 }
 
-void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos) {
+void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos, qreal headingDeg) {
     for (WaypointCanvas::Waypoint& w : waypoints_) {
         if (w.id == id) {
             w.pos = pos;
+            w.yawDeg = headingDeg;
             break;
         }
     }
@@ -653,10 +744,11 @@ void P6PatrolPage::rebuildWpList() {
                 "color:#0B7A6E; background:#E0F5F2; font-size:10px; padding:1px 5px; border-radius:3px;"));
             rowLayout->addWidget(badge);
         } else {
+            const QPointF meters = canvas_->canvasToMapMeters(w.pos);
             auto* coordLabel = new QLabel(
                 QStringLiteral("%1, %2, %3°")
-                    .arg(w.pos.x() / kPxPerMeter, 0, 'f', 1)
-                    .arg(w.pos.y() / kPxPerMeter, 0, 'f', 1)
+                    .arg(meters.x(), 0, 'f', 1)
+                    .arg(meters.y(), 0, 'f', 1)
                     .arg(static_cast<int>(w.yawDeg)),
                 row);
             coordLabel->setStyleSheet(QStringLiteral(
@@ -752,7 +844,9 @@ void P6PatrolPage::rebuildRouteOrderList() {
         if (const WaypointCanvas::Waypoint* c = canvas_->findWaypoint(chargeId)) pts.append(c->pos);
     }
     for (int i = 0; i + 1 < pts.size(); ++i) {
-        distM += std::hypot(pts[i + 1].x() - pts[i].x(), pts[i + 1].y() - pts[i].y()) / kPxPerMeter;
+        const QPointF a = canvas_->canvasToMapMeters(pts[i]);
+        const QPointF b = canvas_->canvasToMapMeters(pts[i + 1]);
+        distM += std::hypot(b.x() - a.x(), b.y() - a.y());
     }
     const int etaMin = qMax(1, static_cast<int>(std::round(distM / 0.3 / 60.0)));
     routeStatsLabel_->setText(
@@ -993,14 +1087,114 @@ void P6PatrolPage::driveToSingleWaypoint(const QString& id) {
 
     const QString robotCode = maps_[currentMapIndex_].robotId;
     const int mapId = maps_[currentMapIndex_].serverMapId;
-    apiClient_->driveToPoint(robotCode, mapId, wp->id, wp->pos.x() / kPxPerMeter, wp->pos.y() / kPxPerMeter,
-                              qDegreesToRadians(wp->yawDeg), [this](bool ok, const QString& err) {
+    const QPointF meters = canvas_->canvasToMapMeters(wp->pos);
+    apiClient_->driveToPoint(robotCode, mapId, wp->id, meters.x(), meters.y(), qDegreesToRadians(wp->yawDeg),
+                              [this](bool ok, const QString& err) {
                                   if (!ok) {
                                       QMessageBox::warning(
                                           this, QStringLiteral("이동 실패"),
                                           err.isEmpty() ? QStringLiteral("로봇이 연결되어 있지 않습니다.") : err);
                                   }
                               });
+}
+
+void P6PatrolPage::handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg) {
+    // "위치 보정" 드래그가 끝났다 — 캔버스는 이미 poseCaptureMode를 스스로 껐으니
+    // (WaypointCanvas::mouseReleaseEvent), 여기선 툴바 버튼 체크 표시만 되돌리고
+    // 서버에 실제 위치를 보낸다. 자동 초기 위치 세팅(충전 스테이션 좌표 가정)이
+    // 틀렸을 때 로봇이 실제로 있는 자리를 직접 지정하는 경로 — nav_prepare/
+    // drive-to-point와 달리 Nav2 자체를 새로 켜지 않고 이미 떠 있는 AMCL의
+    // 위치 추정치만 즉석에서 다시 잡는다.
+    poseCaptureBtn_->setChecked(false);
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const MapData& current = maps_[currentMapIndex_];
+    if (current.serverMapId <= 0 || current.robotId.isEmpty()) return;
+
+    const QPointF meters = canvas_->canvasToMapMeters(canvasPos);
+    apiClient_->setInitialPose(current.robotId, current.serverMapId, meters.x(), meters.y(),
+                                qDegreesToRadians(headingDeg),
+                                [this](bool ok, const QString& err) {
+                                    if (!ok) {
+                                        QMessageBox::warning(
+                                            this, QStringLiteral("위치 보정 실패"),
+                                            err.isEmpty() ? QStringLiteral("로봇이 연결되어 있지 않습니다.") : err);
+                                    }
+                                });
+}
+
+void P6PatrolPage::shutdownCurrentRobot() {
+    // "로봇 종료" — 이 로봇에서 켜져 있는 전부(베이스 구동+Nav2/SLAM+rviz2+업링크/
+    // 다운링크)를 한 번에 내린다. 물리적 로봇의 동작에 영향을 주는 되돌리기 어려운
+    // 조작이라(순찰/이동 중이었다면 그것도 멈춘다) 확인 없이 바로 실행하지 않는다.
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const QString robotCode = maps_[currentMapIndex_].robotId;
+    if (robotCode.isEmpty()) return;
+
+    const auto reply = QMessageBox::question(
+        this, QStringLiteral("로봇 종료"),
+        QStringLiteral("%1 로봇에서 켜져 있는 모든 프로그램(베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크)을\n"
+                        "전부 끕니다. 계속할까요?")
+            .arg(robotCode),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+
+    apiClient_->shutdownRobot(robotCode, [this](bool ok, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("종료 실패"),
+                                  err.isEmpty() ? QStringLiteral("로봇이 연결되어 있지 않습니다.") : err);
+        }
+    });
+}
+
+void P6PatrolPage::handleEmergencyStop() {
+    // P5MapPage::handleEmergencyStop과 같은 이유·같은 패턴 — Space와 같은 경로라
+    // 확인 대화상자를 띄우기 전에 이미 실제 정지 명령이 나간다(안전이 우선이라
+    // 사용자 확인을 기다리지 않는다).
+    teleopPanel_->handleKeyPress(Qt::Key_Space);
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const QString robotCode = maps_[currentMapIndex_].robotId;
+    QMessageBox::warning(this, QStringLiteral("비상정지"),
+                          QStringLiteral("%1를 비상정지합니다. 진행 중인 순찰/이동이 중단됩니다.").arg(robotCode));
+}
+
+void P6PatrolPage::keyPressEvent(QKeyEvent* event) {
+    if (event->isAutoRepeat()) {
+        event->accept();
+        return;
+    }
+    switch (event->key()) {
+        case Qt::Key_Up:
+        case Qt::Key_Down:
+        case Qt::Key_Left:
+        case Qt::Key_Right:
+        case Qt::Key_Space:
+            teleopPanel_->handleKeyPress(event->key());
+            event->accept();
+            return;
+        default:
+            break;
+    }
+    QWidget::keyPressEvent(event);
+}
+
+void P6PatrolPage::keyReleaseEvent(QKeyEvent* event) {
+    if (event->isAutoRepeat()) {
+        event->accept();
+        return;
+    }
+    switch (event->key()) {
+        case Qt::Key_Up:
+        case Qt::Key_Down:
+        case Qt::Key_Left:
+        case Qt::Key_Right:
+        case Qt::Key_Space:
+            teleopPanel_->handleKeyRelease(event->key());
+            event->accept();
+            return;
+        default:
+            break;
+    }
+    QWidget::keyReleaseEvent(event);
 }
 
 void P6PatrolPage::toggleScheduleForm(bool show) {
@@ -1077,7 +1271,13 @@ void P6PatrolPage::loadMapData(int index) {
 
     canvas_->resetView();
     canvas_->setBackgroundImage(m.backgroundImage);
+    canvas_->setMapMeta(m.resolution, m.originMeters);
     canvas_->setWaypoints(waypoints_);
+    // 이 맵으로 (다시) 전환할 때마다, 다음 실제로 그려지는 시점에 웨이포인트 좌표를
+    // metersPos(서버 원본 미터)로부터 확실하게 다시 계산하도록 예약한다 —
+    // WaypointCanvas::showEvent 주석 참고(이 위젯이 이미 한 번 보여진 뒤라면
+    // showEvent가 다시 안 불려서 그 보정 기회를 놓칠 수 있다).
+    canvas_->requestMetersResync();
 
     // 실제 맵 이미지가 있으면 충전 스테이션(=초기/현재 위치)이 벽 위에 있지 않은지
     // 확인하고, 벽 위라면 가장 가까운 자유 공간으로 옮긴다 (좌표가 실제 지도와
@@ -1176,6 +1376,8 @@ void P6PatrolPage::loadMapsFromServer() {
             md.robotId = m.robotCode;
             md.recipientName = m.recipientName;
             md.imageUrl = m.imageUrl;
+            md.resolution = m.resolution;
+            md.originMeters = QPointF(m.originX, m.originY);
             md.nextWpSeq = 1;
             maps->append(md);
         }
@@ -1238,9 +1440,14 @@ void P6PatrolPage::loadServerMapImageDone(std::shared_ptr<QVector<MapData>> maps
             int nextSeq = 1;
             for (const ApiClient::WaypointInfo& w : serverWaypoints) {
                 const bool charging = w.kind == QStringLiteral("charge");
+                const QPointF meters(w.posX, w.posY);
                 md.waypoints.append(WaypointCanvas::Waypoint{
-                    w.code, w.name, charging,
-                    QPointF(w.posX * kPxPerMeter, w.posY * kPxPerMeter), qRadiansToDegrees(w.yaw)});
+                    w.code, w.name, charging, designMapMetersToCanvas(md, meters), qRadiansToDegrees(w.yaw),
+                    // metersPos: canvas_->showEvent()가 이 위젯이 처음으로 유효한 실제
+                    // 크기를 갖게 되는 시점에 pos를 이 값으로부터 정확히 다시 계산한다
+                    // (designMapMetersToCanvas가 지금 계산한 pos는 이 시점에 위젯 크기가
+                    // 아직 확정 전이면 틀릴 수 있다 — WaypointCanvas::showEvent 주석 참고).
+                    meters});
                 md.waypointServerIds[w.code] = w.id;
                 codeById[w.id] = w.code;
 
@@ -1362,9 +1569,10 @@ void P6PatrolPage::deployCreateWaypoints(std::shared_ptr<QVector<WaypointCanvas:
     }
     MapData& current = maps_[currentMapIndex_];
     const WaypointCanvas::Waypoint w = (*list)[index];
+    const QPointF meters = canvas_->canvasToMapMeters(w.pos);
     apiClient_->createWaypoint(
         current.serverMapId, w.id, w.name, w.charging ? QStringLiteral("charge") : QStringLiteral("patrol"),
-        w.pos.x() / kPxPerMeter, w.pos.y() / kPxPerMeter, qDegreesToRadians(w.yawDeg),
+        meters.x(), meters.y(), qDegreesToRadians(w.yawDeg),
         [this, list, index, hadError](bool ok, const ApiClient::WaypointInfo& info, const QString&) {
             if (ok) {
                 maps_[currentMapIndex_].waypointServerIds[info.code] = info.id;
@@ -1432,11 +1640,27 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
-    if (type != QStringLiteral("robot_position") && type != QStringLiteral("camera_frame")) return;
+    if (type != QStringLiteral("robot_position") && type != QStringLiteral("camera_frame") &&
+        type != QStringLiteral("patrol_path_update"))
+        return;
     if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
 
     const QString robotCode = message.value(QStringLiteral("robot_code")).toString();
     if (maps_[currentMapIndex_].robotId != robotCode) return;
+
+    if (type == QStringLiteral("patrol_path_update")) {
+        // Nav2 planner_server가 발행한 전역 경로(map 프레임 미터) — rviz2가 보여주는
+        // "로봇이 가려는 길" 선과 같은 것을 캔버스에 그대로 그린다. 좌표 변환은
+        // WaypointCanvas::paintEvent가 그릴 때마다 하므로 여기서는 미터 그대로 넘긴다.
+        const QJsonArray flat = message.value(QStringLiteral("points")).toArray();
+        QVector<QPointF> pathMeters;
+        pathMeters.reserve(flat.size() / 2);
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            pathMeters.append(QPointF(flat.at(i).toDouble(), flat.at(i + 1).toDouble()));
+        }
+        canvas_->setPlannedPath(pathMeters);
+        return;
+    }
 
     if (type == QStringLiteral("camera_frame")) {
         // /camera/color/image_raw/compressed를 uplink_node가 재인코딩 없이 그대로
@@ -1453,6 +1677,6 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
     const qreal xMeters = message.value(QStringLiteral("x")).toDouble();
     const qreal yMeters = message.value(QStringLiteral("y")).toDouble();
     const qreal yawRad = message.value(QStringLiteral("yaw")).toDouble();
-    canvas_->setCurrentRobotPosition(QPointF(xMeters * kPxPerMeter, yMeters * kPxPerMeter),
+    canvas_->setCurrentRobotPosition(canvas_->mapMetersToCanvas(QPointF(xMeters, yMeters)),
                                       qRadiansToDegrees(yawRad));
 }
