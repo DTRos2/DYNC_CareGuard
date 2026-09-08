@@ -292,6 +292,8 @@ class RobotItem(BaseModel):
     name: str
     model: str
     ros_domain_id: Optional[int] = None
+    ip: Optional[str] = None
+    map_recipient: str = "-"
     is_online: bool
 
 
@@ -303,10 +305,15 @@ class RegisterRobotRequest(BaseModel):
     name: str
     model: str = "limo"
     ros_domain_id: Optional[int] = Field(default=None, ge=0, le=232)
+    ip: Optional[str] = Field(default=None, max_length=45)
 
 
 class RegisterRobotResponse(RobotItem):
     pass
+
+
+class AssignRobotRecipientRequest(BaseModel):
+    recipient_id: Optional[int] = None  # None이면 배정 해제
 
 
 class RobotThresholds(BaseModel):
