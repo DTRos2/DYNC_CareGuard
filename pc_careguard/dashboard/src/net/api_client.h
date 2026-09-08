@@ -23,6 +23,13 @@ public:
         bool isActive = false;
         int imageFileId = 0;     // 0이면 등록된 맵 이미지 없음
         QString imageUrl;        // "/media/files/{file_id}". 비어있으면 없음
+        // 캔버스 픽셀 <-> 실제 map 프레임 미터 환산에 필요 (map_server .yaml과 같은 값).
+        // 서버는 이미 내려주고 있었는데 예전엔 여기서 안 읽고 캔버스 쪽이 고정 배율
+        // (kPxPerMeter=40)을 썼다 — 실제 지도 해상도(대개 0.05)와 달라 "이동" 목표가
+        // 화면에서 클릭한 지점과 실제로 다른 곳이 되는 원인이었다.
+        double resolution = 0.0;  // m/px, 0이면 서버가 아직 못 줌(예: 미등록 맵)
+        double originX = 0.0;
+        double originY = 0.0;
     };
 
     // server/app/schemas.py::WaypointItem 대응.
@@ -156,6 +163,16 @@ public:
     // 뿐이라, 이 호출은 실패해도 팝업을 띄우지 않는다(SimpleCallback 결과를 무시해도
     // 되게 설계) — 그래서 콜백 없는 오버로드를 둔다.
     void prepareNavigation(const QString& robotCode, int mapId);
+
+    // POST /patrol-runs/set-initial-pose — "위치 보정"(캔버스 클릭+드래그로 위치·방향
+    // 직접 지정). Nav2를 새로 켜지 않고, 이미 떠 있는 AMCL의 초기 위치 추정치만
+    // 다시 잡는다 — 자동 세팅(충전 스테이션 좌표 가정)이 틀렸을 때 쓴다.
+    void setInitialPose(const QString& robotCode, int mapId, double xMeters, double yMeters, double yawRad,
+                         SimpleCallback callback);
+
+    // POST /patrol-runs/shutdown-robot — "로봇 종료" 버튼. 이 로봇에서 켜져 있는
+    // 베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크를 전부 내린다.
+    void shutdownRobot(const QString& robotCode, SimpleCallback callback);
 
     // POST /teleop/{robot_code} — 방향키 패널이 계산한 목표 속도를 로봇에 그대로 전달한다.
     void sendTeleop(const QString& robotCode, double linearMps, double angularRadps);

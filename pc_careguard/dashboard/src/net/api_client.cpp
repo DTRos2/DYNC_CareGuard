@@ -96,6 +96,9 @@ ApiClient::MapInfo ApiClient::parseMap(const QJsonObject& o) {
     m.isActive = o.value(QStringLiteral("is_active")).toBool();
     m.imageFileId = o.value(QStringLiteral("image_file_id")).toInt();
     m.imageUrl = o.value(QStringLiteral("image_url")).toString();
+    m.resolution = o.value(QStringLiteral("resolution")).toDouble(0.0);
+    m.originX = o.value(QStringLiteral("origin_x")).toDouble(0.0);
+    m.originY = o.value(QStringLiteral("origin_y")).toDouble(0.0);
     return m;
 }
 
@@ -431,6 +434,19 @@ void ApiClient::prepareNavigation(const QString& robotCode, int mapId) {
     QJsonObject body{{"robot_code", robotCode}, {"map_id", mapId}};
     postJson(QStringLiteral("/patrol-runs/prepare-navigation"), body,
              [](bool, const QByteArray&, const QString&) {});
+}
+
+void ApiClient::setInitialPose(const QString& robotCode, int mapId, double xMeters, double yMeters, double yawRad,
+                                SimpleCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}, {"map_id", mapId}, {"x", xMeters}, {"y", yMeters}, {"yaw", yawRad}};
+    postJson(QStringLiteral("/patrol-runs/set-initial-pose"), body,
+             [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
+}
+
+void ApiClient::shutdownRobot(const QString& robotCode, SimpleCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}};
+    postJson(QStringLiteral("/patrol-runs/shutdown-robot"), body,
+             [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
 }
 
 void ApiClient::sendTeleop(const QString& robotCode, double linearMps, double angularRadps) {
