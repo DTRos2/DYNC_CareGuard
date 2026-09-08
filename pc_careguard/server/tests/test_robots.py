@@ -1,8 +1,16 @@
 import uuid
 
+from app import db
+
 
 def _unique_code():
     return f"TEST-{uuid.uuid4().hex[:8]}"
+
+
+def _delete_threshold_row(robot_id: int) -> None:
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM robot_threshold WHERE robot_id = %s", (robot_id,))
+        conn.commit()
 
 
 def test_register_robot_returns_created_item(client, cleanup_robot):
@@ -97,3 +105,80 @@ def test_list_robots_is_online_reflects_real_ws_connection(client, cleanup_robot
     response_after = client.get("/robots")
     body_after = {r["code"]: r["is_online"] for r in response_after.json()}
     assert body_after[code] is False
+
+
+def test_get_robot_thresholds_returns_defaults_when_never_saved(client, cleanup_robot):
+    code = _unique_code()
+    cleanup_robot.append(code)
+    robot_id = client.post("/robots", json={"code": code, "name": "임계값 기본값 테스트"}).json()["id"]
+
+    response = client.get(f"/robots/{robot_id}/thresholds")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "battery_attention_pct": 30,
+        "battery_return_pct": 20,
+        "voice_wait_sec": 8,
+        "reconnect_retry_sec": 30,
+        "med_missed_wait_min": 10,
+        "med_reannounce_count": 2,
+    }
+
+
+def test_set_robot_thresholds_persists_and_is_returned(client, cleanup_robot):
+    code = _unique_code()
+    cleanup_robot.append(code)
+    robot_id = client.post("/robots", json={"code": code, "name": "임계값 저장 테스트"}).json()["id"]
+
+    try:
+        custom = {
+            "battery_attention_pct": 40,
+            "battery_return_pct": 25,
+            "voice_wait_sec": 12,
+            "reconnect_retry_sec": 15,
+            "med_missed_wait_min": 20,
+            "med_reannounce_count": 3,
+        }
+        put_response = client.put(f"/robots/{robot_id}/thresholds", json=custom)
+        assert put_response.status_code == 204
+
+        get_response = client.get(f"/robots/{robot_id}/thresholds")
+        assert get_response.json() == custom
+    finally:
+        _delete_threshold_row(robot_id)
+
+
+def test_apply_thresholds_to_all_robots_upserts_every_registered_robot(client, cleanup_robot):
+    code_a = _unique_code()
+    code_b = _unique_code()
+    cleanup_robot.extend([code_a, code_b])
+    robot_a_id = client.post("/robots", json={"code": code_a, "name": "일괄적용A"}).json()["id"]
+    robot_b_id = client.post("/robots", json={"code": code_b, "name": "일괄적용B"}).json()["id"]
+
+    try:
+        custom = {
+            "battery_attention_pct": 35,
+            "battery_return_pct": 15,
+            "voice_wait_sec": 10,
+            "reconnect_retry_sec": 20,
+            "med_missed_wait_min": 5,
+            "med_reannounce_count": 1,
+        }
+        response = client.put("/robots/thresholds/apply-all", json=custom)
+        assert response.status_code == 204
+
+        assert client.get(f"/robots/{robot_a_id}/thresholds").json() == custom
+        assert client.get(f"/robots/{robot_b_id}/thresholds").json() == custom
+    finally:
+        _delete_threshold_row(robot_a_id)
+        _delete_threshold_row(robot_b_id)
+
+
+def test_get_robot_thresholds_unknown_robot_returns_404(client):
+    response = client.get("/robots/999999999/thresholds")
+    assert response.status_code == 404
+
+
+def test_set_robot_thresholds_unknown_robot_returns_404(client):
+    response = client.put("/robots/999999999/thresholds", json={})
+    assert response.status_code == 404
