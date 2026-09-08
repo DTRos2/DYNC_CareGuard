@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import anyio.from_thread
 import yaml
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
@@ -18,6 +19,7 @@ from ...schemas import (
     VideoEventItem,
     ViewHistoryEntry,
 )
+from ...ws import dashboard_ws
 
 router = APIRouter(prefix="/media", tags=["media"])
 
@@ -117,6 +119,21 @@ def upload_video(
         camera_recording_id = cur.fetchone()["id"]
 
         conn.commit()
+
+    # P4(영상 관리) 화면이 폴링 없이도 새 클립을 바로 받도록 push한다. 이 엔드포인트는
+    # 동기(def) 핸들러라 스레드풀에서 실행되므로, robot_ws.py처럼 바로 await하지 못하고
+    # anyio.from_thread.run으로 서버 이벤트 루프 스레드에 코루틴 실행을 맡긴다.
+    # 페이로드는 최소 식별자만 담고, 실제 목록은 항상 GET /video-events를 다시 불러
+    # 채운다(view_count 등은 그때그때 다시 세는 값이라 여기서 흉내내지 않는다).
+    anyio.from_thread.run(
+        dashboard_ws.broadcast,
+        {
+            "type": "video_event_created",
+            "camera_recording_id": camera_recording_id,
+            "robot_id": robot_id,
+            "care_event_id": care_event_id,
+        },
+    )
 
     return MediaUploadResponse(
         file_id=file_id,
