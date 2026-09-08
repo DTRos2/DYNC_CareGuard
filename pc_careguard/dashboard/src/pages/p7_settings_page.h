@@ -39,13 +39,13 @@ protected:
 
 private:
     struct RobotRow {
+        int dbId = -1;  // robot.id — 등록 해제(DELETE /robots/{id}) API 호출에 필요
         QString id;
         QString ip;
         QString ns;
         QString mapRecipient;
         Tokens::Level level;
         QString statusDetail;  // 온라인/오프라인 상세 텍스트
-        QString nodeSummary;   // "6/6 정상" 등
         // --- 로봇 등록/수정 모달용 (와이어프레임 대응) ---
         QString name;               // 표시 이름, 예: "3호기"
         QString model = QStringLiteral("limo");
@@ -53,12 +53,6 @@ private:
         QString recipientLabel = QStringLiteral("미배정");  // "이말순 (C-003)" 형태
         QString wsHost = QStringLiteral("192.168.0.9");      // 서버 WebSocket 호스트 (데모용 고정값)
         QString connectionDetail;   // "최근 ping 응답 0.4s 전 · 세션 3d 2h"
-    };
-
-    struct NodeDetail {
-        QString name;
-        bool warn;
-        QString detail;  // "up 3d 2h" 또는 "응답 지연 2.1s"
     };
 
     struct AccountRow {
@@ -105,6 +99,8 @@ private:
     void fetchRobots();  // GET /robots
     void handleRobotsReply(QNetworkReply* reply);
     void registerRobot(const RobotDialog::RobotData& data);  // POST /robots
+    void assignRobotRecipient(int robotDbId, int recipientId);  // PUT /robots/{id}/recipient
+    void deregisterRobot(int dbId);  // DELETE /robots/{id}
     void handleWsMessage(const QJsonObject& message);  // WsClient::messageReceived — type으로 분기
 
     void openAccountDialog(int rowIndex);  // -1이면 신규 등록
@@ -147,7 +143,6 @@ private:
     QString serverUrl_;
 
     std::vector<RobotRow> robots_;
-    std::vector<NodeDetail> r03Nodes_;
     std::vector<AccountRow> accounts_;
     std::vector<RecipientRow> recipients_;
     std::vector<AuditRow> auditLog_;
