@@ -451,6 +451,17 @@ ApiClient::RecipientInfo ApiClient::parseRecipient(const QJsonObject& o) {
     r.homeAddress = o.value(QStringLiteral("home_address")).toString();
     r.diseases = o.value(QStringLiteral("diseases")).toString();
     r.note = o.value(QStringLiteral("note")).toString();
+    r.operatorId = o.value(QStringLiteral("operator_id")).toInt();
+    r.operatorName = o.value(QStringLiteral("operator_name")).toString();
+    r.level = o.value(QStringLiteral("level")).toString(QStringLiteral("normal"));
+    r.statusSummary = o.value(QStringLiteral("status_summary")).toString();
+    for (const QJsonValue& v : o.value(QStringLiteral("meds_today")).toArray()) {
+        const QJsonObject m = v.toObject();
+        MedicationTodayInfo info;
+        info.slotNo = m.value(QStringLiteral("slot_no")).toInt();
+        info.state = m.value(QStringLiteral("state")).toString();
+        r.medsToday.append(info);
+    }
     return r;
 }
 
@@ -478,6 +489,13 @@ ApiClient::RecipientDetailInfo ApiClient::parseRecipientDetail(const QJsonObject
         info.doseTime = s.value(QStringLiteral("dose_time")).toString().left(5);
         info.daysOfWeek = s.value(QStringLiteral("days_of_week")).toInt(127);
         d.schedules.append(info);
+    }
+    for (const QJsonValue& v : o.value(QStringLiteral("history")).toArray()) {
+        const QJsonObject h = v.toObject();
+        MedicationHistoryInfo info;
+        info.date = h.value(QStringLiteral("date")).toString();
+        info.adherence = h.value(QStringLiteral("adherence")).toDouble(-1.0);
+        d.history.append(info);
     }
     return d;
 }
@@ -537,6 +555,7 @@ QJsonObject recipientBodyFromParams(const ApiClient::RecipientCreateParams& para
     if (!params.gender.isEmpty()) body.insert(QStringLiteral("gender"), params.gender);
     if (!params.birthDate.isEmpty()) body.insert(QStringLiteral("birth_date"), params.birthDate);
     if (!params.robotCode.isEmpty()) body.insert(QStringLiteral("robot_code"), params.robotCode);
+    if (params.operatorId > 0) body.insert(QStringLiteral("operator_id"), params.operatorId);
     return body;
 }
 }  // namespace
@@ -562,6 +581,31 @@ void ApiClient::updateRecipient(int recipientId, const RecipientCreateParams& pa
                 }
                 callback(true, parseRecipientDetail(QJsonDocument::fromJson(respBody).object()), err);
             });
+}
+
+void ApiClient::deactivateRecipient(int recipientId, SimpleCallback callback) {
+    postJson(QStringLiteral("/recipients/%1/deactivate").arg(recipientId), QJsonObject{},
+             [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
+}
+
+void ApiClient::fetchOperators(ListCallback<OperatorInfo> callback) {
+    getJsonArray(QStringLiteral("/accounts"), [callback](bool ok, const QByteArray& body) {
+        QVector<OperatorInfo> operators;
+        if (!ok) {
+            callback(false, operators);
+            return;
+        }
+        for (const QJsonValue& v : QJsonDocument::fromJson(body).array()) {
+            const QJsonObject o = v.toObject();
+            if (o.value(QStringLiteral("role_code")).toString() != QStringLiteral("operator")) continue;
+            if (!o.value(QStringLiteral("is_active")).toBool()) continue;
+            OperatorInfo info;
+            info.id = o.value(QStringLiteral("id")).toInt();
+            info.name = o.value(QStringLiteral("display_name")).toString();
+            operators.append(info);
+        }
+        callback(true, operators);
+    });
 }
 
 void ApiClient::driveToPoint(const QString& robotCode, int mapId, const QString& code, double xMeters,

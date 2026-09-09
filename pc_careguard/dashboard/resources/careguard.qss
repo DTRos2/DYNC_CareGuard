@@ -338,7 +338,10 @@ QComboBox QAbstractItemView::item:selected, QComboBox QAbstractItemView::item:fo
    컨테이너의 둥근 아래쪽 모서리를 덮어버려 그 부분만 각지게 보이는 원인이었다
    (실제로 grab() 자가 캡처로 재현: 아래쪽 모서리가 이 위젯 때문에 각져 있었음). 배경을
    투명하게 비워 컨테이너의 radius가 그대로 비쳐 보이게 한다 — 화살표 글리프 자체는 계속
-   그려지므로 스크롤 가능하다는 표시는 남는다. */
+   그려지므로 스크롤 가능하다는 표시는 남는다.
+   (이 위젯은 "메뉴형" 팝업에서만 나타나는데, careguard_combo_box.cpp의 NoMenuPopupStyle이
+   그 경로 자체를 꺼버려서 지금은 실제로 걸릴 일이 없다 — 그래도 남겨두면 안전하므로
+   지우지 않는다.) */
 QComboBoxPrivateScroller { background: transparent; border: none; }
 
 QCheckBox { spacing: 6px; color: #16202B; font-size: 13px; }

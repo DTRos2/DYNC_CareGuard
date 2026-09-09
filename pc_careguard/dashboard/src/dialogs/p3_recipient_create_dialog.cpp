@@ -100,7 +100,8 @@ const QStringList kRobotMaps = {QStringLiteral("행복빌라 302"), QStringLiter
 
 }  // namespace
 
-P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, QWidget* parent)
+P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, const QVector<OperatorOption>& operators,
+                                                   QWidget* parent)
     : QDialog(parent), nextCode_(nextCode) {
     setModal(true);
     // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
@@ -172,6 +173,13 @@ P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, QWidge
     row1->addWidget(makeFieldBlock(QStringLiteral("이름"), true, nameEdit_, body), 1);
     auto* idField = makeReadOnlyField(QStringLiteral("%1 자동 부여").arg(nextCode_), body);
     row1->addWidget(makeFieldBlock(QStringLiteral("대상자 ID"), false, idField, body), 1);
+
+    // 관리 담당자 — 계정관리(P7)에 등록된 관제담당자 계정 중에서 고른다. 항목이 없으면
+    // "담당자 없음" 하나만 남아 미배정 상태로 등록된다.
+    operatorCombo_ = new CareGuardComboBox(body);
+    operatorCombo_->addItem(QStringLiteral("담당자 없음"), 0);
+    for (const auto& op : operators) operatorCombo_->addItem(op.name, op.id);
+    row1->addWidget(makeFieldBlock(QStringLiteral("관리 담당자"), false, operatorCombo_, body), 1);
     formCol->addLayout(row1);
 
     auto* row2 = new QHBoxLayout();
@@ -1018,6 +1026,8 @@ void P3RecipientCreateDialog::handleRegisterClicked() {
     card.robotCode =
         robotCombo_->currentIndex() > 0 ? kRobotCodes[robotCombo_->currentIndex() - 1] : QStringLiteral("미배정");
     card.address = addressEdit_->text().trimmed();
+    card.operatorId = operatorCombo_->currentData().toInt();
+    card.operatorName = card.operatorId > 0 ? operatorCombo_->currentText() : QString();
     card.level = Tokens::Level::Normal;
     card.statusSummary = QStringLiteral("신규 등록 · 아직 순찰 기록 없음");
     // meds[3]는 기본값(Pending)을 그대로 둔다 — RecipientCard의 멤버 기본 초기화와 동일.
