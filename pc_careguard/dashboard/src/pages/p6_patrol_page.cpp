@@ -223,8 +223,8 @@ QWidget* P6PatrolPage::buildCanvasCard() {
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(6);
 
-    auto* addModeBtn = new QPushButton(QStringLiteral("WP 추가"), canvasToolbarRow_);
-    auto* moveModeBtn = new QPushButton(QStringLiteral("이동"), canvasToolbarRow_);
+    auto* addModeBtn = new QPushButton(QStringLiteral("WP 편집"), canvasToolbarRow_);
+    auto* moveModeBtn = new QPushButton(QStringLiteral("로봇 이동"), canvasToolbarRow_);
     for (auto* btn : {addModeBtn, moveModeBtn}) {
         btn->setObjectName("segBtn");
         btn->setCheckable(true);
