@@ -288,13 +288,17 @@ COMMENT ON COLUMN patrol_route.created_at IS '경로 등록 시간';
 COMMENT ON COLUMN patrol_route.deregistered_at IS '등록 해제 시간. NULL이면 사용 중';
 
 CREATE TABLE patrol_schedule (
-    id              INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    route_id        INTEGER NOT NULL,
-    run_time        TIME NOT NULL,
-    days_of_week    SMALLINT NOT NULL DEFAULT 127 CHECK (days_of_week BETWEEN 1 AND 127),
-    created_by      INTEGER,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deregistered_at TIMESTAMPTZ
+    id                      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    route_id                INTEGER NOT NULL,
+    run_time                TIME NOT NULL,
+    days_of_week            SMALLINT NOT NULL DEFAULT 127 CHECK (days_of_week BETWEEN 1 AND 127),
+    -- 이 스케줄이 "복약 전달" 경로(patrol_route.name='medicine')의 특정 회차라면,
+    -- 그 근거가 된 medication_schedule.id. 한 경로를 여러 시각(아침/저녁 등)에 걸쳐
+    -- 쓸 수 있어 이 매칭은 경로가 아니라 각 스케줄(회차) 단위 속성이다.
+    medication_schedule_id  INTEGER,
+    created_by              INTEGER,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deregistered_at         TIMESTAMPTZ
 );
 
 CREATE UNIQUE INDEX patrol_schedule_active_idx
@@ -308,6 +312,7 @@ COMMENT ON COLUMN patrol_schedule.id IS '스케줄 PK, 자동 증가';
 COMMENT ON COLUMN patrol_schedule.route_id IS '실행할 경로 id (patrol_route.id). FK 제약 없음';
 COMMENT ON COLUMN patrol_schedule.run_time IS '실행 시각, 예: 10:00';
 COMMENT ON COLUMN patrol_schedule.days_of_week IS '요일 비트마스크. 월=1 화=2 수=4 목=8 금=16 토=32 일=64. 평일=31, 매일=127';
+COMMENT ON COLUMN patrol_schedule.medication_schedule_id IS '복약 전달 경로의 이 회차가 매칭된 medication_schedule.id. 매칭 안 했으면 NULL. FK 제약 없음';
 COMMENT ON COLUMN patrol_schedule.created_by IS '등록한 계정 id';
 COMMENT ON COLUMN patrol_schedule.created_at IS '등록 시간';
 COMMENT ON COLUMN patrol_schedule.deregistered_at IS '등록 해제 시간. NULL이면 사용 중';

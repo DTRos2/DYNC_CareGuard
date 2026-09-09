@@ -3,6 +3,7 @@
 #include <QButtonGroup>
 #include <QDate>
 #include <QDateEdit>
+#include <QDateTime>
 #include <QEvent>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -17,6 +18,7 @@
 #include <QVariant>
 
 #include "dialogs/event_detail_modal.h"
+#include "net/api_client.h"
 #include "theme/calendar_style.h"
 #include "theme/tokens.h"
 #include "widgets/careguard_date_edit.h"
@@ -49,6 +51,7 @@ void repolish(QWidget* widget) {
 }  // namespace
 
 P2EventPage::P2EventPage(QWidget* parent) : QWidget(parent) {
+    apiClient_ = new ApiClient(this);
     model_ = new EventTableModel(this);
     proxy_ = new EventFilterProxyModel(this);
     proxy_->setSourceModel(model_);
@@ -76,7 +79,11 @@ P2EventPage::P2EventPage(QWidget* parent) : QWidget(parent) {
     layout->addWidget(buildTable(), /*stretch=*/1);
     layout->addWidget(buildPagination());
 
+    // GET /events가 비동기로 도착하기 전까지는 화면이 비어 보이므로, 응답 오기 전 첫 화면은
+    // mock으로 그려두고 loadEventsFromServer()가 도착하는 대로 덮어쓴다(P3 대상자 페이지와
+    // 같은 패턴).
     seedMockData();
+    loadEventsFromServer();
 
     connect(model_, &EventTableModel::countsChanged, this, &P2EventPage::refreshCounts);
 
@@ -310,6 +317,56 @@ void P2EventPage::seedMockData() {
     model_->setRows(rows);
 }
 
+void P2EventPage::loadEventsFromServer() {
+    apiClient_->fetchEvents([this](bool ok, const QVector<ApiClient::EventInfo>& items) {
+        if (!ok) return;  // 서버 미기동 등: seedMockData()로 채워둔 화면을 그대로 둔다
+
+        using Row = EventTableModel::EventRow;
+        using Sev = EventTableModel::Severity;
+        const QDateTime now = QDateTime::currentDateTime();
+        const QDate today = QDate::currentDate();
+
+        QVector<Row> rows;
+        rows.reserve(items.size());
+        for (const auto& info : items) {
+            Row row;
+            if (info.severity == QStringLiteral("emergency")) {
+                row.severity = Sev::Emergency;
+            } else if (info.severity == QStringLiteral("attention")) {
+                row.severity = Sev::Attention;
+            } else {
+                row.severity = Sev::Info;
+            }
+            row.eventId = info.eventUid;
+            const QDateTime occurred = info.occurredAt.toLocalTime();
+            row.date = occurred.date();
+            row.timeText = occurred.date() == today ? occurred.toString(QStringLiteral("HH:mm"))
+                                                      : occurred.toString(QStringLiteral("MM.dd HH:mm"));
+            row.robotId = info.robotCode;
+            row.recipientName = info.recipientName;
+            row.type = info.eventTypeLabel;
+            row.summary = info.summary;
+            row.assignee = QString();  // 담당자 배정 API 아직 없음(P2 "담당자 배정" 버튼도 추후 구현)
+            row.resolved = info.resolved;
+            row.elapsedSec = info.resolved ? 0 : qMax(0, static_cast<int>(occurred.secsTo(now)));
+            row.checked = false;
+            rows.append(row);
+        }
+        model_->setRows(rows);
+    });
+}
+
+void P2EventPage::resolveEvent(const QString& eventId) {
+    apiClient_->resolveEvent(eventId, [this, eventId](bool ok, const ApiClient::EventInfo&, const QString& err) {
+        if (ok) {
+            model_->resolveByEventId(eventId);
+            return;
+        }
+        QMessageBox::warning(this, QStringLiteral("CareGuard"),
+                              QStringLiteral("완료 처리에 실패했습니다: %1").arg(err));
+    });
+}
+
 void P2EventPage::refreshCounts() {
     const int checked = model_->checkedCount();
     bulkBar_->setVisible(checked > 0);
@@ -331,16 +388,18 @@ void P2EventPage::onCellClicked(const QModelIndex& index) {
     const EventTableModel::EventRow row = model_->rowAt(sourceIndex.row());
     auto* modal = new EventDetailModal(row, this);
     modal->setAttribute(Qt::WA_DeleteOnClose);
-    connect(modal, &EventDetailModal::eventResolved, model_, &EventTableModel::resolveByEventId);
+    connect(modal, &EventDetailModal::eventResolved, this, &P2EventPage::resolveEvent);
     modal->exec();
 }
 
 void P2EventPage::onBulkComplete() {
-    const bool excludedEmergency = model_->bulkCompleteChecked();
-    if (excludedEmergency) {
+    if (model_->hasEmergencyChecked()) {
         QMessageBox::information(
             this, QStringLiteral("CareGuard"),
             QStringLiteral("긴급 이벤트는 일괄 완료 처리에서 제외됩니다. 개별로 확인해 주세요."));
+    }
+    for (const QString& eventId : model_->checkedResolvableEventIds()) {
+        resolveEvent(eventId);
     }
 }
 

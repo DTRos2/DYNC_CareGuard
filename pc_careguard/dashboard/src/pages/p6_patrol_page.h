@@ -12,6 +12,7 @@ class QLabel;
 class QPushButton;
 class QLineEdit;
 class QComboBox;
+class QCheckBox;
 class QListWidget;
 class QTimeEdit;
 class QVBoxLayout;
@@ -72,6 +73,8 @@ private:
         QVector<int> days;  // 0=월 .. 6=일
         bool enabled;
         int serverId = -1;  // POST /patrol-schedules로 만든 서버 행 id. 로컬 전용이면 -1
+        // routeName이 "medicine"일 때, 이 회차가 매칭된 medication_schedule.id. 0=매칭 안 함.
+        int medicationScheduleId = 0;
     };
 
     // 맵마다 웨이포인트·경로·스케줄이 독립적이다. 현재 맵의 상태는 waypoints_/routes_/...
@@ -161,6 +164,28 @@ private:
     // 연다. 저장 시 saveScheduleFromForm()이 scheduleEditIndex_로 추가/수정을 구분한다.
     // 경로(route_id)는 PUT /patrol-schedules가 지원하지 않아 편집 중엔 콤보를 잠근다.
     void startEditSchedule(int index);
+    // "복약 전달 경로" 체크박스 — 켜면 routeEditNameEdit_를 "medicine"으로 고정하고
+    // 잠근다(끄면 체크 전 입력값으로 되돌림). "주행 스케줄" 추가 폼이 경로 이름으로
+    // 복약 경로 여부를 판별하므로(onScheduleRouteComboChanged), 이 리터럴이 곧 그 판별
+    // 기준이 된다.
+    void onRouteMedicineToggled(bool checked);
+    // "주행 스케줄" 폼(추가·수정 둘 다)의 경로 콤보가 바뀌거나(추가) startEditSchedule이
+    // 프로그램적으로 세팅할 때(수정) 뜬다 — 선택된 경로가 "medicine"이면 복약 스케줄
+    // 콤보(scheduleMedCombo_)를 보이고 채운다. 수정 모드일 땐 지금 편집 중인
+    // schedules_[scheduleEditIndex_].medicationScheduleId를 loadMedicationSchedulesForCurrentRobot에
+    // 넘겨 그 id 그대로 자동 선택시킨다(patrol_schedule.medication_schedule_id — 값 비교가
+    // 아니라 id 매칭이라 이름·시각이 같은 다른 스케줄과 혼동될 일이 없다).
+    void onScheduleRouteComboChanged(const QString& routeName);
+    // 지금 맵(currentMapIndex_)의 로봇에 배정된 대상자를 찾아 그 복약 스케줄로
+    // scheduleMedCombo_를 채운다. GET /recipients로 로봇코드 매칭 -> GET /recipients/{id}로
+    // schedules 조회, 둘 다 이미 있는 API를 재사용한다(서버 변경 없음). 콤보 0번은
+    // 항상 "선택 안 함"이고 실제 항목은 1번부터(currentRobotMedSchedules_[i]는 콤보의
+    // i+1번). matchMedicationScheduleId>0이면(수정 모드) 그 id를 가진 항목을 찾아 자동
+    // 선택한다 — 없으면(예: 그 사이 삭제됨) "선택 안 함"에 남는다.
+    void loadMedicationSchedulesForCurrentRobot(int matchMedicationScheduleId = 0);
+    // scheduleMedCombo_에서 항목을 고르면 그 복약 스케줄의 시각·요일로 scheduleTimeEdit_/
+    // scheduleDayChips_를 자동으로 채운다. comboIndex 0("선택 안 함")이면 아무 것도 안 한다.
+    void applyMedicationScheduleSelection(int comboIndex);
     // 확인 다이얼로그 후 schedules_[index]를 제거하고, 서버에 등록된 행이면(serverId>0)
     // DELETE /patrol-schedules/{id}도 함께 보낸다(소프트 삭제).
     void deleteScheduleAt(int index);
@@ -188,24 +213,17 @@ private:
     // 아직 없는(서버 미동기화) 맵이면 조용히 아무 것도 안 한다.
     void prepareNavigationForCurrentMap();
 
-    // "저장 · 로봇에 배포" 버튼 — 현재 맵의 웨이포인트·경로를 서버에 반영한다. 서버에
-    // 등록된 맵(serverMapId > 0)에서만 동작한다. 기존에 동기화된 경로·웨이포인트를 모두
-    // 지우고 지금 화면 상태로 다시 만드는 방식(delete-then-recreate)이라 서버 쪽 id는
-    // 매번 새로 발급된다 — 스케줄은 route_id를 참조해야 해서 이 흐름과 분리해 saveScheduleFromForm/
-    // 토글 시점에 바로 서버에 반영한다(아래 참고).
-    void deployCurrentMap();
-    void deployDeleteRoutes(std::shared_ptr<QVector<QString>> routeNames, int index);
-    void deployDeleteWaypoints(std::shared_ptr<QVector<QString>> codes, int index);
-    void deployCreateWaypoints(std::shared_ptr<QVector<WaypointCanvas::Waypoint>> list, int index,
-                                std::shared_ptr<bool> hadError);
-    void deployCreateRoutes(std::shared_ptr<QVector<QString>> routeNames, int index,
-                             std::shared_ptr<bool> hadError);
-    void finishDeploy(bool hadError);
-
     // /ws/dashboard로 들어온 메시지 처리 — robot_position이 현재 맵의 로봇이면 캔버스의
     // "현재 위치" 마커를 실시간으로 갱신한다(체크리스트 ⑤). slam_done이면 해당 로봇의
-    // 맵을 새로 조회해 드롭다운(맵 메뉴)에 반영한다.
+    // 맵을 새로 조회해 드롭다운(맵 메뉴)에 반영한다. patrol_schedules_changed면
+    // refreshSchedulesForRoute로 그 경로의 스케줄을 다시 받아온다(대상자 페이지에서
+    // 매칭된 복약 스케줄이 바뀐 경우 — P3에서 저장하면 서버가 이 메시지를 보낸다).
     void handleWsMessage(const QJsonObject& message);
+    // GET /patrol-schedules?route_id=로 이 경로의 스케줄을 다시 받아 해당 맵(지금 보고
+    // 있는 맵이면 schedules_, 아니면 그 MapData::schedules)에 있던 이 경로의 기존 항목을
+    // 통째로 교체한다. 대시보드를 껐다 켜지 않아도 P3에서 바뀐 복약 스케줄 시각·요일이
+    // 반영되게 하는 게 목적 — 로컬 편집 중(scheduleEditIndex_>=0)인 그 폼 자체는 안 건드린다.
+    void refreshSchedulesForRoute(int routeId);
 
     QPushButton* mapChipBtn_;
     QMenu* mapMenu_;
@@ -220,11 +238,19 @@ private:
     QListWidget* routeOrderList_;
     QLabel* routeStatsLabel_;
     QLineEdit* routeEditNameEdit_;
+    QCheckBox* routeMedicineCheckbox_;
+    // 체크박스를 켜기 직전 routeEditNameEdit_ 내용 — 끄면 이걸로 되돌린다.
+    QString routeNameBeforeMedicineCheck_;
     QVBoxLayout* routeEditListLayout_;
 
     QVBoxLayout* scheduleListLayout_;
     QWidget* scheduleForm_;
     QComboBox* scheduleRouteCombo_;
+    QLabel* scheduleMedLabel_;
+    QComboBox* scheduleMedCombo_;
+    // scheduleMedCombo_의 각 항목이 어느 복약 스케줄인지 — applyMedicationScheduleSelection이
+    // comboIndex로 그대로 인덱싱한다.
+    QVector<ApiClient::MedicationScheduleInfo> currentRobotMedSchedules_;
     QTimeEdit* scheduleTimeEdit_;
     QVector<QPushButton*> scheduleDayChips_;
     QPushButton* scheduleSaveBtn_;

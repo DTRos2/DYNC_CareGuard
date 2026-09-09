@@ -192,6 +192,8 @@ class PatrolScheduleItem(BaseModel):
     run_time: time
     days_of_week: int  # 요일 비트마스크. 월=1 화=2 수=4 목=8 금=16 토=32 일=64
     enabled: bool  # deregistered_at IS NULL 이면 True
+    # 이 회차가 매칭된 medication_schedule.id. "복약 전달" 경로가 아니거나 매칭 안 했으면 None.
+    medication_schedule_id: Optional[int] = None
     created_by: Optional[int] = None
     created_at: datetime
 
@@ -232,6 +234,7 @@ class PatrolScheduleCreate(BaseModel):
     route_id: int
     run_time: time
     days_of_week: int = 127
+    medication_schedule_id: Optional[int] = None
     created_by: Optional[int] = None
 
 
@@ -240,6 +243,7 @@ class PatrolScheduleUpdate(BaseModel):
     days_of_week: Optional[int] = None
     # DB엔 별도 enabled 컬럼이 없다 — False는 deregistered_at=NOW(), True는 NULL로 되돌린다.
     enabled: Optional[bool] = None
+    medication_schedule_id: Optional[int] = None
 
 
 class SlamJobCreate(BaseModel):
@@ -478,3 +482,16 @@ class RecipientDetailItem(RecipientItem):
     guardians: List[GuardianItem] = []
     schedules: List[MedicationScheduleItem] = []
     history: List[MedicationHistoryDay] = []  # 최근 28일. 목록(List) 조회에는 없고 상세에만 있다
+
+
+class EventItem(BaseModel):
+    event_uid: str
+    severity: str  # "info" / "attention" / "emergency"
+    event_type: str  # care_event.event_type 원본 코드
+    event_type_label: str  # 한글 라벨 — event.py::EVENT_TYPE_LABELS로 변환
+    summary: str
+    occurred_at: datetime
+    resolved: bool  # status == 'resolved'
+    resolved_at: Optional[datetime] = None
+    robot_code: Optional[str] = None  # 로봇 없는(자체 장애가 아닌) 이벤트면 None
+    recipient_name: Optional[str] = None  # 대상자 없는 시스템 이벤트면 None

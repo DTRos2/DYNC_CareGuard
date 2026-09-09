@@ -13,10 +13,14 @@ class EventTableModel;
 class EventFilterProxyModel;
 class EventRowDelegate;
 class LiveSearchLineEdit;
+class ApiClient;
 
 // P2 이벤트 관제. gui/wireframe/v1/p2_event_queue_wireframe_v2.html,
 // CareGuard_DESIGN_SYSTEM.md §4-3(테이블 규약)·§6(P2 행) 기준.
-// 이벤트 API가 아직 없어 인메모리 mock 데이터로 동작한다 (P6 순찰·경로와 동일한 방침).
+// GET /events로 care_event를 불러오고, 완료 처리는 POST /events/{event_uid}/resolve로
+// 서버에 반영한다(P3 대상자 페이지와 같은 ApiClient 패턴). 서버가 응답하기 전까지 화면이
+// 비어 보이지 않도록 생성자에서 seedMockData()로 먼저 채워두고, 응답이 오면 덮어쓴다 —
+// 서버 미기동 시에도 화면은 mock으로 계속 동작한다.
 class P2EventPage : public QWidget {
     Q_OBJECT
 public:
@@ -44,6 +48,8 @@ private:
     QWidget* buildPagination();
 
     void seedMockData();
+    void loadEventsFromServer();
+    void resolveEvent(const QString& eventId);
     void refreshCounts();
     void onCellClicked(const QModelIndex& index);
     void onBulkComplete();
@@ -52,6 +58,7 @@ private:
     void setDateEditsReadOnly(bool readOnly);
     void showComingSoon(const QString& feature);
 
+    ApiClient* apiClient_;
     EventTableModel* model_;
     EventFilterProxyModel* proxy_;
     EventRowDelegate* delegate_;
