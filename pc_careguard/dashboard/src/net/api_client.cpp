@@ -86,6 +86,30 @@ void ApiClient::sendDelete(const QString& path, SimpleCallback callback) {
     });
 }
 
+ApiClient::RobotInfo ApiClient::parseRobot(const QJsonObject& o) {
+    RobotInfo r;
+    r.id = o.value(QStringLiteral("id")).toInt();
+    r.code = o.value(QStringLiteral("code")).toString();
+    r.name = o.value(QStringLiteral("name")).toString();
+    r.model = o.value(QStringLiteral("model")).toString();
+    r.ip = o.value(QStringLiteral("ip")).toString();
+    return r;
+}
+
+void ApiClient::fetchRobots(ListCallback<RobotInfo> callback) {
+    getJsonArray(QStringLiteral("/robots"), [callback](bool ok, const QByteArray& body) {
+        QVector<RobotInfo> robots;
+        if (!ok) {
+            callback(false, robots);
+            return;
+        }
+        for (const QJsonValue& v : QJsonDocument::fromJson(body).array()) {
+            robots.append(parseRobot(v.toObject()));
+        }
+        callback(true, robots);
+    });
+}
+
 ApiClient::MapInfo ApiClient::parseMap(const QJsonObject& o) {
     MapInfo m;
     m.id = o.value(QStringLiteral("id")).toInt();
