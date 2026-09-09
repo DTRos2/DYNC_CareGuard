@@ -1,19 +1,33 @@
 """careguard_perception/video_recorder.py
 
-이벤트 전후(pre+post) 녹화 클립을 만드는 노드. 트리거 전 N초를 링버퍼로 들고
-있다가, 트리거가 오면 그 버퍼 + 이후 M초를 이어붙여 파일로 저장한다.
+이벤트 전후(pre+post) 녹화 클립과, 순찰 시작~충전소 복귀까지 이어지는 연속
+녹화를 모두 만드는 노드. 이벤트 클립은 트리거 전 N초를 링버퍼로 들고 있다가
+트리거가 오면 그 버퍼 + 이후 M초를 이어붙이고, 순찰 녹화는 pre-roll 없이
+시작 신호를 받은 시점부터 종료 신호까지 그대로 이어 쓴다. 두 녹화는 서로 다른
+슬롯(_recording / _patrol_recording)으로 관리해 순찰 중 이벤트가 터져도(또는
+그 반대도) 둘 다 동시에 진행된다.
 
 카메라는 uplink_node.py가 이미 쓰는 /camera/color/image_raw/compressed(JPEG
 압축)를 그대로 구독한다 — 별도 cv2.VideoCapture는 열지 않는다.
 
-트리거는 /careguard/perception/record_trigger(std_msgs/String, JSON)로 받는다.
-아직 실제 발행 노드가 없어 수동 테스트용 예시:
+이벤트 트리거는 /careguard/perception/record_trigger(std_msgs/String, JSON)로
+받는다. 아직 실제 발행 노드가 없어 수동 테스트용 예시:
 
     ros2 topic pub --once /careguard/perception/record_trigger std_msgs/msg/String \
         "data: '{\"care_event_id\": null, \"reason\": \"manual test\"}'"
 
-결과물은 <output_dir>/<uuid>.mp4 + 같은 이름의 .json 사이드카. 업로드
-(careguard_agent/media_uploader.py)는 이 노드가 아니라 uplink_node가 맡는다.
+순찰 녹화 시작/종료는 /careguard/perception/patrol_recording(std_msgs/String,
+JSON)로 받는다. careguard_mission/patrol_task.py가 순찰 시작 직후와 끝(성공/
+실패 불문)에 발행한다:
+
+    ros2 topic pub --once /careguard/perception/patrol_recording std_msgs/msg/String \
+        "data: '{\"action\": \"start\", \"run_id\": 1}'"
+    ros2 topic pub --once /careguard/perception/patrol_recording std_msgs/msg/String \
+        "data: '{\"action\": \"stop\", \"run_id\": 1}'"
+
+결과물은 둘 다 <output_dir>/<uuid>.mp4 + 같은 이름의 .json 사이드카(순찰
+클립은 care_event_id를 비워서 media.py가 자동으로 "순찰" 태그를 붙이게 한다).
+업로드(careguard_agent/media_uploader.py)는 이 노드가 아니라 uplink_node가 맡는다.
 
 """
 import json
@@ -21,7 +35,7 @@ import time
 import uuid
 from collections import deque
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 
 import cv2
 import numpy as np
@@ -47,6 +61,21 @@ class _ActiveRecording:
         self.captured_at = datetime.now(timezone.utc)
 
 
+class _ActivePatrolRecording:
+    """순찰 시작~충전소 복귀까지 이어지는 연속 녹화 하나의 상태. _ActiveRecording과
+    달리 stop_at(타이머 종료 시각)이 없다 — patrol_task.py의 명시적 stop 신호가
+    올 때까지 무기한 이어 쓴다. pre-roll도 없다(트리거 전 구간을 미리 채워 넣는
+    이벤트 클립과 달리, 순찰은 시작 신호가 온 바로 그 순간부터 찍으면 된다)."""
+
+    def __init__(self, writer: cv2.VideoWriter, path, run_id, fps: float):
+        self.writer = writer
+        self.path = path
+        self.run_id = run_id
+        self.fps = fps
+        self.frame_count = 0
+        self.captured_at = datetime.now(timezone.utc)
+
+
 class VideoRecorder(Node):
     def __init__(self):
         super().__init__('video_recorder')
@@ -61,6 +90,9 @@ class VideoRecorder(Node):
         # (monotonic 타임스탬프, jpeg 원본 바이트) 링버퍼. 디코딩은 쓸 때만 한다.
         self._pre_buffer = deque()
         self._recording: Optional[_ActiveRecording] = None
+        # 이벤트 클립(_recording)과 별개 슬롯 — 순찰 연속 녹화 중에 이벤트가 터져도
+        # 둘 다 동시에 진행돼야 하므로 하나로 합치지 않는다.
+        self._patrol_recording: Optional[_ActivePatrolRecording] = None
 
         config.VIDEO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -68,6 +100,9 @@ class VideoRecorder(Node):
             CompressedImage, config.CAMERA_TOPIC, self._on_frame, qos_profile_sensor_data
         )
         self.create_subscription(String, config.TRIGGER_TOPIC, self._on_trigger, 10)
+        self.create_subscription(
+            String, config.PATROL_RECORDING_TOPIC, self._on_patrol_trigger, 10
+        )
 
         self.get_logger().info(
             f'video_recorder 시작: pre={self._pre_event_sec}s post={self._post_event_sec}s '
@@ -86,8 +121,13 @@ class VideoRecorder(Node):
             if now >= self._recording.stop_at:
                 self._finish_recording()
 
+        # 이벤트 클립과 독립적으로 진행 — 순찰 녹화 슬롯이 채워져 있으면 같은
+        # 프레임을 그쪽 writer에도 그대로 이어 쓴다.
+        if self._patrol_recording is not None:
+            self._write_frame(self._patrol_recording, msg.data)
+
     def _trim_pre_buffer(self, now: float):
-        # 녹화 중엔 pre 구간을 이미 다 썼으니 더 안 다듬음 
+        # 녹화 중엔 pre 구간을 이미 다 썼으니 더 안 다듬음
         if self._recording is not None:
             return
         cutoff = now - self._pre_event_sec
@@ -155,7 +195,7 @@ class VideoRecorder(Node):
             f'녹화 시작: {path.name} (pre {len(pre_frames)}프레임, care_event_id={care_event_id})'
         )
 
-    def _write_frame(self, recording: _ActiveRecording, jpeg_data):
+    def _write_frame(self, recording: Union[_ActiveRecording, _ActivePatrolRecording], jpeg_data):
         frame = self._decode(bytes(jpeg_data))
         if frame is None:
             return
@@ -181,6 +221,89 @@ class VideoRecorder(Node):
         self.get_logger().info(
             f'녹화 종료: {recording.path.name} ({recording.frame_count}프레임, {duration_sec}s) '
             f'-> {sidecar_path.name} 기록'
+        )
+
+    # ---------- 순찰 연속 녹화 ----------
+
+    def _on_patrol_trigger(self, msg: String):
+        try:
+            payload = json.loads(msg.data) if msg.data else {}
+        except ValueError:
+            self.get_logger().warn(f'순찰 녹화 트리거 JSON 파싱 실패, 무시합니다: {msg.data!r}')
+            return
+
+        action = payload.get('action')
+        run_id = payload.get('run_id')
+        if action == 'start':
+            self._start_patrol_recording(run_id)
+        elif action == 'stop':
+            self._finish_patrol_recording()
+        else:
+            self.get_logger().warn(f'알 수 없는 순찰 녹화 action, 무시합니다: {action!r}')
+
+    def _start_patrol_recording(self, run_id):
+        if self._patrol_recording is not None:
+            # patrol_task.py의 finally 블록이 안전망으로 stop을 중복 발행할 수 있는
+            # 것처럼, start도 재시도 등으로 중복 도착할 수 있다 — 이미 진행 중이면
+            # 기존 녹화를 그대로 이어가고 새로 시작하지 않는다(이벤트 클립의
+            # "이미 녹화 중" 처리와 같은 방어).
+            self.get_logger().warn(f'이미 순찰 녹화 중이라 새 시작 신호를 무시합니다(run_id={run_id})')
+            return
+
+        if not self._pre_buffer:
+            self.get_logger().warn(
+                '버퍼에 프레임이 없어 순찰 녹화를 시작할 수 없습니다 (카메라 토픽이 아직 안 들어왔나?)'
+            )
+            return
+
+        # pre-roll이 없으므로(이벤트 클립과 다름) 지금 막 들어온 최신 프레임 하나로
+        # 크기만 확인한다. fps는 그래도 최근 버퍼 간격으로 추정해야 실제 재생 속도와
+        # 맞는 영상이 나온다.
+        recent_frames = list(self._pre_buffer)
+        fps = self._estimate_fps(recent_frames)
+
+        first_frame = self._decode(recent_frames[-1][1])
+        if first_frame is None:
+            self.get_logger().error('최신 프레임 디코딩에 실패해 순찰 녹화를 시작할 수 없습니다')
+            return
+        height, width = first_frame.shape[:2]
+
+        clip_id = uuid.uuid4().hex
+        path = config.VIDEO_OUTPUT_DIR / f'{clip_id}.mp4'
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+        if not writer.isOpened():
+            self.get_logger().error(f'VideoWriter를 열지 못했습니다: {path}')
+            return
+
+        self._patrol_recording = _ActivePatrolRecording(writer=writer, path=path, run_id=run_id, fps=fps)
+        self.get_logger().info(f'순찰 녹화 시작: {path.name} (run_id={run_id})')
+
+    def _finish_patrol_recording(self):
+        recording = self._patrol_recording
+        if recording is None:
+            # goal_handle이 abort된 직후 finally에서 또 stop을 보내는 등, start 없이
+            # stop만 오는 경우도 있을 수 있다 — 조용히 무시한다.
+            self.get_logger().warn('순찰 녹화 종료 신호를 받았지만 진행 중인 녹화가 없어 무시합니다')
+            return
+        self._patrol_recording = None
+        recording.writer.release()
+
+        duration_sec = round(recording.frame_count / recording.fps) if recording.fps > 0 else None
+        sidecar = {
+            'robot_code': config.ROBOT_CODE,
+            # care_event_id를 비워두면 media.py가 자동으로 "순찰" 태그·7일 보존
+            # 정책(RETENTION_DAYS_PATROL_SNAPSHOT)으로 처리한다.
+            'care_event_id': None,
+            'duration_sec': duration_sec,
+            'captured_at': recording.captured_at.isoformat(),
+            'original_filename': recording.path.name,
+        }
+        sidecar_path = recording.path.with_suffix('.json')
+        sidecar_path.write_text(json.dumps(sidecar, ensure_ascii=False, indent=2))
+
+        self.get_logger().info(
+            f'순찰 녹화 종료: {recording.path.name} ({recording.frame_count}프레임, {duration_sec}s, '
+            f'run_id={recording.run_id}) -> {sidecar_path.name} 기록'
         )
 
     # ---------- 유틸 ----------

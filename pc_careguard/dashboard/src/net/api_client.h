@@ -1,4 +1,5 @@
 #pragma once
+#include <QDateTime>
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
@@ -69,6 +70,8 @@ public:
         QString runTime;    // "HH:mm"
         int daysOfWeek = 0; // 요일 비트마스크. 월=1 화=2 수=4 목=8 금=16 토=32 일=64
         bool enabled = true;
+        // 이 회차가 매칭된 medication_schedule.id. 0 = 매칭 안 함(서버는 null로 내려줌).
+        int medicationScheduleId = 0;
     };
 
     // server/app/schemas.py::SlamJobItem 대응.
@@ -164,6 +167,19 @@ public:
         QVector<MedicationHistoryInfo> history;  // 최근 28일. 목록(RecipientInfo)에는 없음
     };
 
+    // server/app/schemas.py::EventItem 대응.
+    struct EventInfo {
+        QString eventUid;
+        QString severity;        // "info" / "attention" / "emergency"
+        QString eventType;       // care_event.event_type 원본 코드
+        QString eventTypeLabel;  // 한글 라벨(서버 event.py::EVENT_TYPE_LABELS로 변환됨)
+        QString summary;
+        QDateTime occurredAt;
+        bool resolved = false;
+        QString robotCode;      // 로봇 없는 이벤트면 빈 문자열
+        QString recipientName;  // 대상자 없는 시스템 이벤트면 빈 문자열
+    };
+
     template <typename T>
     using ListCallback = std::function<void(bool success, const QVector<T>& items)>;
     template <typename T>
@@ -200,8 +216,10 @@ public:
     void deletePatrolRoute(int routeId, SimpleCallback callback);
 
     // POST/PUT/DELETE /patrol-schedules — 순찰 스케줄 등록·수정(요일/시각/enabled 토글)·삭제.
+    // medicationScheduleId>0이면 이 회차가 매칭된 medication_schedule.id를 같이 보낸다
+    // (0이면 안 보냄 — "복약 전달" 경로가 아니거나 매칭 안 한 경우).
     void createPatrolSchedule(int routeId, const QString& runTime, int daysOfWeek,
-                               ItemCallback<PatrolScheduleInfo> callback);
+                               ItemCallback<PatrolScheduleInfo> callback, int medicationScheduleId = 0);
     void updatePatrolSchedule(int scheduleId, const QJsonObject& fields,
                                ItemCallback<PatrolScheduleInfo> callback);
     void deletePatrolSchedule(int scheduleId, SimpleCallback callback);
@@ -289,6 +307,13 @@ public:
     // 이면서 활성 계정인 것만 추려서 넘긴다(비활성 계정에 새로 배정하는 건 막는다).
     void fetchOperators(ListCallback<OperatorInfo> callback);
 
+    // GET /events — P2 이벤트 관제 큐. 기간·검색·미처리 필터는 대시보드가 이미 로컬로
+    // 하고 있어(EventFilterProxyModel) 서버는 취소되지 않은 전체를 내려준다.
+    void fetchEvents(ListCallback<EventInfo> callback);
+    // POST /events/{event_uid}/resolve — 상세 모달 "RESOLVED 전환"·일괄 완료 처리가 공유하는
+    // 진입점(둘 다 이벤트 하나씩 이 호출을 쓴다).
+    void resolveEvent(const QString& eventUid, ItemCallback<EventInfo> callback);
+
     // POST /patrol-runs/drive-to-point — P6 "이동"(단일 웨이포인트 주행). 순찰과 달리
     // patrol_run을 기록하지 않고, 도착해도 충전소로 복귀하지 않는다(제자리에 머묾).
     // mapId는 downlink_node가 Nav2를 자동으로 준비하는 데 필요하다(맵 다운로드+런치+
@@ -331,6 +356,7 @@ private:
     static PatrolScheduleInfo parsePatrolSchedule(const QJsonObject& o);
     static RecipientInfo parseRecipient(const QJsonObject& o);
     static RecipientDetailInfo parseRecipientDetail(const QJsonObject& o);
+    static EventInfo parseEvent(const QJsonObject& o);
 
     QNetworkAccessManager* netManager_;
     QString serverUrl_;

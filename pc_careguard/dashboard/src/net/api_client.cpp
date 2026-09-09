@@ -11,6 +11,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcessEnvironment>
+#include <QRegularExpression>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -43,6 +44,18 @@ QString extractErrorDetail(const QByteArray& body) {
     const QJsonObject o = QJsonDocument::fromJson(body).object();
     if (o.contains(QStringLiteral("detail"))) return o.value(QStringLiteral("detail")).toString();
     return QString::fromUtf8(body);
+}
+
+// 서버는 마이크로초(6자리)까지 주는데 Qt::ISODateWithMs는 밀리초(3자리)까지만 인식해서
+// 잘라낸다. p4_video_page.cpp/p7_settings_page.cpp의 같은 헬퍼와 동일한 처리.
+QDateTime parseIsoDateTime(const QString& raw) {
+    if (raw.isEmpty()) return QDateTime();
+    QString trimmed = raw;
+    static const QRegularExpression fracRe(QStringLiteral("\\.(\\d{3})\\d*"));
+    trimmed.replace(fracRe, QStringLiteral(".\\1"));
+    QDateTime dt = QDateTime::fromString(trimmed, Qt::ISODateWithMs);
+    if (!dt.isValid()) dt = QDateTime::fromString(trimmed, Qt::ISODate);
+    return dt;
 }
 }  // namespace
 
@@ -257,6 +270,7 @@ ApiClient::PatrolScheduleInfo ApiClient::parsePatrolSchedule(const QJsonObject& 
     s.runTime = o.value(QStringLiteral("run_time")).toString().left(5);
     s.daysOfWeek = o.value(QStringLiteral("days_of_week")).toInt();
     s.enabled = o.value(QStringLiteral("enabled")).toBool(true);
+    s.medicationScheduleId = o.value(QStringLiteral("medication_schedule_id")).toInt(0);
     return s;
 }
 
@@ -278,9 +292,10 @@ void ApiClient::fetchPatrolSchedules(int routeId, ListCallback<PatrolScheduleInf
 }
 
 void ApiClient::createPatrolSchedule(int routeId, const QString& runTime, int daysOfWeek,
-                                      ItemCallback<PatrolScheduleInfo> callback) {
+                                      ItemCallback<PatrolScheduleInfo> callback, int medicationScheduleId) {
     QJsonObject body{
         {"route_id", routeId}, {"run_time", runTime + QStringLiteral(":00")}, {"days_of_week", daysOfWeek}};
+    if (medicationScheduleId > 0) body["medication_schedule_id"] = medicationScheduleId;
     postJson(QStringLiteral("/patrol-schedules"), body,
              [callback](bool ok, const QByteArray& respBody, const QString& err) {
                  callback(ok,
@@ -665,4 +680,43 @@ void ApiClient::sendTeleop(const QString& robotCode, double linearMps, double an
     // 비상정지가 별도로 처리한다.
     QJsonObject body{{"linear", linearMps}, {"angular", angularRadps}};
     postJson(QStringLiteral("/teleop/%1").arg(robotCode), body, [](bool, const QByteArray&, const QString&) {});
+}
+
+ApiClient::EventInfo ApiClient::parseEvent(const QJsonObject& o) {
+    EventInfo e;
+    e.eventUid = o.value(QStringLiteral("event_uid")).toString();
+    e.severity = o.value(QStringLiteral("severity")).toString();
+    e.eventType = o.value(QStringLiteral("event_type")).toString();
+    e.eventTypeLabel = o.value(QStringLiteral("event_type_label")).toString();
+    e.summary = o.value(QStringLiteral("summary")).toString();
+    e.occurredAt = parseIsoDateTime(o.value(QStringLiteral("occurred_at")).toString());
+    e.resolved = o.value(QStringLiteral("resolved")).toBool();
+    e.robotCode = o.value(QStringLiteral("robot_code")).toString();
+    e.recipientName = o.value(QStringLiteral("recipient_name")).toString();
+    return e;
+}
+
+void ApiClient::fetchEvents(ListCallback<EventInfo> callback) {
+    getJsonArray(QStringLiteral("/events"), [callback](bool ok, const QByteArray& body) {
+        QVector<EventInfo> events;
+        if (!ok) {
+            callback(false, events);
+            return;
+        }
+        for (const QJsonValue& v : QJsonDocument::fromJson(body).array()) {
+            events.append(parseEvent(v.toObject()));
+        }
+        callback(true, events);
+    });
+}
+
+void ApiClient::resolveEvent(const QString& eventUid, ItemCallback<EventInfo> callback) {
+    postJson(QStringLiteral("/events/%1/resolve").arg(eventUid), QJsonObject{},
+             [callback](bool ok, const QByteArray& respBody, const QString& err) {
+                 if (!ok) {
+                     callback(false, EventInfo{}, err);
+                     return;
+                 }
+                 callback(true, parseEvent(QJsonDocument::fromJson(respBody).object()), err);
+             });
 }
