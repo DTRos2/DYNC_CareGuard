@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "dialogs/p7_account_dialog.h"
+#include "dialogs/p7_robot_dialog.h"
 #include "theme/tokens.h"
 
 class QTableWidget;
@@ -15,6 +16,8 @@ class QNetworkReply;
 class QDateEdit;
 class QEvent;
 class LiveSearchLineEdit;
+class WsClient;
+class QJsonObject;
 
 // P7 시스템 설정 — 로봇 관리 / 계정 관리 / 임계값·알림 / 감사 로그 4탭.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 6), §7 참고.
@@ -99,6 +102,10 @@ private:
     void openRobotDialog(int rowIndex);  // -1이면 신규 등록
     void populateRobotRow(int r);
     void refreshRobotTable();
+    void fetchRobots();  // GET /robots
+    void handleRobotsReply(QNetworkReply* reply);
+    void registerRobot(const RobotDialog::RobotData& data);  // POST /robots
+    void handleWsMessage(const QJsonObject& message);  // WsClient::messageReceived — type으로 분기
 
     void openAccountDialog(int rowIndex);  // -1이면 신규 등록
     void populateAccountRow(int r);
@@ -125,6 +132,7 @@ private:
     QLabel* accountCountLabel_ = nullptr;
     QPushButton* accountRegisterBtn_ = nullptr;
     QPushButton* deleteAccountBtn_ = nullptr;
+    WsClient* wsClient_ = nullptr;
 
     QTableWidget* auditTable_ = nullptr;
     QDateEdit* auditStartDateEdit_ = nullptr;

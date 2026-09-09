@@ -30,6 +30,7 @@
 
 #include "dialogs/p7_account_dialog.h"
 #include "dialogs/p7_robot_dialog.h"
+#include "net/ws_client.h"
 #include "theme/calendar_style.h"
 #include "theme/tokens.h"
 #include "widgets/careguard_date_edit.h"
@@ -165,27 +166,7 @@ bool P7SettingsPage::eventFilter(QObject* watched, QEvent* event) {
 }
 
 P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
-    robots_ = {
-        {QStringLiteral("R-01"), QStringLiteral("192.168.0.11"), QStringLiteral("/limo_01"),
-         QStringLiteral("행복빌라 302 · 김순자"), Tokens::Level::Normal, QStringLiteral("● 온라인"),
-         QStringLiteral("6/6 정상"), QStringLiteral("1호기"), QStringLiteral("limo"), 41,
-         QStringLiteral("김순자 (C-001)"), QStringLiteral("192.168.0.9"),
-         QStringLiteral("최근 ping 응답 0.6s 전 · 세션 5d 1h")},
-        {QStringLiteral("R-02"), QStringLiteral("192.168.0.12"), QStringLiteral("/limo_02"),
-         QStringLiteral("은빛아파트 101 · 박영호"), Tokens::Level::Normal, QStringLiteral("● 온라인"),
-         QStringLiteral("6/6 정상"), QStringLiteral("2호기"), QStringLiteral("limo"), 42,
-         QStringLiteral("박영호 (C-002)"), QStringLiteral("192.168.0.9"),
-         QStringLiteral("최근 ping 응답 0.5s 전 · 세션 4d 3h")},
-        {QStringLiteral("R-03"), QStringLiteral("192.168.0.13"), QStringLiteral("/limo_03"),
-         QStringLiteral("솔마을 7호 · 이말순"), Tokens::Level::Attention, QStringLiteral("● 온라인"),
-         QStringLiteral("5/6 · voice 응답 지연"), QStringLiteral("3호기"), QStringLiteral("limo"), 43,
-         QStringLiteral("이말순 (C-003)"), QStringLiteral("192.168.0.9"),
-         QStringLiteral("최근 ping 응답 0.4s 전 · 세션 3d 2h")},
-        {QStringLiteral("R-04"), QStringLiteral("192.168.0.14"), QStringLiteral("/limo_04"),
-         QStringLiteral("동산주택 2층 · 최금례"), Tokens::Level::Offline, QStringLiteral("오프라인"),
-         Tokens::Format::EMPTY, QStringLiteral("4호기"), QStringLiteral("limo"), 44,
-         QStringLiteral("최금례 (C-004)"), QStringLiteral("192.168.0.9"), QString()},
-    };
+    // 로봇 목록은 하드코딩하지 않고 서버 DB에서 불러온다 (fetchRobots(), 생성자 마지막에서 호출).
 
     r03Nodes_ = {
         {QStringLiteral("patrol_manager"), false, QStringLiteral("up 3d 2h")},
@@ -222,6 +203,11 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     fetchAccounts();
     fetchRecipients();
     fetchAuditLog();
+    fetchRobots();
+
+    wsClient_ = new WsClient(this);
+    connect(wsClient_, &WsClient::messageReceived, this, &P7SettingsPage::handleWsMessage);
+    wsClient_->connectToServer();
 }
 
 QWidget* P7SettingsPage::buildRobotTab() {
@@ -790,6 +776,83 @@ void P7SettingsPage::refreshRobotTable() {
     }
 }
 
+void P7SettingsPage::fetchRobots() {
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/robots")));
+    QNetworkReply* reply = netManager_->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        handleRobotsReply(reply);
+        reply->deleteLater();
+    });
+}
+
+void P7SettingsPage::handleRobotsReply(QNetworkReply* reply) {
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode != 200) {
+        robots_.clear();
+        if (robotTable_ != nullptr) refreshRobotTable();
+        return;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+    std::vector<RobotRow> rows;
+    for (const QJsonValue& value : doc.array()) {
+        const QJsonObject obj = value.toObject();
+        RobotRow row;
+        row.id = obj.value("code").toString();
+        row.name = obj.value("name").toString();
+        row.model = obj.value("model").toString();
+        row.rosDomainId = obj.value("ros_domain_id").toInt(0);
+        const bool online = obj.value("is_online").toBool();
+        row.level = online ? Tokens::Level::Normal : Tokens::Level::Offline;
+        row.statusDetail = online ? QStringLiteral("● 온라인") : QStringLiteral("오프라인");
+        rows.push_back(row);
+    }
+    robots_ = rows;
+    if (robotTable_ != nullptr) refreshRobotTable();
+}
+
+void P7SettingsPage::registerRobot(const RobotDialog::RobotData& data) {
+    QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/robots")));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    const QJsonObject body{
+        {"code", data.code},
+        {"name", data.name},
+        {"model", data.model},
+        {"ros_domain_id", data.rosDomainId},
+    };
+    QNetworkReply* reply = netManager_->post(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusCode != 200 && statusCode != 201) {
+            const QJsonObject err = QJsonDocument::fromJson(reply->readAll()).object();
+            const QString detail = err.value("detail").toString();
+            reply->deleteLater();
+            QMessageBox::warning(this, QStringLiteral("로봇 등록 실패"),
+                                  detail.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다") : detail);
+            return;
+        }
+        reply->deleteLater();
+        fetchRobots();
+    });
+}
+
+void P7SettingsPage::handleWsMessage(const QJsonObject& message) {
+    if (message.value(QStringLiteral("type")).toString() != QStringLiteral("robot_status")) return;
+
+    const QString code = message.value(QStringLiteral("robot_code")).toString();
+    const bool online = message.value(QStringLiteral("online")).toBool();
+    for (int r = 0; r < static_cast<int>(robots_.size()); ++r) {
+        if (robots_[static_cast<size_t>(r)].id == code) {
+            robots_[static_cast<size_t>(r)].level = online ? Tokens::Level::Normal : Tokens::Level::Offline;
+            robots_[static_cast<size_t>(r)].statusDetail =
+                online ? QStringLiteral("● 온라인") : QStringLiteral("오프라인");
+            if (robotTable_ != nullptr) populateRobotRow(r);
+            break;
+        }
+    }
+}
+
 void P7SettingsPage::openRobotDialog(int rowIndex) {
     const bool isNew = (rowIndex < 0);
     RobotDialog::RobotData data;
@@ -835,29 +898,21 @@ void P7SettingsPage::openRobotDialog(int rowIndex) {
                                     recipientOptions, this);
     connect(dialog, &RobotDialog::robotSaved, this,
             [this, rowIndex, isNew, previousRecipient](const RobotDialog::RobotData& saved) {
-        RobotRow row;
         if (isNew) {
-            row.id = saved.code;
-            row.ip = QStringLiteral("—");
-            row.ns = QStringLiteral("/limo_%1").arg(saved.code.mid(2));
-            row.level = Tokens::Level::Offline;
-            row.statusDetail = QStringLiteral("오프라인");
-            row.nodeSummary = Tokens::Format::EMPTY;
-        } else {
-            row = robots_[static_cast<size_t>(rowIndex)];
+            // 신규 등록은 서버(DB)에 저장하고, 응답 후 목록을 다시 불러와 반영한다.
+            registerRobot(saved);
+            return;
         }
+        // 기존 로봇 수정은 이번 범위 밖 — 지금까지처럼 로컬 표시만 갱신한다.
+        RobotRow row = robots_[static_cast<size_t>(rowIndex)];
         row.name = saved.name;
         row.model = saved.model;
         row.rosDomainId = saved.rosDomainId;
         row.recipientLabel = saved.recipientLabel;
-        if (isNew || saved.recipientLabel != previousRecipient) {
+        if (saved.recipientLabel != previousRecipient) {
             row.mapRecipient = saved.recipientLabel;
         }
-        if (isNew) {
-            robots_.push_back(row);
-        } else {
-            robots_[static_cast<size_t>(rowIndex)] = row;
-        }
+        robots_[static_cast<size_t>(rowIndex)] = row;
         refreshRobotTable();
     });
     connect(dialog, &RobotDialog::robotDeregisterRequested, this, [this, rowIndex](const QString&) {

@@ -1,7 +1,7 @@
 from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
@@ -326,6 +326,38 @@ class PatrolRunItem(BaseModel):
     started_at: datetime
     ended_at: Optional[datetime] = None
     robot_connected: bool = False
+
+
+class RobotItem(BaseModel):
+    id: int
+    code: str
+    name: str
+    model: str
+    ros_domain_id: Optional[int] = None
+    is_online: bool
+
+
+class RegisterRobotRequest(BaseModel):
+    # DB 제약(robot.code VARCHAR(16), robot.ros_domain_id CHECK 0~232)과 동일한 범위를
+    # 여기서도 검증한다 — 안 그러면 DB 제약 위반이 그대로 처리 안 된 예외로 터져 500이
+    # 되고, 클라이언트는 "서버에 연결할 수 없습니다" 같은 엉뚱한 메시지를 보게 된다.
+    code: str = Field(max_length=16)
+    name: str
+    model: str = "limo"
+    ros_domain_id: Optional[int] = Field(default=None, ge=0, le=232)
+
+
+class RegisterRobotResponse(RobotItem):
+    pass
+
+
+class RobotThresholds(BaseModel):
+    battery_attention_pct: int = Field(default=30, ge=0, le=100)
+    battery_return_pct: int = Field(default=20, ge=0, le=100)
+    voice_wait_sec: int = Field(default=8, ge=1, le=120)
+    reconnect_retry_sec: int = Field(default=30, ge=1, le=600)
+    med_missed_wait_min: int = Field(default=10, ge=1, le=1440)
+    med_reannounce_count: int = Field(default=2, ge=0, le=20)
 
 
 class MissionCreate(BaseModel):
