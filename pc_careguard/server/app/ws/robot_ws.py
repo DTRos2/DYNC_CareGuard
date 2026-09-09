@@ -11,8 +11,17 @@ from ..api.v1 import media
 
 router = APIRouter()
 
-# robot.code -> 연결된 소켓. 로봇 하나당 커넥션 하나만 유지한다(같은 코드로 다시 붙으면
-# 이전 항목을 덮어쓴다 — agent가 재연결할 때 흔히 벌어지는 상황).
+# robot.code -> 명령을 받을 소켓(downlink_node 전용). 로봇 하나당 커넥션 하나만
+# 유지한다(같은 코드로 다시 붙으면 이전 항목을 덮어쓴다 — agent가 재연결할 때 흔히
+# 벌어지는 상황).
+#
+# uplink_node(카메라·위치 등 상태를 올리기만 하는 별도 연결)를 이 딕셔너리에 같이
+# 담던 시절엔, 와이파이가 끊겼다 붙을 때 uplink가 downlink보다 "나중에" 재연결되면
+# 이 자리를 uplink 소켓이 차지해버렸다 — uplink_node는 들어오는 메시지를 안 읽으므로
+# (연결 유지 목적으로만 wait_closed()) send_command로 보낸 teleop/save 명령이 그
+# 소켓으로 가서 조용히 사라졌다(소켓 자체는 살아있어 서버 입장에선 "전송 성공"으로
+# 보여 에러도 안 남았다). 그래서 role(uplink/downlink)로 딕셔너리를 분리했다 —
+# _connections는 downlink 전용, 아래 _telemetry_connections는 uplink 전용.
 _connections: Dict[str, WebSocket] = {}
 
 # robot.code -> 마지막으로 알린 배터리 상태("normal"/"attention"/"return_needed").
@@ -27,9 +36,42 @@ _battery_alert_state: Dict[str, str] = {}
 _battery_check_interval_sec = 5.0
 _last_battery_check: Dict[str, float] = {}
 
+# robot.code -> uplink 소켓. send_command/is_connected는 이 딕셔너리를 절대 보지
+# 않는다 — 명령 라우팅과 완전히 분리하기 위한 용도라, 지금은 연결 수명 추적 외의
+# 다른 목적으로는 쓰지 않는다.
+_telemetry_connections: Dict[str, WebSocket] = {}
+
+# robot.code -> 가장 최근 position 메시지({"x", "y", "yaw"}). 예전엔 position이 오는
+# 즉시 대시보드로 relay만 하고 서버 어디에도 안 남겼다 — 그 사이 새로 접속한 대시보드는
+# 로봇이 마침 안 움직이고 있으면(다음 position이 언제 올지 알 수 없음) 화면에 위치가
+# 하나도 안 떴다. 여기 보관해두고 dashboard_ws.py가 신규 접속 시 한 번 뿌려준다.
+_latest_positions: Dict[str, dict] = {}
+
 
 def is_connected(robot_code: str) -> bool:
     return robot_code in _connections
+
+
+def connected_robot_codes() -> list:
+    # dashboard_ws.py가 신규 접속 시 "지금 온라인인 로봇" 배지를 채우는 데 쓴다
+    # (_latest_positions와 같은 이유의 hydration — robot_status는 연결/해제
+    # "전환" 시점에만 broadcast되므로, 그 사이에 새로 붙은 대시보드는 이걸 안 부르면
+    # 로봇이 이미 오프라인이어도 화면엔 계속 "연결됨"으로 남거나 반대로 이미 온라인인데
+    # "모름" 상태로 남는다).
+    return list(_connections.keys())
+
+
+def latest_positions() -> Dict[str, dict]:
+    return dict(_latest_positions)
+
+
+def _robot_exists(robot_code: str) -> bool:
+    # robot_code는 인증 없이 클라이언트가 자유롭게 지정하는 쿼리 파라미터라, DB에
+    # 등록된 로봇인지만이라도 확인한다 — media.py/map.py의 같은 조회 패턴을 그대로 쓴다.
+    # 토큰 인증까지는 로봇이 여러 대로 늘거나 신뢰 안 되는 네트워크에 나갈 때로 미룬다.
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
+        return cur.fetchone() is not None
 
 
 async def send_command(robot_code: str, message: dict) -> bool:
@@ -46,10 +88,24 @@ async def send_command(robot_code: str, message: dict) -> bool:
 
 
 @router.websocket("/ws/robot")
-async def robot_ws_endpoint(websocket: WebSocket, robot_code: str = Query(...)):
+async def robot_ws_endpoint(websocket: WebSocket, robot_code: str = Query(...), role: str = Query("downlink")):
+    if not _robot_exists(robot_code):
+        await websocket.close(code=4404)
+        return
+
+    # downlink(명령 수신)와 uplink(상태 송신 전용)를 서로 다른 딕셔너리에 담는다 — 위
+    # _connections 주석 참고. role을 안 보내는 클라이언트는 downlink로 취급한다(과거
+    # 동작과 호환 + 더 안전한 기본값: 모르면 "명령을 받을 수 있는 연결"로 다뤄서 최소한
+    # send_command가 조용히 실패하지 않게 한다).
+    connections = _telemetry_connections if role == "uplink" else _connections
+
     await websocket.accept()
-    _connections[robot_code] = websocket
-    await dashboard_ws.broadcast({"type": "robot_status", "robot_code": robot_code, "online": True})
+    connections[robot_code] = websocket
+    if connections is _connections:
+        # "온라인" 배지는 명령이 실제로 전달될 수 있는지(=downlink 연결 여부)를
+        # 뜻해야 의미가 있다 — uplink만 살아있어도(카메라는 보이는데 명령은 안 먹히는
+        # 지금 같은 상태) "온라인"으로 보이면 사용자가 위험을 못 알아챈다.
+        await dashboard_ws.broadcast({"type": "robot_status", "robot_code": robot_code, "online": True})
 
     try:
         while True:
@@ -58,24 +114,19 @@ async def robot_ws_endpoint(websocket: WebSocket, robot_code: str = Query(...)):
     except WebSocketDisconnect:
         pass
     finally:
-        if _connections.get(robot_code) is websocket:
-            _connections.pop(robot_code, None)
-        await dashboard_ws.broadcast({"type": "robot_status", "robot_code": robot_code, "online": False})
+        if connections.get(robot_code) is websocket:
+            connections.pop(robot_code, None)
+        if connections is _connections:
+            await dashboard_ws.broadcast({"type": "robot_status", "robot_code": robot_code, "online": False})
 
 
 async def _handle_message(robot_code: str, message: dict) -> None:
     msg_type = message.get("type")
 
     if msg_type == "position":
-        await dashboard_ws.broadcast(
-            {
-                "type": "robot_position",
-                "robot_code": robot_code,
-                "x": message.get("x"),
-                "y": message.get("y"),
-                "yaw": message.get("yaw"),
-            }
-        )
+        position = {"x": message.get("x"), "y": message.get("y"), "yaw": message.get("yaw")}
+        _latest_positions[robot_code] = position
+        await dashboard_ws.broadcast({"type": "robot_position", "robot_code": robot_code, **position})
 
     elif msg_type == "slam_progress":
         await dashboard_ws.broadcast(
@@ -108,6 +159,18 @@ async def _handle_message(robot_code: str, message: dict) -> None:
         await dashboard_ws.broadcast(
             {
                 "type": "slam_scan_update",
+                "robot_code": robot_code,
+                "points": message.get("points"),
+            }
+        )
+
+    elif msg_type == "patrol_path_update":
+        # 순찰(Nav2) 중 planner_server가 발행하는 전역 경로 — rviz2가 보여주는 "로봇이
+        # 가려는 길" 선과 같은 것. slam_map_update/slam_scan_update와 같은 이유로
+        # 순수 중계만 하고 DB에는 안 남긴다(경로가 매 goal마다 계속 바뀌는 실시간 값).
+        await dashboard_ws.broadcast(
+            {
+                "type": "patrol_path_update",
                 "robot_code": robot_code,
                 "points": message.get("points"),
             }
@@ -183,6 +246,16 @@ def _save_slam_result(message: dict) -> Optional[int]:
             INSERT INTO map (robot_id, name, raw_yaml, resolution, origin_x, origin_y, origin_yaw,
                               width_px, height_px, is_active)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+            ON CONFLICT (robot_id, name) DO UPDATE SET
+                raw_yaml = EXCLUDED.raw_yaml,
+                resolution = EXCLUDED.resolution,
+                origin_x = EXCLUDED.origin_x,
+                origin_y = EXCLUDED.origin_y,
+                origin_yaw = EXCLUDED.origin_yaw,
+                width_px = EXCLUDED.width_px,
+                height_px = EXCLUDED.height_px,
+                is_active = TRUE,
+                created_at = NOW()
             RETURNING id
             """,
             (
@@ -197,10 +270,26 @@ def _save_slam_result(message: dict) -> Optional[int]:
                 message.get("height_px"),
             ),
         )
+        # map(robot_id, name)엔 UNIQUE 제약이 있다 — 같은 장소를 재매핑해서 같은
+        # 이름으로 다시 저장하면(실제로 흔한 시나리오) 예전엔 그냥 INSERT라 여기서
+        # UniqueViolation으로 예외가 나 통째로 실패했다(위 ON CONFLICT로 고침). map.id가
+        # 안 바뀌어야 그 맵에 이미 등록된 waypoint들이 재저장 후에도 계속 유효하므로,
+        # 새 행을 또 만드는 대신 기존 행을 덮어쓰는 쪽을 택했다.
         map_id = cur.fetchone()["id"]
 
         file_id = message.get("file_id")
         if file_id is not None:
+            # 같은 map_id로 다시 저장되는 경우, 그 map_id에 이미 연결돼 있던 예전 이미지
+            # 파일이 있으면 "현재 이미지" 후보에서 빼야 한다 — 안 그러면 GET /maps/active의
+            # LEFT JOIN files가 같은 맵에 파일 2개를 붙여 행이 중복된다. 실제 파일은
+            # 지우지 않는다(soft delete만) — server/storage/maps에 그대로 남겨서 나중에
+            # "파일로 등록"으로 여전히 불러올 수 있게 하는 게 이 .yaml 사이드카 기능의
+            # 목적 그 자체다.
+            cur.execute(
+                "UPDATE files SET deleted_at = NOW() "
+                "WHERE entity_type = 'map_image' AND entity_id = %s AND id != %s AND deleted_at IS NULL",
+                (str(map_id), file_id),
+            )
             cur.execute(
                 "UPDATE files SET entity_id = %s WHERE id = %s AND entity_type = 'map_image'",
                 (str(map_id), file_id),

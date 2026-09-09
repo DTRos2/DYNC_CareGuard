@@ -1,4 +1,4 @@
-#include "map_file_register_dialog.h"
+#include "p5_map_file_register_dialog.h"
 
 #include <QComboBox>
 #include <QEvent>

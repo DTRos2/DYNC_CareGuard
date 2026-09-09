@@ -2,9 +2,10 @@
 
 #include <QAbstractItemView>
 #include <QButtonGroup>
-#include <QComboBox>
+#include <QDateEdit>
 #include <QDateTime>
 #include <QDialog>
+#include <QEvent>
 #include <QFont>
 #include <QFrame>
 #include <QGridLayout>
@@ -23,7 +24,6 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcessEnvironment>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QResizeEvent>
@@ -31,12 +31,18 @@
 #include <QSizePolicy>
 #include <QSpacerItem>
 #include <QStackedWidget>
+#include <QPainter>
+#include <QStyle>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVideoWidget>
 
+#include "net/ws_client.h"
+#include "theme/calendar_style.h"
 #include "theme/tokens.h"
+#include "widgets/careguard_date_edit.h"
+#include "widgets/live_search_line_edit.h"
 #include "widgets/simple_icons.h"
 
 QVector<VideoClip> mockVideoClips() {
@@ -76,10 +82,15 @@ QVector<VideoClip> mockVideoClips() {
 
 namespace {
 
+// state 프로퍼티 변경을 QSS에 반영하려면 폴리시를 다시 태워야 한다.
+void repolish(QWidget* widget) {
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+}
+
 // server/app/media.py GET /video-events 응답을 VideoClip으로 매핑하는 헬퍼들.
 
-// Python datetime.isoformat()은 마이크로초(6자리)까지 내려주는데 Qt::ISODateWithMs는
-// 밀리초(3자리)까지만 인식해서, 소수점 이하를 3자리로 잘라낸 뒤 파싱한다.
+// 서버는 마이크로초(6자리)까지 주는데 Qt::ISODateWithMs는 밀리초(3자리)까지만 인식해서 잘라낸다.
 QDateTime parseIsoDateTime(const QString& raw) {
     if (raw.isEmpty()) return QDateTime();
     QString trimmed = raw;
@@ -104,9 +115,8 @@ QString formatDurationLabel(int durationSec) {
         .arg(sec % 60, 2, 10, QChar('0'));
 }
 
-// user_action_log 기반 열람 이력 배열을 "HH:MM:SS · 열람자 · 사유: ..." 문자열 리스트로 만든다.
-// GET /video-events와 POST /video-events/{id}/view 응답이 view_history를 같은 모양
-// (occurred_at/login_id/reason)으로 내려주므로 두 곳(videoClipFromJson·recordVideoView)에서 같이 쓴다.
+// view_history 배열을 "HH:MM:SS · 열람자 · 사유: ..." 문자열 리스트로 바꾼다. 두 API 응답이
+// 같은 모양이라 videoClipFromJson·recordVideoView에서 공용으로 쓴다.
 QStringList parseViewHistoryArray(const QJsonArray& history) {
     QStringList result;
     for (const QJsonValue& entry : history) {
@@ -147,16 +157,14 @@ VideoClip videoClipFromJson(const QJsonObject& obj) {
     clip.durationLabel = formatDurationLabel(obj.value("duration_sec").toInt());
     clip.viewCount = obj.value("view_count").toInt();
 
-    // TODO(team): 보관 정책이 아직 없어 files.retention_until이 항상 null로 내려온다.
-    // 그동안은 만료 배지가 거짓으로 D-0 경고를 띄우지 않도록 넉넉한 기본값을 쓴다.
+    // TODO(team): retention_until이 아직 항상 null이라 임시로 30일 기본값을 쓴다.
     const QDateTime retentionUntil = parseIsoDateTime(obj.value("retention_until").toString());
     clip.expireDays = retentionUntil.isValid()
                            ? qMax(0, static_cast<int>(QDateTime::currentDateTime().daysTo(retentionUntil)))
                            : 30;
 
     clip.location = obj.value("location").toString();
-    // video_url은 서버 기준 상대 경로("/media/files/{id}")라, serverUrl_은 이 함수가
-    // 몰라서 여기선 그대로 담아두고 handleVideoClipsReply()에서 앞에 이어붙인다.
+    // video_url은 상대 경로("/media/files/{id}") — serverUrl_은 handleVideoClipsReply()에서 붙인다.
     clip.videoUrl = obj.value("video_url").toString();
     clip.viewHistory = parseViewHistoryArray(obj.value("view_history").toArray());
 
@@ -280,9 +288,7 @@ constexpr const char* kPlaybackRateLabels[] = {"0.5×", "1.0×", "1.25×", "1.5�
 constexpr int kPlaybackRateCount = sizeof(kPlaybackRates) / sizeof(kPlaybackRates[0]);
 constexpr int kDefaultPlaybackRateIndex = 1;  // 1.0× — QMediaPlayer 기본 배속과 동일
 
-// §5-1 상태 배지. "순찰"은 §7-1 상태 판정(EMERGENCY/ATTENTION/OFFLINE/NORMAL)과
-// 무관한 중립 태그라 badge level 표준 목록엔 없다 — OFFLINE 토큰과 배경/텍스트 색이 동일해
-// (#F1F4F6 / #5A6774, §1-4) 재사용한다.
+// 상태 배지. "순찰"은 별도 레벨이 없어 OFFLINE 색(#F1F4F6/#5A6774)을 재사용한다.
 QLabel* makeBadge(const VideoClip& clip) {
     auto* badge = new QLabel(clip.tagText);
     badge->setObjectName("badge");
@@ -397,14 +403,40 @@ QFrame* makeEmptySlot(QWidget* parent) {
     return slot;
 }
 
+// QSS는 셀 단위로만 칠해져서, 컬럼 틈이 있는 이 테이블에선 선택된 행이 8개로 끊겨
+// 보인다. 행 전체를 감싸는 테두리 하나를 paintEvent에서 직접 그려서 해결한다.
+class RowBorderTableWidget : public QTableWidget {
+public:
+    using QTableWidget::QTableWidget;
+
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        QTableWidget::paintEvent(event);  // 셀 내용(텍스트 등)을 먼저 평소대로 그린다
+
+        const QModelIndexList selectedRows = selectionModel()->selectedRows();
+        if (selectedRows.isEmpty()) return;
+        const int row = selectedRows.first().row();
+
+        // 첫 컬럼과 마지막 컬럼의 뷰포트 좌표를 합쳐 행 전체를 감싸는 사각형을 구한다.
+        const QRect rowRect = visualRect(model()->index(row, 0))
+                                   .united(visualRect(model()->index(row, columnCount() - 1)));
+        if (rowRect.isEmpty()) return;
+
+        QPainter painter(viewport());
+        painter.setRenderHint(QPainter::Antialiasing);
+        QPen pen(QColor("#0E9384"));  // Tokens::ACCENT
+        pen.setWidthF(1.5);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(QRectF(rowRect).adjusted(0.75, 0.75, -0.75, -0.75), 6, 6);
+    }
+};
+
 }  // namespace
 
 // ============================================================
-// 재생 모달 (p4_video_playback_modal_wireframe 그대로).
-// 실제 스트림/파일 연동 전까지는 영상 자리를 플레이스홀더로만 표시한다.
-// Q_OBJECT 클래스를 헤더 없이 .cpp에 직접 둔 뒤 파일 끝의 #include "p4_video_page.moc"로
-// AUTOMOC이 처리하게 하는 표준 Qt/CMake 패턴을 쓴다 (다른 페이지에서 재사용할 일이 생기면
-// dialogs/video_player_dialog.{h,cpp}로 옮긴다).
+// 재생 모달. Q_OBJECT 클래스를 헤더 없이 .cpp에 두고 파일 끝 #include "p4_video_page.moc"로
+// AUTOMOC이 처리하게 하는 패턴을 쓴다.
 // ============================================================
 class VideoPlayerDialog : public QDialog {
     Q_OBJECT
@@ -501,9 +533,8 @@ private:
         leftColumnLayout_->setContentsMargins(0, 0, 0, 0);
         leftColumnLayout_->setSpacing(8);
 
-        // 영상 영역이 stretch=1로 남는 세로 공간을 다 가져간다 — 심박 타임라인 박스를 뺀 만큼
-        // 더 커진다. videoArea_는 멤버로 들고 있다가 전체화면 진입 시 이 레이아웃에서 빼서
-        // fullscreenHost_로 옮긴다 (toggleFullScreen() 참고).
+        // videoArea_는 멤버로 들고 있다가 전체화면 진입 시 fullscreenHost_로 옮긴다
+        // (toggleFullScreen() 참고).
         videoArea_ = buildVideoArea();
         leftColumnLayout_->addWidget(videoArea_, /*stretch=*/1);
         leftColumnLayout_->addLayout(buildPlaybackRow());
@@ -544,12 +575,9 @@ private:
         centerRow->addStretch();
         centerRow->addWidget(buildLockCard());
 
-        // 실제 재생 위젯. GET /media/files/{id}를 QMediaPlayer가 HTTP로 직접 받아 재생한다
-        // (서버가 Range 요청을 지원해서 탐색도 됨). 잠금 해제 전엔 숨겨두고, unlock()에서 보여준다.
+        // QMediaPlayer가 GET /media/files/{id}를 직접 받아 재생한다. unlock() 전엔 숨김.
         videoWidget_ = new QVideoWidget(area);
-        // 로봇 녹화 영상은 항상 640×480(4:3)으로 고정. QVideoWidget::sizeHint()가 영상 원본
-        // 해상도를 그대로 돌려주는데, maximumSize를 그 해상도로 캡 걸어두면 레이아웃이 그 이상
-        // 커지지 않으면서(=화면 밖으로 안 나감) 좁은 모달에서는 비율 유지하며 줄어든다.
+        // 영상 해상도는 640×480 고정 — maximumSize로 캡을 걸어 그 이상 커지지 않게 한다.
         videoWidget_->setMinimumSize(320, 240);
         videoWidget_->setMaximumSize(640, 480);
         videoWidget_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -583,10 +611,7 @@ private:
     QWidget* buildLockCard() {
         lockCard_ = new QFrame(this);
         lockCard_->setObjectName("videoLockCard");
-        // setMaximumWidth만 쓰면 QLabel::wordWrap의 heightForWidth가 첫 레이아웃 패스에서
-        // 아직 좁혀지지 않은 폭 기준으로 계산돼 줄바꿈 높이가 실제보다 작게 잡히고, 그 결과
-        // 두 안내 문구 QLabel이 서로 겹쳐 그려진다. setFixedWidth로 폭을 처음부터 고정해야
-        // 줄바꿈 높이가 그 폭 기준으로 정확히 계산된다.
+        // setFixedWidth로 폭을 처음부터 고정해야 wordWrap 높이 계산이 정확해져 라벨이 안 겹친다.
         lockCard_->setFixedWidth(300);
         auto* layout = new QVBoxLayout(lockCard_);
         layout->setContentsMargins(18, 14, 18, 14);
@@ -637,8 +662,7 @@ private:
         auto* row = new QHBoxLayout();
         row->setSpacing(6);
 
-        // buildVideoArea()가 먼저 호출돼 player_가 이미 만들어진 뒤라(buildLeftColumn() 순서
-        // 참고) 여기서 바로 연결해도 된다. unlock() 전엔 재생 자체가 안 되니 비활성으로 시작.
+        // player_는 buildVideoArea()에서 이미 만들어진 뒤다. unlock() 전엔 비활성으로 시작.
         auto makeIconBtn = [row, this](const QIcon& icon, int px, const QString& tooltip) {
             auto* btn = new QPushButton(this);
             btn->setProperty("variant", "ghost");
@@ -683,8 +707,7 @@ private:
                 formatDurationLabel(static_cast<int>(posMs / 1000)), clip_.durationLabel));
         });
 
-        // 클릭할 때마다 kPlaybackRates를 한 칸씩 돌며 QMediaPlayer::setPlaybackRate()에 반영한다.
-        // unlock() 전엔 재생 자체가 안 되니 다른 재생 컨트롤과 마찬가지로 비활성으로 시작.
+        // 클릭할 때마다 kPlaybackRates를 한 칸씩 돌며 배속을 바꾼다. unlock() 전엔 비활성.
         speedBtn_ = new QPushButton(
             QStringLiteral("배속 %1").arg(QString::fromUtf8(kPlaybackRateLabels[kDefaultPlaybackRateIndex])),
             this);
@@ -915,7 +938,7 @@ private:
     }
 
     void expireSession() {
-    // 세션 만료: 재생 중이던 화면을 다시 잠그고, 사유를 새로 입력해야만 재생 가능하게 만든다.
+    // 재생 화면을 다시 잠그고, 사유를 새로 입력해야 재생 가능하게 만든다.
     viewed_ = false;
     player_->pause();
     videoWidget_->hide();
@@ -934,9 +957,7 @@ private:
     }
 
     void toggleFullScreen() {
-        // QDialog는 showFullScreen()을 걸어도 리눅스 창관리자가 무시하는 경우가 많아,
-        // 영상 영역(videoArea_)만 떼어내 별도 창(Qt::Window)에 옮긴다. 모니터 전체가 아니라
-        // CareGuard 창 영역만 채우도록 parentWidget()의 geometry()에 맞춘다.
+        // 리눅스에서 showFullScreen()이 잘 안 먹혀서, videoArea_만 떼어 별도 창으로 띄운다.
         if (!isFullScreen_) {
             if (!fullscreenHost_) {
                 fullscreenHost_ = new QWidget(this, Qt::Window | Qt::FramelessWindowHint);
@@ -948,9 +969,7 @@ private:
             leftColumnLayout_->removeWidget(videoArea_);
             static_cast<QVBoxLayout*>(fullscreenHost_->layout())->addWidget(videoArea_, 1);
             fullscreenHost_->setGeometry(parentWidget()->geometry());
-            // 평소엔 videoWidget_을 영상 원본 해상도(640×480)로 캡 걸어두지만, 전체화면에선
-            // 그 캡을 풀어야 화면 크기에 맞춰 비율 유지하며 커진다(QVideoWidget이 내부적으로
-            // 종횡비를 유지해 레터박스 처리하므로 찌그러지진 않는다).
+            // 전체화면에선 640×480 캡을 풀어야 화면 크기에 맞춰 커진다.
             videoWidget_->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
             fullscreenHost_->show();
             fullscreenHost_->raise();
@@ -1002,8 +1021,7 @@ private:
     QMediaPlayer* player_ = nullptr;
     QAudioOutput* audioOutput_ = nullptr;
 
-    // 하단 재생 컨트롤 (buildPlaybackRow()). unlock() 전까지는 비활성 — 사유 입력 전엔
-    // 재생 자체가 안 되니 되감기/앞으로가기·배속 조절도 의미가 없다.
+    // 하단 재생 컨트롤. unlock() 전까지는 비활성.
     QPushButton* playToggleBtn_ = nullptr;
     QPushButton* seekBackBtn_ = nullptr;
     QPushButton* seekForwardBtn_ = nullptr;
@@ -1011,6 +1029,15 @@ private:
     int playbackRateIndex_ = kDefaultPlaybackRateIndex;  // kPlaybackRates 인덱스. speedBtn_ 클릭마다 순환
     QLabel* timeLabel_ = nullptr;
 };
+
+bool P4VideoPage::eventFilter(QObject* watched, QEvent* event) {
+    // 읽기 전용 날짜 칸 클릭을 "직접"로 전환한다 (P2/P7과 동일 패턴).
+    if (event->type() == QEvent::MouseButtonPress &&
+        (watched == startDateEdit_ || watched == endDateEdit_) && startDateEdit_->isReadOnly()) {
+        applyPeriodPreset(-1);
+    }
+    return QWidget::eventFilter(watched, event);
+}
 
 P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
     serverUrl_ = QProcessEnvironment::systemEnvironment().value(
@@ -1022,31 +1049,13 @@ P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
                                 Tokens::Layout::PAGE_PADDING, Tokens::Layout::PAGE_PADDING);
     layout->setSpacing(Tokens::Layout::CARD_GAP);
 
-    // ---------- 헤더: 타이틀 + 저장 용량 게이지 + 보관 정책 ----------
+    // ---------- 헤더: 타이틀 + 보관 정책 ----------
     auto* headerRow = new QHBoxLayout();
 
     auto* title = new QLabel(QStringLiteral("영상 관리"), this);
     title->setObjectName("pageTitle");
     headerRow->addWidget(title);
     headerRow->addStretch();
-
-    auto* storageLabel = new QLabel(QStringLiteral("저장 용량"), this);
-    storageLabel->setProperty("role", "secondary");
-    headerRow->addWidget(storageLabel);
-
-    // TODO(team): 실사용량은 server/media.py 연동 후 대체 (지금은 wireframe 값 그대로 mock)
-    constexpr int usedGb = 31;
-    constexpr int totalGb = 50;
-    auto* storageGauge = new QProgressBar(this);
-    storageGauge->setRange(0, totalGb);
-    storageGauge->setValue(usedGb);
-    storageGauge->setTextVisible(false);
-    storageGauge->setFixedWidth(90);
-    headerRow->addWidget(storageGauge);
-
-    auto* storageText = new QLabel(QStringLiteral("%1/%2 GB").arg(usedGb).arg(totalGb), this);
-    storageText->setProperty("role", "mono");
-    headerRow->addWidget(storageText);
 
     auto* policyBtn = new QPushButton(QStringLiteral("보관 정책"), this);
     policyBtn->setProperty("variant", "secondary");
@@ -1070,35 +1079,65 @@ P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
     layout->addLayout(headerRow);
 
     // ---------- 필터 바 ----------
+    // P7 "로그" 탭과 같은 구성 — 기간 세그먼트 + 날짜 범위 + 검색 하나. 로봇 ID·대상자
+    // 이름·유형은 검색어 하나로 흡수한다(matchesFilters() 참고).
     auto* filterRow = new QHBoxLayout();
     filterRow->setSpacing(6);
 
-    // 콤보박스 선택이 바뀌면(currentIndexChanged) rebuildCardGrid()가 matchesFilters()로
-    // clips_를 다시 걸러서 그린다. rebuildCardGrid는 인자가 없어 시그널의 int index는 버려진다.
-    auto addFilter = [this, filterRow](const QString& allLabel, const QStringList& items) {
-        auto* combo = new QComboBox(this);
-        combo->addItem(allLabel);
-        combo->addItems(items);
-        // 항목 중 가장 긴 텍스트에 맞춰 폭을 자동으로 늘린다 (일반 콤보박스에선 잘 동작함 —
-        // editable로 바꿨을 때만 이 정책이 안 먹혀서 그때는 별도 계산이 필요했었음).
-        combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    const QDate today = QDate::currentDate();
 
-        filterRow->addWidget(combo);
-        connect(combo, &QComboBox::currentIndexChanged, this, &P4VideoPage::rebuildCardGrid);
-        return combo;
-    };
-    robotFilter_ = addFilter(QStringLiteral("로봇 전체"),
-                              {QStringLiteral("R-01"), QStringLiteral("R-02"), QStringLiteral("R-03")});
-    recipientFilter_ =
-        addFilter(QStringLiteral("대상자 전체"),
-                  {QStringLiteral("김순자"), QStringLiteral("박영호"), QStringLiteral("이말순")});
-    periodFilter_ = addFilter(
-        QStringLiteral("기간 전체"),
-        {QStringLiteral("오늘"), QStringLiteral("최근 7일"), QStringLiteral("최근 30일")});
-    typeFilter_ = addFilter(
-        QStringLiteral("유형 전체"),
-        {QStringLiteral("긴급"), QStringLiteral("주의"), QStringLiteral("순찰")});
-    filterRow->addStretch();
+    auto* periodSeg = new QWidget(this);
+    auto* periodSegLayout = new QHBoxLayout(periodSeg);
+    periodSegLayout->setContentsMargins(0, 0, 0, 0);
+    periodSegLayout->setSpacing(0);
+
+    auto* periodTodayBtn = new QPushButton(QStringLiteral("오늘"), periodSeg);
+    auto* periodWeekBtn = new QPushButton(QStringLiteral("7일"), periodSeg);
+    auto* periodMonthBtn = new QPushButton(QStringLiteral("30일"), periodSeg);
+    periodCustomBtn_ = new QPushButton(QStringLiteral("직접"), periodSeg);
+    periodTodayBtn->setProperty("pos", "first");
+    periodCustomBtn_->setProperty("pos", "last");
+
+    auto* periodGroup = new QButtonGroup(this);
+    periodGroup->setExclusive(true);
+    for (auto* btn : {periodTodayBtn, periodWeekBtn, periodMonthBtn, periodCustomBtn_}) {
+        btn->setObjectName("segBtn");
+        btn->setCheckable(true);
+        periodSegLayout->addWidget(btn);
+        periodGroup->addButton(btn);
+    }
+    filterRow->addWidget(periodSeg);
+
+    connect(periodTodayBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(0); });
+    connect(periodWeekBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(6); });
+    connect(periodMonthBtn, &QPushButton::clicked, this, [this] { applyPeriodPreset(29); });
+    connect(periodCustomBtn_, &QPushButton::clicked, this, [this] { applyPeriodPreset(-1); });
+
+    startDateEdit_ = new CareGuardDateEdit(today, this);
+    CareGuard::applyCareGuardDateEdit(startDateEdit_);
+    filterRow->addWidget(startDateEdit_);
+
+    auto* tildeLabel = new QLabel(QStringLiteral("~"), this);
+    tildeLabel->setProperty("role", "muted");
+    filterRow->addWidget(tildeLabel);
+
+    endDateEdit_ = new CareGuardDateEdit(today, this);
+    CareGuard::applyCareGuardDateEdit(endDateEdit_);
+    filterRow->addWidget(endDateEdit_);
+
+    connect(startDateEdit_, &QDateEdit::dateChanged, this, &P4VideoPage::rebuildCardGrid);
+    connect(endDateEdit_, &QDateEdit::dateChanged, this, &P4VideoPage::rebuildCardGrid);
+    // 읽기 전용 칸 클릭을 잡아 "직접"로 전환한다 (eventFilter() 참고).
+    startDateEdit_->installEventFilter(this);
+    endDateEdit_->installEventFilter(this);
+
+    applyPeriodPreset(6);  // 초기 상태: 최근 7일, 읽기 전용 (기존 "기간 전체" 기본값 자리)
+    periodWeekBtn->setChecked(true);
+
+    searchEdit_ = new LiveSearchLineEdit(this);
+    searchEdit_->setPlaceholderText(QStringLiteral("로봇 · 대상자 · 유형 검색"));
+    connect(searchEdit_, &LiveSearchLineEdit::liveTextChanged, this, &P4VideoPage::rebuildCardGrid);
+    filterRow->addWidget(searchEdit_, /*stretch=*/1);
 
     auto* gridToggle = new QPushButton(QStringLiteral("그리드"), this);
     gridToggle->setObjectName("segBtn");
@@ -1149,27 +1188,33 @@ P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
     cardGrid_->setContentsMargins(0, 0, 0, 0);
 
     // ---------- 테이블 뷰 ----------
-    // TODO(team): §4-3 원안은 QTableView + 커스텀 델리게이트(행 상태 배경·좌측 바 등)인데,
-    // 지금은 QTableWidget으로 우선 동작하게만 만들어둔다. 필요해지면 모델/델리게이트로 교체.
+    // TODO(team): 원래 델리게이트 기반 설계인데 지금은 QTableWidget으로 간소화했다.
     static const QStringList kTableHeaders = {QStringLiteral("유형"),   QStringLiteral("로봇ID"),
                                                QStringLiteral("대상자"), QStringLiteral("이벤트"),
                                                QStringLiteral("촬영일시"), QStringLiteral("길이"),
                                                QStringLiteral("열람횟수"), QStringLiteral("만료")};
-    tableView_ = new QTableWidget(0, kTableHeaders.size(), this);
+    tableView_ = new RowBorderTableWidget(0, kTableHeaders.size(), this);
     tableView_->setHorizontalHeaderLabels(kTableHeaders);
     tableView_->verticalHeader()->setVisible(false);
     tableView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tableView_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tableView_->setSelectionMode(QAbstractItemView::SingleSelection);
-    // 전역 QSS는 QTableView의 selection-background-color를 transparent로 비워둔다 —
-    // §4-3 원안처럼 커스텀 델리게이트가 선택 테두리를 따로 그려준다는 전제라, 방법 A(델리게이트
-    // 없음)에선 배경 없이 텍스트만 하이라이트색(흰색)으로 바뀌어 안 보이는 문제가 생긴다.
-    // 이 테이블에만 로컬 스타일시트로 실제 배경/글자색을 입혀서 선택 표시가 보이게 한다.
+    // 전역 QSS는 선택 배경을 transparent로 비워둬서 텍스트가 흰 배경에 흰 글씨로 안 보일
+    // 수 있다 — 글자색만 로컬로 지정한다. margin은 컬럼·행 사이 여백, 선택 표시는 셀
+    // 배경 대신 RowBorderTableWidget::paintEvent()가 행 전체 테두리로 그린다.
+    // outline: none은 Qt 기본 점선 포커스 테두리 제거(setFocusPolicy(NoFocus)와 이중 방지).
     tableView_->setStyleSheet(
-        QStringLiteral("QTableView::item:selected { background: rgba(14, 147, 132, 0.14); "
+        QStringLiteral("QTableView::item { padding: 8px 14px; margin: 4px 8px; outline: none; }"
+                        "QTableView::item:selected { background: transparent; border: none; "
                         "color: #16202B; }"));
     tableView_->setShowGrid(false);
-    tableView_->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);  // "이벤트" 열만 늘어남
+    // 셀 편집이 없고 클릭 즉시 재생 모달을 여는 용도라 "현재 셀" 표시가 필요 없다.
+    tableView_->setFocusPolicy(Qt::NoFocus);
+    // 컬럼 전부 Stretch — 창 폭에 맞춰 8개 컬럼이 비례해서 늘어나 오른쪽 여백이 안 남는다.
+    auto* tableHeader = tableView_->horizontalHeader();
+    for (int col = 0; col < kTableHeaders.size(); ++col) {
+        tableHeader->setSectionResizeMode(col, QHeaderView::Stretch);
+    }
     // 그리드 카드 클릭과 동일하게, 선택 상태를 남기지 않고 클릭 즉시 재생 모달을 연다.
     connect(tableView_, &QTableWidget::cellClicked, this, [this](int row, int) {
         const int clipIndex = tableView_->item(row, 0)->data(Qt::UserRole).toInt();
@@ -1178,9 +1223,16 @@ P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
 
     rebuildCardGrid();  // rebuildTableView()도 안에서 같이 호출해 두 뷰를 한 번에 채운다
 
+    // 카드가 페이지 높이를 넘으면 스크롤되도록 gridPage_를 QScrollArea로 감싼다.
+    auto* gridScrollArea = new QScrollArea(this);
+    gridScrollArea->setWidgetResizable(true);
+    gridScrollArea->setFrameShape(QFrame::NoFrame);
+    gridScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    gridScrollArea->setWidget(gridPage_);
+
     auto* viewStack = new QStackedWidget(this);
-    viewStack->addWidget(gridPage_);   // index 0
-    viewStack->addWidget(tableView_);  // index 1
+    viewStack->addWidget(gridScrollArea);  // index 0
+    viewStack->addWidget(tableView_);      // index 1
     layout->addWidget(viewStack, /*stretch=*/1);
 
     connect(gridToggle, &QPushButton::toggled, this, [viewStack](bool checked) {
@@ -1190,6 +1242,20 @@ P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
         if (checked) viewStack->setCurrentIndex(1);
     });
 
+    fetchVideoClips();
+
+    // video_event_created push를 구독해 목록을 자동으로 다시 받아온다.
+    wsClient_ = new WsClient(this);
+    connect(wsClient_, &WsClient::messageReceived, this, &P4VideoPage::handleWsMessage);
+    wsClient_->connectToServer();
+}
+
+void P4VideoPage::handleWsMessage(const QJsonObject& message) {
+    if (message.value(QStringLiteral("type")).toString() !=
+        QStringLiteral("video_event_created")) {
+        return;
+    }
+    // 부분 필드만 오므로 diff 대신 GET /video-events를 다시 호출해 통째로 채운다.
     fetchVideoClips();
 }
 
@@ -1206,8 +1272,7 @@ void P4VideoPage::fetchVideoClips() {
 void P4VideoPage::handleVideoClipsReply(QNetworkReply* reply) {
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (statusCode != 200) {
-        // 네트워크 에러(statusCode == 0)나 서버 에러 — clips_는 비운 채로 두고, 카드 그리드는
-        // makeEmptySlot()의 "이벤트 발생 시 자동으로 추가됩니다" 안내만 보여준다.
+        // 네트워크/서버 에러 — clips_를 비우고 makeEmptySlot() 안내만 보여준다.
         clips_.clear();
         rebuildCardGrid();
         return;
@@ -1225,10 +1290,11 @@ void P4VideoPage::handleVideoClipsReply(QNetworkReply* reply) {
 }
 
 void P4VideoPage::rebuildCardGrid() {
-    // deleteLater() 필수: 열람 후 재생 모달을 닫으면 openVideoPlayer()가 그 클릭을 처리 중이던
-    // ClickableCard::mousePressEvent 콜스택 안에서 이 함수를 호출한다. 여기서 delete를 바로
-    // 쓰면 지금 이벤트를 처리 중인 카드 자신을 지우게 되어, mousePressEvent가 리턴하면서
-    // 이미 죽은 this로 QFrame::mousePressEvent를 호출해 use-after-free가 난다.
+    // 생성자의 날짜 초기화가 cardGrid_ 생성 전에 이 함수를 부를 수 있어 가드를 둔다.
+    if (cardGrid_ == nullptr) return;
+
+    // deleteLater() 필수 — 즉시 delete하면 mousePressEvent 콜스택 중에 자기 자신을
+    // 지워서 use-after-free가 난다.
     QLayoutItem* item;
     while ((item = cardGrid_->takeAt(0)) != nullptr) {
         if (QWidget* w = item->widget()) w->deleteLater();
@@ -1241,8 +1307,7 @@ void P4VideoPage::rebuildCardGrid() {
     cardGrid_->setSpacing(Tokens::Layout::CARD_GAP);
     cardGrid_->setContentsMargins(0, 0, 0, 0);
 
-    // 필터에 걸린 것만 그린다. 그리드 위치(shown)와 clips_ 원본 인덱스(i)를 분리해야
-    // 필터링 중에도 openVideoPlayer(i)가 항상 올바른 clip을 가리킨다.
+    // shown(그리드 위치)과 i(clips_ 인덱스)를 분리해 필터링 중에도 인덱스가 안 어긋나게 한다.
     int shown = 0;
     for (int i = 0; i < clips_.size(); ++i) {
         if (!matchesFilters(clips_[i])) continue;
@@ -1255,17 +1320,14 @@ void P4VideoPage::rebuildCardGrid() {
     for (int c = 0; c < columns_; ++c) {
         cardGrid_->setColumnStretch(c, 1);
     }
-    // 카드 행(row)엔 stretch를 안 걸어야 원래 크기를 유지한다. 대신 마지막에 stretch=1짜리
-    // 빈 행을 하나 더 둬서, 창이 카드 총합보다 클 때 남는 세로 공간을 그 행이 흡수하게 한다.
+    // 카드 행은 stretch 없이 원래 크기 유지, 마지막 빈 행에 stretch=1로 남는 공간을 흡수시킨다.
     const int rowCount = (shown + 1 + columns_ - 1) / columns_;
     cardGrid_->setRowStretch(rowCount, 1);
 
     rebuildTableView();
 }
 
-// rebuildCardGrid()와 같은 clips_/matchesFilters() 결과를 표로 그린다 (컬럼: 유형/로봇ID/대상자/
-// 이벤트/촬영일시/길이/열람횟수/만료). §4-3 원안(모델+델리게이트로 행 배경·좌측 바까지)의
-// 간소화 버전 — 색 강조는 셀 글자색 정도로만 표현한다.
+// rebuildCardGrid()와 같은 필터 결과를 표로 그린다. 색 강조는 셀 글자색 정도로만 표현.
 void P4VideoPage::rebuildTableView() {
     tableView_->setRowCount(0);
 
@@ -1275,6 +1337,12 @@ void P4VideoPage::rebuildTableView() {
 
         const int row = tableView_->rowCount();
         tableView_->insertRow(row);
+
+        // 모든 컬럼 값을 가운데 정렬로 통일한다 (기본은 왼쪽 정렬).
+        auto setCentered = [this, row](int col, QTableWidgetItem* item) {
+            item->setTextAlignment(Qt::AlignCenter);
+            tableView_->setItem(row, col, item);
+        };
 
         auto* typeItem = new QTableWidgetItem(clip.tagText);
         switch (clip.tagStyle) {
@@ -1287,26 +1355,24 @@ void P4VideoPage::rebuildTableView() {
             case VideoTagStyle::Neutral:
                 break;  // 기본 텍스트 색 그대로
         }
-        // cellClicked 핸들러가 클릭된 행의 실제 clips_ 인덱스를 알아야 하므로 0번 칸에 심어둔다
-        // (그리드 카드의 [this, i] 캡처와 같은 역할).
+        // cellClicked가 clips_ 인덱스를 알아야 해서 0번 칸에 심어둔다.
         typeItem->setData(Qt::UserRole, i);
-        tableView_->setItem(row, 0, typeItem);
+        setCentered(0, typeItem);
 
-        tableView_->setItem(row, 1, new QTableWidgetItem(clip.robotId));
-        tableView_->setItem(row, 2, new QTableWidgetItem(clip.recipientName));
-        tableView_->setItem(row, 3, new QTableWidgetItem(clip.eventLabel));
-        tableView_->setItem(row, 4, new QTableWidgetItem(clip.capturedAt));
-        tableView_->setItem(row, 5, new QTableWidgetItem(clip.durationLabel));
-        tableView_->setItem(row, 6,
-                             new QTableWidgetItem(clip.viewCount > 0
-                                                       ? QStringLiteral("열람 %1회").arg(clip.viewCount)
-                                                       : QStringLiteral("열람 없음")));
+        setCentered(1, new QTableWidgetItem(clip.robotId));
+        setCentered(2, new QTableWidgetItem(clip.recipientName));
+        setCentered(3, new QTableWidgetItem(clip.eventLabel));
+        setCentered(4, new QTableWidgetItem(clip.capturedAt));
+        setCentered(5, new QTableWidgetItem(clip.durationLabel));
+        setCentered(6, new QTableWidgetItem(clip.viewCount > 0
+                                                 ? QStringLiteral("열람 %1회").arg(clip.viewCount)
+                                                 : QStringLiteral("열람 없음")));
 
         auto* expireItem = new QTableWidgetItem(QStringLiteral("D-%1").arg(clip.expireDays));
         if (clip.expireDays <= 7) {
             expireItem->setForeground(QBrush(QColor("#C27500")));  // QLabel[role="warning"]과 동일 색
         }
-        tableView_->setItem(row, 7, expireItem);
+        setCentered(7, expireItem);
     }
 }
 
@@ -1327,34 +1393,43 @@ void P4VideoPage::resizeEvent(QResizeEvent* event) {
     }
 }
 
-bool P4VideoPage::matchesFilters(const VideoClip& clip) const {
-    if (robotFilter_->currentIndex() > 0 && clip.robotId != robotFilter_->currentText()) {
-        return false;
-    }
-    if (recipientFilter_->currentIndex() > 0 && clip.recipientName != recipientFilter_->currentText()) {
-        return false;
-    }
-    if (typeFilter_->currentIndex() > 0 && clip.tagText != typeFilter_->currentText()) {
-        return false;
-    }
-    if (periodFilter_->currentIndex() > 0) {
-        // capturedAtRaw가 없는 클립(예: mock 데이터, 파싱 실패)은 기간을 알 수 없으니 필터가
-        // 걸려있을 땐 안전하게 제외한다 — "전체"(index 0) 선택 시엔 이 블록 자체가 안 돈다.
-        if (!clip.capturedAtRaw.isValid()) return false;
-
-        // 자정 기준 날짜 차이로 계산 — "오늘"이 자정 넘기자마자 어제로 밀리지 않게 시간(HH:mm)은 무시.
-        const qint64 daysAgo = clip.capturedAtRaw.date().daysTo(QDate::currentDate());
-        switch (periodFilter_->currentIndex()) {
-            case 1:  // 오늘
-                if (daysAgo != 0) return false;
-                break;
-            case 2:  // 최근 7일
-                if (daysAgo < 0 || daysAgo > 7) return false;
-                break;
-            case 3:  // 최근 30일
-                if (daysAgo < 0 || daysAgo > 30) return false;
-                break;
+void P4VideoPage::applyPeriodPreset(int spanDays) {
+    // spanDays >= 0이면 "오늘 - spanDays일 ~ 오늘"로 채우고 읽기 전용으로 잠근다.
+    if (spanDays >= 0) {
+        const QDate today = QDate::currentDate();
+        startDateEdit_->setDate(today.addDays(-spanDays));
+        endDateEdit_->setDate(today);
+        setDateEditsReadOnly(true);
+    } else {
+        setDateEditsReadOnly(false);
+        if (!periodCustomBtn_->isChecked()) {
+            periodCustomBtn_->setChecked(true);  // 날짜 칸을 직접 클릭해 진입한 경우
         }
+    }
+}
+
+void P4VideoPage::setDateEditsReadOnly(bool readOnly) {
+    for (auto* edit : {startDateEdit_, endDateEdit_}) {
+        edit->setReadOnly(readOnly);
+        edit->setProperty("state", readOnly ? QStringLiteral("off") : QVariant());
+        repolish(edit);
+    }
+}
+
+bool P4VideoPage::matchesFilters(const VideoClip& clip) const {
+    // capturedAtRaw가 없는 클립은 날짜 범위를 알 수 없으니 제외한다.
+    if (!clip.capturedAtRaw.isValid()) return false;
+    const QDate capturedDate = clip.capturedAtRaw.date();
+    if (capturedDate < startDateEdit_->date() || capturedDate > endDateEdit_->date()) {
+        return false;
+    }
+
+    // 로봇 ID·대상자 이름·유형을 검색어 하나로 부분 일치(대소문자 무시)로 건다.
+    const QString keyword = searchEdit_->liveText().trimmed();
+    if (!keyword.isEmpty() && !clip.robotId.contains(keyword, Qt::CaseInsensitive) &&
+        !clip.recipientName.contains(keyword, Qt::CaseInsensitive) &&
+        !clip.tagText.contains(keyword, Qt::CaseInsensitive)) {
+        return false;
     }
     return true;
 }
@@ -1378,9 +1453,8 @@ void P4VideoPage::openVideoPlayer(int clipIndex) {
     }
 }
 
-// 서버 POST /video-events/{id}/view를 호출해 열람 사실을 감사 로그에 남긴다. 응답으로
-// 다시 계산된 view_count/view_history를 받아 그대로 clips_에 반영한다 — 로컬에서 임의로
-// +1 하면 새로고침·다른 PC에서 보는 값과 어긋나므로, 항상 서버가 다시 센 값을 신뢰한다.
+// POST /video-events/{id}/view로 열람을 기록하고, 응답의 view_count/view_history를
+// clips_에 그대로 반영한다 — 로컬에서 임의로 +1 하지 않는다.
 void P4VideoPage::recordVideoView(int clipIndex, const QString& reason) {
     if (clipIndex < 0 || clipIndex >= clips_.size()) return;
     const int cameraRecordingId = clips_[clipIndex].cameraRecordingId;

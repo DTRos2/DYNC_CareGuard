@@ -6,7 +6,9 @@ from fastapi import FastAPI, HTTPException
 from . import db
 from .accounts import router as accounts_router
 from .api.v1 import map as map_api
+from .api.v1 import mission as mission_api
 from .api.v1 import patrol as patrol_api
+from .api.v1 import recipient as recipient_api
 from .api.v1 import teleop as teleop_api
 from .audit import router as audit_router
 from .api.v1.media import router as media_router
@@ -26,6 +28,8 @@ app.include_router(map_api.slam_jobs_router)
 app.include_router(patrol_api.routes_router)
 app.include_router(patrol_api.schedules_router)
 app.include_router(patrol_api.runs_router)
+app.include_router(mission_api.router)
+app.include_router(recipient_api.router)
 app.include_router(teleop_api.router)
 app.include_router(robot_ws.router)
 app.include_router(dashboard_ws.router)

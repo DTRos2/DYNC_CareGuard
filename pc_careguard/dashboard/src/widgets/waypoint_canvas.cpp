@@ -20,28 +20,33 @@
 namespace {
 constexpr qreal kHitRadius = 20.0;
 constexpr qreal kMarkerRadius = 15.0;
-constexpr int kTestRunTickMs = 30;
-constexpr qreal kTestRunSpeed = 0.00035;  // t(0..1) 증가량 per tick, 대략 3~4초 완주
 constexpr qreal kMinZoom = 0.5;
 constexpr qreal kMaxZoom = 4.0;
 constexpr qreal kZoomStepFactor = 1.15;
+// 서버가 아직 이 맵의 resolution을 안 줬을 때(로컬 데모 맵 등)만 쓰는 폴백 —
+// p6_patrol_page.cpp가 예전에 모든 맵에 무조건 쓰던 고정 배율과 같은 값이다.
+// 실제 지도 해상도(대개 0.05m/px=20px/m)와 다를 수 있어 정확하지 않다.
+constexpr qreal kLegacyPxPerMeter = 40.0;
 }  // namespace
 
 WaypointCanvas::WaypointCanvas(QWidget* parent)
     : QFrame(parent),
       routeEditMode_(false),
-      mode_(InteractionMode::AddWaypoint),
+      // P6 페이지에 처음 들어왔을 때는 웨이포인트를 새로 추가하기보다 로봇을
+      // 움직여보고 싶어하는 경우가 더 많아서(순찰 페이지 = 이미 있는 지점으로
+      // 보내보는 용도) 기본 모드를 "이동"으로 바꿨다. p6_patrol_page.cpp의
+      // moveModeBtn->setChecked(true)와 짝을 맞춰야 한다.
+      mode_(InteractionMode::MoveWaypoint),
       dragging_(false),
       dragMoved_(false),
       dragIndex_(-1),
+      addAiming_(false),
       zoomScale_(1.0),
       panOffset_(0.0, 0.0),
       panning_(false),
       panMoved_(false),
       currentRobotHeadingDeg_(0.0),
-      hasRobotPos_(false),
-      testRunTimer_(new QTimer(this)),
-      testRunT_(-1.0) {
+      hasRobotPos_(false) {
     setObjectName("slamCanvas");
     setMinimumHeight(320);
     setMouseTracking(false);
@@ -52,21 +57,6 @@ WaypointCanvas::WaypointCanvas(QWidget* parent)
     cameraView_ = new CameraLiveView(this);
     cameraView_->move(static_cast<int>(floorBounds().right()) - cameraView_->width() - 8,
                        static_cast<int>(floorBounds().top()) + 8);
-
-    connect(testRunTimer_, &QTimer::timeout, this, [this] {
-        testRunT_ += kTestRunSpeed * kTestRunTickMs;
-        if (testRunT_ >= 1.0) {
-            testRunT_ = 1.0;
-            updateRobotAlongTestPath();
-            testRunT_ = -1.0;
-            testRunTimer_->stop();
-            update();
-            emit testRunFinished();
-            return;
-        }
-        updateRobotAlongTestPath();
-        update();
-    });
 }
 
 void WaypointCanvas::setWaypoints(const QVector<Waypoint>& wps) {
@@ -101,10 +91,49 @@ void WaypointCanvas::setInteractionMode(InteractionMode mode) {
     mode_ = mode;
 }
 
+void WaypointCanvas::setPoseCaptureMode(bool on) {
+    poseCaptureMode_ = on;
+    if (!on) poseCapturing_ = false;
+    update();
+}
+
+void WaypointCanvas::setMapMeta(qreal resolutionMPerPx, QPointF originMeters) {
+    mapResolution_ = resolutionMPerPx;
+    mapOrigin_ = originMeters;
+}
+
+QPointF WaypointCanvas::canvasToMapMeters(QPointF canvasPos) const {
+    if (mapResolution_ <= 0.0 || backgroundImage_.isNull()) {
+        return QPointF(canvasPos.x() / kLegacyPxPerMeter, canvasPos.y() / kLegacyPxPerMeter);
+    }
+    return CanvasGeometry::canvasToMeters(canvasPos, mapResolution_, mapOrigin_, floorBounds(), backgroundImage_);
+}
+
+QPointF WaypointCanvas::mapMetersToCanvas(QPointF meters) const {
+    if (mapResolution_ <= 0.0 || backgroundImage_.isNull()) {
+        return QPointF(meters.x() * kLegacyPxPerMeter, meters.y() * kLegacyPxPerMeter);
+    }
+    return CanvasGeometry::metersToCanvas(meters, mapResolution_, mapOrigin_, floorBounds(), backgroundImage_);
+}
+
+void WaypointCanvas::setPlannedPath(const QVector<QPointF>& pathMeters) {
+    plannedPathMeters_ = pathMeters;
+    update();
+}
+
 void WaypointCanvas::setCurrentRobotPosition(QPointF canvasPos, qreal headingDeg) {
     currentRobotPos_ = canvasPos;
     currentRobotHeadingDeg_ = headingDeg;
     hasRobotPos_ = true;
+    robotPosTracksChargingStation_ = false;
+    update();
+}
+
+void WaypointCanvas::setCurrentRobotPositionToChargingStation(QPointF canvasPos) {
+    currentRobotPos_ = canvasPos;
+    currentRobotHeadingDeg_ = 0.0;
+    hasRobotPos_ = true;
+    robotPosTracksChargingStation_ = true;
     update();
 }
 
@@ -135,10 +164,29 @@ void WaypointCanvas::resizeEvent(QResizeEvent* event) {
     const QSize oldSize = event->oldSize();
     if (oldSize.width() <= 0 || oldSize.height() <= 0 || oldSize == event->size()) return;
 
-    // 창 크기 변경 전/후 그리기 영역을 각각 계산해, 웨이포인트·로봇 위치·테스트 주행
-    // 경로를 지도(또는 목업 바닥) 위 상대 위치를 보존한 채로 옮긴다. 안 하면 캔버스
-    // 절대 픽셀 좌표라서 창을 최대화했을 때 배경 지도만 다시 배치되고 마커는 옛 자리에
-    // 남아 지도에서 어긋나 보인다.
+    // 서버 map.resolution을 받은(진짜 지도가 있는) 맵은 비율 보존 리매핑
+    // (remapOnResize) 대신 다음 paintEvent에서 metersPos로부터 다시 계산하게 한다 —
+    // remapOnResize는 "oldBounds가 실제로 이 pos를 계산하는 데 쓰인 크기와 정확히
+    // 같다"는 전제가 있어야 정확한데, 첫 표시 직후 레이아웃이 완전히 안정되기 전
+    // 여러 번의 resizeEvent가 연달아 올 수 있어(각각의 oldSize가 실제 계산 기준과
+    // 어긋날 수 있다) 그 전제가 항상 맞다고 보장할 수 없다 — 실제로 겪은 버그: 3개
+    // 웨이포인트 중 일부만 엉뚱한 자리에 남아 보임. metersPos 기반 재계산은 이력에
+    // 의존하지 않아 언제 리사이즈가 몇 번 일어나든 항상 정확하다.
+    if (mapResolution_ > 0.0) {
+        requestMetersResync();
+        // 확대/패닝 상태는 리사이즈 전 배치 기준이라 그대로 두면 새 배치와 어긋난다
+        // (아래 로컬 데모 경로와 같은 이유). viewRescaled()는 여기서 안 낸다 —
+        // showEvent와 같은 이유(paintEvent가 실제 보정을 끝낸 직후에만 emit한다).
+        zoomScale_ = 1.0;
+        panOffset_ = QPointF(0.0, 0.0);
+        update();
+        return;
+    }
+
+    // 창 크기 변경 전/후 그리기 영역을 각각 계산해, 웨이포인트·로봇 위치를 지도(또는
+    // 목업 바닥) 위 상대 위치를 보존한 채로 옮긴다. 안 하면 캔버스 절대 픽셀 좌표라서
+    // 창을 최대화했을 때 배경 지도만 다시 배치되고 마커는 옛 자리에 남아 지도에서
+    // 어긋나 보인다.
     const QRectF oldBounds = QRectF(QPointF(0, 0), oldSize).adjusted(22, 16, -22, -16);
     const QRectF newBounds = floorBounds();
 
@@ -147,9 +195,6 @@ void WaypointCanvas::resizeEvent(QResizeEvent* event) {
     }
     if (hasRobotPos_) {
         currentRobotPos_ = CanvasGeometry::remapOnResize(currentRobotPos_, oldBounds, newBounds, backgroundImage_);
-    }
-    for (QPointF& p : testRunPath_) {
-        p = CanvasGeometry::remapOnResize(p, oldBounds, newBounds, backgroundImage_);
     }
 
     // 확대/패닝 상태는 리사이즈 전 배치 기준이라 그대로 두면 새 배치와 어긋난다.
@@ -167,6 +212,23 @@ void WaypointCanvas::showEvent(QShowEvent* event) {
     const QRectF newBounds = floorBounds();
     if (newBounds.width() <= 0 || newBounds.height() <= 0) return;
 
+    // 서버 map.resolution을 받은(진짜 지도가 있는) 맵은 좌표 보정을 여기서 하지
+    // 않는다 — requestMetersResync()/paintEvent가 "실제로 그려지는 시점"마다
+    // metersPos로부터 pos를 다시 계산해주므로 더 안전하다(이 함수는 이 위젯
+    // 인스턴스 생애 동안 딱 한 번만 불려서, 이미 한 번 보여준 뒤 hasFitInitialView_가
+    // true인 상태로 새 맵 데이터가 들어오면 여기서는 다시 못 잡는다 — 실제로 겪은
+    // 버그). 이 경우는 아래 와이어프레임 설계 기준 리매핑도 건너뛴다.
+    //
+    // viewRescaled()도 여기서 안 낸다 — P6PatrolPage의 핸들러가 그 신호를 받으면
+    // canvas_->waypoints()를 그대로 읽어가는데(waypoints_ = canvas_->waypoints()),
+    // 이 시점엔 아직 실제 보정(paintEvent의 resync)이 안 끝나 있어서 그대로 읽으면
+    // 또 틀린 좌표를 페이지 쪽에 옮겨 담아버린다(실제로 겪은 버그: 캔버스 자체는
+    // 다음 그릴 때 맞게 그려지는데, 오른쪽 웨이포인트 목록 패널은 계속 틀린 값을
+    // 보여줌). paintEvent가 실제 보정을 끝낸 직후에 딱 한 번 emit한다.
+    if (mapResolution_ > 0.0) {
+        return;
+    }
+
     // 웨이포인트 좌표는 와이어프레임 설계 캔버스(380x330, floorBounds()와 같은 22,16
     // 여백) 기준으로 정의돼 있다. 오른쪽 패널이 고정폭이라 실제 지도 캔버스는 그보다
     // 훨씬 크게 남는데, 그대로 두면 맵·경로가 화면 왼쪽 위 구석에 작게 몰려 보인다.
@@ -178,9 +240,6 @@ void WaypointCanvas::showEvent(QShowEvent* event) {
     }
     if (hasRobotPos_) {
         currentRobotPos_ = CanvasGeometry::remapOnResize(currentRobotPos_, designBounds, newBounds, backgroundImage_);
-    }
-    for (QPointF& p : testRunPath_) {
-        p = CanvasGeometry::remapOnResize(p, designBounds, newBounds, backgroundImage_);
     }
 
     emit viewRescaled();
@@ -237,43 +296,16 @@ QPointF WaypointCanvas::nearestFreePoint(QPointF canvasPos) const {
     return canvasPos;  // 못 찾으면 원래 위치 유지 (최선의 노력).
 }
 
-void WaypointCanvas::startTestRun(const QVector<QString>& orderedIds, const QString& chargingId,
-                                   bool returnToCharging) {
-    testRunPath_.clear();
-    if (const Waypoint* c = findWaypoint(chargingId)) testRunPath_.append(c->pos);
-    for (const QString& id : orderedIds) {
-        if (const Waypoint* w = findWaypoint(id)) testRunPath_.append(w->pos);
-    }
-    if (returnToCharging) {
-        if (const Waypoint* c = findWaypoint(chargingId)) testRunPath_.append(c->pos);
-    }
-
-    if (testRunPath_.size() < 2) return;
-    testRunT_ = 0.0;
-    testRunTimer_->start(kTestRunTickMs);
-}
-
-void WaypointCanvas::updateRobotAlongTestPath() {
-    if (testRunPath_.size() < 2) return;
-    const qreal segCount = testRunPath_.size() - 1;
-    const qreal scaled = qBound(0.0, testRunT_, 1.0) * segCount;
-    int seg = qMin(static_cast<int>(scaled), static_cast<int>(segCount) - 1);
-    const qreal localT = scaled - seg;
-    const QPointF a = testRunPath_[seg];
-    const QPointF b = testRunPath_[seg + 1];
-    const QPointF pt = a + (b - a) * localT;
-    const qreal headingRad = std::atan2(b.y() - a.y(), b.x() - a.x());
-    currentRobotPos_ = pt;
-    currentRobotHeadingDeg_ = headingRad * 180.0 / M_PI;
-    hasRobotPos_ = true;
-}
-
 QRectF WaypointCanvas::floorBounds() const { return rect().adjusted(22, 16, -22, -16); }
 
 int WaypointCanvas::hitTest(const QPointF& pt) const {
+    // 마커 화면 크기가 zoomScale_와 무관하게 고정되도록 바꿨으니(paintEvent), 클릭
+    // 판정 반경도 같은 비율(1/zoomScale_)로 맞춰야 "보이는 크기"와 "눌리는 범위"가
+    // 확대·축소 어느 배율에서나 일치한다. pt는 이미 월드 좌표(toWorld() 결과)다.
+    const qreal hitRadius = kHitRadius / zoomScale_;
     for (int i = 0; i < waypoints_.size(); ++i) {
         const qreal d = std::hypot(pt.x() - waypoints_[i].pos.x(), pt.y() - waypoints_[i].pos.y());
-        if (d <= kHitRadius) return i;
+        if (d <= hitRadius) return i;
     }
     return -1;
 }
@@ -281,6 +313,36 @@ int WaypointCanvas::hitTest(const QPointF& pt) const {
 void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
     const QPointF screenPt = event->position();
     const QPointF pt = toWorld(screenPt);
+
+    if (event->button() == Qt::MiddleButton) {
+        // 휠 버튼(가운데 클릭) 드래그 = 항상 패닝 — 모드/상태와 무관하게 최우선으로
+        // 처리한다. "WP 추가" 모드는 빈 곳 왼쪽 드래그를 웨이포인트 방향 지정에
+        // 쓰게 되면서 그 모드에서 지도를 둘러볼 방법이 없어졌다는 요청으로 추가.
+        panning_ = true;
+        panMoved_ = false;
+        panStartMouse_ = screenPt;
+        panStartOffset_ = panOffset_;
+        return;
+    }
+
+    if (poseCaptureMode_) {
+        if (event->button() == Qt::RightButton) {
+            // 드래그 시작 전 우클릭 = 취소. 이미 드래그 중이면(눌러서 시작한 뒤
+            // 오른쪽 버튼도 같이 누르는 것은 일반적이지 않으므로) 여기서 다루지 않는다.
+            poseCaptureMode_ = false;
+            poseCapturing_ = false;
+            update();
+            emit initialPoseCaptureCancelled();
+            return;
+        }
+        if (event->button() != Qt::LeftButton) return;
+        poseCapturing_ = true;
+        poseCaptureAnchor_ = pt;
+        poseCaptureCurrent_ = pt;
+        update();
+        return;
+    }
+
     const int idx = hitTest(pt);
 
     if (event->button() == Qt::RightButton) {
@@ -310,14 +372,26 @@ void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
         // 마커를 누른 경우 — 모드와 무관하게 뗄 때까지 추적한다. 실제로 옮기는 동작은
         // mouseMoveEvent에서 "WP 추가" 모드일 때만 허용한다("이동" 모드에서는 드래그를
         // 무시하고, 뗄 때 항상 그 웨이포인트로 주행 요청을 보낸다 — mouseReleaseEvent).
+        // dragStartPos_는 드래그 방향(headingDeg)을 "시작->끝"으로 계산하는 데 쓴다.
         dragging_ = true;
         dragMoved_ = false;
         dragIndex_ = idx;
+        dragStartPos_ = waypoints_[idx].pos;
         return;
     }
 
-    // 빈 공간을 눌렀다: 드래그하면 패닝, 드래그 없이 떼면(WP 추가 모드에서만) 그
-    // 지점에 웨이포인트를 추가한다.
+    if (mode_ == InteractionMode::AddWaypoint) {
+        // "위치 보정"과 같은 클릭+드래그 — 방향까지 한 번에 잡는다(mouseReleaseEvent
+        // 에서 확정). 이 모드에서는 빈 곳 드래그가 더 이상 패닝을 하지 않는다("이동"
+        // 모드로 바꾸면 패닝 가능).
+        addAiming_ = true;
+        addAimAnchor_ = pt;
+        addAimCurrent_ = pt;
+        return;
+    }
+
+    // 빈 공간을 눌렀다("이동" 모드) — 드래그하면 패닝, 드래그 없이 떼면 아무 일도
+    // 없다(mouseReleaseEvent).
     panning_ = true;
     panMoved_ = false;
     panStartMouse_ = screenPt;
@@ -326,6 +400,18 @@ void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
 
 void WaypointCanvas::mouseMoveEvent(QMouseEvent* event) {
     const QPointF screenPt = event->position();
+
+    if (poseCapturing_) {
+        poseCaptureCurrent_ = toWorld(screenPt);
+        update();
+        return;
+    }
+
+    if (addAiming_) {
+        addAimCurrent_ = toWorld(screenPt);
+        update();
+        return;
+    }
 
     if (dragging_ && dragIndex_ >= 0) {
         // "이동" 모드에서는 드래그 자체를 무시한다 — dragMoved_가 계속 false로 남아야
@@ -349,13 +435,50 @@ void WaypointCanvas::mouseMoveEvent(QMouseEvent* event) {
 void WaypointCanvas::mouseReleaseEvent(QMouseEvent* event) {
     Q_UNUSED(event);
 
+    if (poseCapturing_) {
+        poseCapturing_ = false;
+        poseCaptureMode_ = false;  // 단발성 — 한 번 확정하면 모드에서 빠진다.
+        const QPointF delta = poseCaptureCurrent_ - poseCaptureAnchor_;
+        // 드래그 거리가 너무 짧으면(거의 클릭만) 방향을 신뢰할 수 없으니 0도로 둔다 —
+        // ApiClient::driveToPoint 등 다른 경로도 yaw 기본값을 0으로 두는 것과 동일한 규약.
+        const qreal headingDeg = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_)
+            ? 0.0
+            : std::atan2(delta.y(), delta.x()) * 180.0 / M_PI;
+        const QPointF anchor = poseCaptureAnchor_;
+        update();
+        emit initialPoseCaptureFinished(anchor, headingDeg);
+        return;
+    }
+
+    if (addAiming_) {
+        addAiming_ = false;
+        const QPointF anchor = nearestFreePoint(addAimAnchor_);
+        const QPointF delta = addAimCurrent_ - addAimAnchor_;
+        // poseCapturing_과 같은 규칙 — 드래그가 너무 짧으면(거의 클릭만) 방향을
+        // 신뢰할 수 없으니 0도로 둔다.
+        const qreal headingDeg = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_)
+            ? 0.0
+            : std::atan2(delta.y(), delta.x()) * 180.0 / M_PI;
+        update();
+        emit waypointAddRequested(anchor, headingDeg);
+        return;
+    }
+
     if (dragging_ && dragIndex_ >= 0) {
         const QString id = waypoints_[dragIndex_].id;
         if (dragMoved_) {
             // 벽 위에 놓았으면 가장 가까운 자유 공간으로 스냅해서 확정한다.
             const QPointF freePos = nearestFreePoint(waypoints_[dragIndex_].pos);
             waypoints_[dragIndex_].pos = freePos;
-            emit waypointMoved(id, freePos);
+            // 드래그 방향(시작->끝)을 그대로 새 yaw로 쓴다 — "위치 보정"과 같은 발상
+            // (드래그 한 번으로 위치+방향을 같이 정한다). 너무 짧은 드래그(미세한
+            // 떨림 등)는 방향을 신뢰할 수 없으니 기존 yaw를 그대로 둔다.
+            const QPointF delta = freePos - dragStartPos_;
+            const qreal headingDeg = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_)
+                ? waypoints_[dragIndex_].yawDeg
+                : std::atan2(delta.y(), delta.x()) * 180.0 / M_PI;
+            waypoints_[dragIndex_].yawDeg = headingDeg;
+            emit waypointMoved(id, freePos, headingDeg);
         } else if (mode_ == InteractionMode::MoveWaypoint) {
             // "이동" 모드에서 드래그 없이 그냥 클릭 = 그 웨이포인트로 주행.
             emit waypointDriveRequested(id);
@@ -369,12 +492,8 @@ void WaypointCanvas::mouseReleaseEvent(QMouseEvent* event) {
     }
 
     if (panning_) {
-        if (!panMoved_ && !routeEditMode_ && mode_ == InteractionMode::AddWaypoint) {
-            // 드래그 없이 그냥 클릭한 것과 같다 — "WP 추가" 모드면 그 자리에 추가.
-            // 벽/장애물(점유 픽셀) 위였으면 가장 가까운 자유 공간으로 스냅한다.
-            emit waypointAddRequested(nearestFreePoint(toWorld(panStartMouse_)));
-        }
-        // "이동" 모드나 경로 편집 모드에서 드래그 없이 빈 곳을 클릭하면 아무 일도 없다.
+        // "WP 추가" 모드의 빈 곳 클릭/드래그는 이제 addAiming_이 전담한다 — 여기
+        // panning_ 경로는 "이동" 모드·경로 편집 모드의 지도 둘러보기 용도로만 남는다.
         panning_ = false;
         panMoved_ = false;
     }
@@ -401,6 +520,36 @@ void WaypointCanvas::wheelEvent(QWheelEvent* event) {
 }
 
 void WaypointCanvas::paintEvent(QPaintEvent* event) {
+    // requestMetersResync()로 예약된 좌표 재계산 — paintEvent는 위젯이 실제로 화면에
+    // 그려지는 시점에만 불리므로, floorBounds()가 이 시점엔 항상 유효한 최종 크기다
+    // (showEvent가 "언젠가 한 번"만 불린다는 것에 기대는 것보다 훨씬 안전하다 —
+    // 이 위젯이 이미 다른 맵으로 한 번 보여진 뒤라 hasFitInitialView_가 이미 true인
+    // 상태로 새 맵 데이터가 들어와도, 여기서는 매번 확실하게 잡아준다).
+    if (pendingMetersResync_) {
+        pendingMetersResync_ = false;
+        if (mapResolution_ > 0.0) {
+            for (Waypoint& w : waypoints_) {
+                w.pos = mapMetersToCanvas(w.metersPos);
+            }
+            // 로봇이 아직 실시간 위치를 안 보내 충전 스테이션을 임시로 대신 보여주고
+            // 있었다면(setCurrentRobotPositionToChargingStation), 그 충전 웨이포인트
+            // 자체도 방금 막 고쳤으니 로봇 마커도 그 새 위치로 다시 맞춘다 — 안 하면
+            // 웨이포인트는 고쳐지는데 로봇 마커만 옛(틀린) 자리에 그대로 남는다.
+            if (robotPosTracksChargingStation_) {
+                for (const Waypoint& w : waypoints_) {
+                    if (w.charging) {
+                        currentRobotPos_ = w.pos;
+                        break;
+                    }
+                }
+            }
+        }
+        // 실제 보정이 끝난 뒤에만 알린다 — P6PatrolPage::waypoints_ = canvas_->waypoints()
+        // 로 그대로 옮겨 담는 핸들러가 있어서, 보정 전에 emit하면 그 틀린 값을 페이지
+        // 쪽 사본(오른쪽 웨이포인트 목록 패널 등)에 그대로 옮겨버린다.
+        emit viewRescaled();
+    }
+
     QFrame::paintEvent(event);
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -473,6 +622,21 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         drawRoutePath(previewPts, Tokens::ACCENT);
     }
 
+    // 순찰(Nav2) 중 로봇이 실제로 따라가는 전역 경로 — rviz2의 "가려는 길" 선과
+    // 같다. 저장된 경로 미리보기(위, 점선)와 구분되도록 실선으로 그린다. 매 프레임
+    // metersPos 그대로 캔버스 좌표로 바꿔 그린다(포인트가 많아야 수십~수백 개라
+    // 비용이 작고, 웨이포인트처럼 별도 재계산 예약이 필요 없다).
+    if (mapResolution_ > 0.0 && plannedPathMeters_.size() >= 2) {
+        QPainterPath livePath;
+        livePath.moveTo(mapMetersToCanvas(plannedPathMeters_.first()));
+        for (int i = 1; i < plannedPathMeters_.size(); ++i) {
+            livePath.lineTo(mapMetersToCanvas(plannedPathMeters_.at(i)));
+        }
+        p.setPen(QPen(Tokens::OK.main, 2.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(livePath);
+    }
+
     // 웨이포인트 마커
     QFont labelFont = p.font();
     labelFont.setPixelSize(11);
@@ -516,17 +680,41 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
             textColor = Tokens::ACCENT_HOVER;
         }
 
+        // 마커는 화면상 크기가 확대/축소와 무관하게 일정해야 한다(예: 지도 핀) — 바깥
+        // p.scale(zoomScale_)의 영향을 이 마커 하나에서만 1/zoomScale_로 상쇄한다.
+        // 그래서 좌표는 w.pos로 이동해둔 로컬 원점(0,0) 기준으로 그린다.
+        p.save();
+        p.translate(w.pos);
+        p.scale(1.0 / zoomScale_, 1.0 / zoomScale_);
+
         p.setPen(QPen(ring, selected ? 2.5 : 2.0));
         p.setBrush(fill);
         const qreal r = kMarkerRadius;
-        p.drawEllipse(w.pos, r, r);
+        p.drawEllipse(QPointF(0, 0), r, r);
+
+        // 방향(yaw) 표시 — 원 테두리 밖으로 짧은 화살표를 그려 이 웨이포인트가 어느
+        // 방향을 보고 도착할지 한눈에 보이게 한다("동그라미만 봐서는 방향을 모르겠다"
+        // 는 요청으로 추가). 충전 스테이션도 초기 위치의 방향을 나타내므로 똑같이 그린다.
+        {
+            const qreal headingRad = w.yawDeg * M_PI / 180.0;
+            const QPointF tip(std::cos(headingRad) * (r + 8), std::sin(headingRad) * (r + 8));
+            constexpr qreal kWingAngle = 2.6;
+            QPainterPath arrow;
+            arrow.moveTo(tip);
+            arrow.lineTo(QPointF(std::cos(headingRad + kWingAngle), std::sin(headingRad + kWingAngle)) * r);
+            arrow.lineTo(QPointF(std::cos(headingRad - kWingAngle), std::sin(headingRad - kWingAngle)) * r);
+            arrow.closeSubpath();
+            p.setPen(Qt::NoPen);
+            p.setBrush(ring);
+            p.drawPath(arrow);
+        }
 
         p.setFont(labelFont);
         p.setPen(textColor);
         const QString marker = w.charging ? QStringLiteral("C")
                                 : editOrder >= 0 ? QString::number(editOrder + 1)
                                                   : QString();
-        if (!marker.isEmpty()) p.drawText(QRectF(w.pos.x() - r, w.pos.y() - r, r * 2, r * 2), Qt::AlignCenter, marker);
+        if (!marker.isEmpty()) p.drawText(QRectF(-r, -r, r * 2, r * 2), Qt::AlignCenter, marker);
 
         p.setFont(captionFont);
         p.setPen(routeEditMode_ && !selected && !w.charging ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
@@ -536,28 +724,93 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
             : (routeEditMode_ && !selected ? QStringLiteral("%1 — 미선택").arg(w.name) : w.name);
         // 원 바로 아래, 가운데 정렬로 딱 붙여서 그린다 (AlignVCenter+큰 박스 조합은
         // 여백이 생겨 원과 이름이 멀어 보였다).
-        p.drawText(QRectF(w.pos.x() - 75, w.pos.y() + r + 2, 150, 14), Qt::AlignHCenter | Qt::AlignTop, caption);
+        p.drawText(QRectF(-75, r + 2, 150, 14), Qt::AlignHCenter | Qt::AlignTop, caption);
+        p.restore();
     }
 
-    // 로봇 현재 위치 (지속 표시 — 테스트 실행 중에는 경로를 따라 움직인다)
+    // 로봇 현재 위치(다이얼 모양 — halo + 중심점 + 방향 바늘). 이 마커가 곧 "현재 위치"
+    // 표시 전부다 — 예전엔 별도로 "● 현재 위치" 텍스트 라벨을 옆에 더 그렸는데, 확대한
+    // 상태에서는 라벨의 고정 오프셋(-60,-32)도 함께 확대되어 마커와 멀리 떨어져
+    // 보이면서 마치 서로 다른 두 마커처럼 보이는 문제가 있어 라벨은 제거했다(요청).
+    // 웨이포인트 마커와 같은 이유로 화면상 크기를 zoomScale_와 무관하게 고정한다.
     if (hasRobotPos_) {
+        p.save();
+        p.translate(currentRobotPos_);
+        p.scale(1.0 / zoomScale_, 1.0 / zoomScale_);
+
         QColor halo = Tokens::ACCENT;
         halo.setAlphaF(0.2);
         p.setPen(Qt::NoPen);
         p.setBrush(halo);
-        p.drawEllipse(currentRobotPos_, 15, 15);
+        p.drawEllipse(QPointF(0, 0), 15, 15);
         p.setBrush(Tokens::ACCENT);
-        p.drawEllipse(currentRobotPos_, 8, 8);
+        p.drawEllipse(QPointF(0, 0), 8, 8);
         const qreal headingRad = currentRobotHeadingDeg_ * M_PI / 180.0;
-        const QPointF tip(currentRobotPos_.x() + std::cos(headingRad) * 10,
-                           currentRobotPos_.y() + std::sin(headingRad) * 10);
+        const QPointF tip(std::cos(headingRad) * 10, std::sin(headingRad) * 10);
         p.setPen(QPen(Tokens::BG_SURFACE, 2.0));
-        p.drawLine(currentRobotPos_, tip);
+        p.drawLine(QPointF(0, 0), tip);
+        p.restore();
+    }
 
-        p.setFont(captionFont);
-        p.setPen(Tokens::ACCENT_HOVER);
-        p.drawText(QRectF(currentRobotPos_.x() - 60, currentRobotPos_.y() - 32, 150, 14),
-                   Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("● 현재 위치"));
+    // 위치 보정 중 드래그 미리보기 — 로봇 다이얼 마커와 구분되도록 경고색(다른
+    // 팔레트)을 쓰고, 화살표가 곧 "지금 잡고 있는 방향"임을 분명히 보이도록 halo 없이
+    // 두꺼운 화살표만 그린다. 웨이포인트 마커와 같은 이유로 화면상 크기를 고정한다.
+    if (poseCapturing_) {
+        p.save();
+        p.translate(poseCaptureAnchor_);
+        p.scale(1.0 / zoomScale_, 1.0 / zoomScale_);
+
+        const QPointF delta = poseCaptureCurrent_ - poseCaptureAnchor_;
+        const qreal headingRad = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_)
+            ? 0.0
+            : std::atan2(delta.y(), delta.x());
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(Tokens::ATTENTION.main);
+        p.drawEllipse(QPointF(0, 0), 8, 8);
+
+        QPainterPath arrow;
+        const QPointF tip(std::cos(headingRad) * 24, std::sin(headingRad) * 24);
+        const qreal wingAngle = 2.6;
+        arrow.moveTo(tip);
+        arrow.lineTo(QPointF(std::cos(headingRad + wingAngle) * 10, std::sin(headingRad + wingAngle) * 10));
+        arrow.lineTo(QPointF(std::cos(headingRad - wingAngle) * 10, std::sin(headingRad - wingAngle) * 10));
+        arrow.closeSubpath();
+        p.setPen(QPen(Tokens::ATTENTION.main, 3.0));
+        p.drawLine(QPointF(0, 0), tip);
+        p.setPen(Qt::NoPen);
+        p.drawPath(arrow);
+        p.restore();
+    }
+
+    // "WP 추가" 드래그 미리보기 — 위치 보정과 같은 그림이지만 액센트 색으로 그려
+    // "새 웨이포인트를 놓는 중"임을 구분한다.
+    if (addAiming_) {
+        p.save();
+        p.translate(addAimAnchor_);
+        p.scale(1.0 / zoomScale_, 1.0 / zoomScale_);
+
+        const QPointF delta = addAimCurrent_ - addAimAnchor_;
+        const qreal headingRad = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_)
+            ? 0.0
+            : std::atan2(delta.y(), delta.x());
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(Tokens::ACCENT);
+        p.drawEllipse(QPointF(0, 0), 8, 8);
+
+        QPainterPath arrow;
+        const QPointF tip(std::cos(headingRad) * 24, std::sin(headingRad) * 24);
+        constexpr qreal kWingAngle = 2.6;
+        arrow.moveTo(tip);
+        arrow.lineTo(QPointF(std::cos(headingRad + kWingAngle) * 10, std::sin(headingRad + kWingAngle) * 10));
+        arrow.lineTo(QPointF(std::cos(headingRad - kWingAngle) * 10, std::sin(headingRad - kWingAngle) * 10));
+        arrow.closeSubpath();
+        p.setPen(QPen(Tokens::ACCENT, 3.0));
+        p.drawLine(QPointF(0, 0), tip);
+        p.setPen(Qt::NoPen);
+        p.drawPath(arrow);
+        p.restore();
     }
 
     p.restore();  // 확대/패닝 종료 — 이 아래는 항상 고정 크기로 그린다.
@@ -569,8 +822,10 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         p.setPen(Tokens::TEXT_MUTED);
         p.drawText(QRectF(bounds.left() + 4, bounds.bottom() - 16, bounds.width() - 8, 16),
                    Qt::AlignLeft | Qt::AlignVCenter,
-                   mode_ == InteractionMode::AddWaypoint
-                       ? QStringLiteral("맵 클릭 추가 · 드래그 이동 · 클릭하여 편집 · 우클릭 삭제")
+                   poseCaptureMode_
+                       ? QStringLiteral("로봇의 실제 위치를 클릭한 채 드래그해 방향까지 지정 · 놓으면 확정 · 우클릭 취소")
+                   : mode_ == InteractionMode::AddWaypoint
+                       ? QStringLiteral("드래그로 추가(방향 지정) · 마커 드래그로 이동+재조준 · 클릭하여 편집 · 우클릭 삭제 · 휠 버튼 드래그로 화면 이동")
                        : QStringLiteral("클릭하여 주행 · 우클릭 삭제"));
     }
 }

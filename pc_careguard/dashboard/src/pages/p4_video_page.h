@@ -48,9 +48,13 @@ struct VideoClip {
 QVector<VideoClip> mockVideoClips();
 
 class QGridLayout;
-class QComboBox;
+class QPushButton;
 class QResizeEvent;
 class QTableWidget;
+class QJsonObject;
+class WsClient;
+class LiveSearchLineEdit;
+class CareGuardDateEdit;
 
 class P4VideoPage : public QWidget {
     Q_OBJECT
@@ -64,6 +68,9 @@ public:
 protected:
     // 창 크기가 바뀔 때마다 카드 그리드 열 수를 다시 계산해 반응형으로 재배치한다.
     void resizeEvent(QResizeEvent* event) override;
+    // 읽기 전용 날짜 칸 클릭을 "직접"로 전환한다 (P2EventPage::eventFilter,
+    // P7SettingsPage::eventFilter와 동일한 패턴 — applyPeriodPreset() 참고).
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void rebuildCardGrid();
@@ -80,10 +87,22 @@ private:
     void fetchVideoClips();
     void handleVideoClipsReply(QNetworkReply* reply);
 
+    // /ws/dashboard가 push하는 "video_event_created"(새 영상 클립 저장 완료)를 받아
+    // fetchVideoClips()를 다시 호출한다 — P3/P5/P6와 같은 패턴(페이지마다 자기 WsClient를
+    // 따로 둠). 목록 전체를 다시 세는 방식(list_video_events)과 맞춰, 부분 diff 대신
+    // 항상 서버에서 다시 받아 그린다.
+    void handleWsMessage(const QJsonObject& message);
+
     // 열람 사유 확인 후 재생이 시작되면(unlock()) 호출한다. 서버 POST
     // /video-events/{id}/view가 성공하면 응답의 view_count/view_history로 clips_[clipIndex]를
     // 갱신하고 다시 그린다 — 로컬에서 임의로 +1 하지 않고 항상 서버가 다시 센 값을 그대로 쓴다.
     void recordVideoView(int clipIndex, const QString& reason);
+
+    // 기간 세그먼트(오늘/7일/30일/직접) 클릭 시 날짜 범위를 맞춘다. spanDays >= 0이면
+    // "오늘 - spanDays일 ~ 오늘"로 채우고 읽기 전용으로 잠근다. spanDays < 0("직접")이면
+    // 편집 가능하게 풀어준다. P7SettingsPage::applyAuditPeriodPreset()과 동일한 패턴.
+    void applyPeriodPreset(int spanDays);
+    void setDateEditsReadOnly(bool readOnly);
 
     // mock 상태 보관용. model/VideoModel이 생기면 이 멤버들은 그쪽으로 옮긴다 (VideoClip 주석 참고).
     QVector<VideoClip> clips_;
@@ -93,14 +112,19 @@ private:
     int columns_ = 3;  // resizeEvent()가 창 폭에 맞춰 갱신 — 초기값은 첫 rebuild 전 임시값
     QString currentUserName_ = QStringLiteral("담당자");  // setUserName() 호출 전 fallback
 
-    // 필터 바 콤보박스. currentIndexChanged 시 rebuildCardGrid()가 이 값들을 읽어 다시 걸러낸다.
-    QComboBox* robotFilter_ = nullptr;
-    QComboBox* recipientFilter_ = nullptr;
-    QComboBox* periodFilter_ = nullptr;  // "기간 전체"/오늘/최근 7일/최근 30일. matchesFilters()가 capturedAtRaw로 판단
-    QComboBox* typeFilter_ = nullptr;
+    // 필터 바 — P7(시스템 설정) "로그" 탭과 같은 구성(기간 세그먼트 + 날짜 범위 + 검색
+    // 하나). 로봇 ID·대상자 이름·유형(긴급/주의/순찰)은 콤보박스로 하나하나 고르는 대신
+    // searchEdit_ 검색어 하나로 흡수한다 — matchesFilters()가 세 필드를 한 번에 대조한다.
+    LiveSearchLineEdit* searchEdit_ = nullptr;
+    QPushButton* periodCustomBtn_ = nullptr;
+    CareGuardDateEdit* startDateEdit_ = nullptr;
+    CareGuardDateEdit* endDateEdit_ = nullptr;
 
     // GET /video-events 호출용. 서버 주소는 loginwindow.cpp와 동일하게 환경변수
     // CAREGUARD_SERVER_URL, 없으면 http://127.0.0.1:8000.
     QNetworkAccessManager* netManager_ = nullptr;
     QString serverUrl_;
+
+    // 실시간 새로고침용. handleWsMessage() 참고.
+    WsClient* wsClient_ = nullptr;
 };

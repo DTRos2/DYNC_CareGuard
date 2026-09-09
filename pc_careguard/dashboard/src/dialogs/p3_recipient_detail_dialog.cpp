@@ -1,6 +1,8 @@
 #include "p3_recipient_detail_dialog.h"
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QDate>
 #include <QDateTime>
 #include <QFont>
@@ -23,9 +25,17 @@
 #include <QVBoxLayout>
 
 #include "theme/tokens.h"
+#include "widgets/careguard_combo_box.h"
 #include "widgets/simple_icons.h"
 
 namespace {
+
+// 로봇 하나당 맵 하나가 고정으로 딸린 이 앱의 기존 mock 관례(R-01~04 ↔ 4개 주소) —
+// p3_recipient_create_dialog.cpp와 정확히 같은 값(별도 로봇/맵 카탈로그가 없어 로컬 중복).
+const QStringList kRobotCodes = {QStringLiteral("R-01"), QStringLiteral("R-02"), QStringLiteral("R-03"),
+                                  QStringLiteral("R-04")};
+const QStringList kRobotMaps = {QStringLiteral("행복빌라 302"), QStringLiteral("은빛아파트 101"),
+                                 QStringLiteral("솔마을 7호"), QStringLiteral("동산주택 2층")};
 
 // p3_recipient_page.cpp의 makeStatusBadge()와 같은 발상 — 두 파일 다 자기 안에서만
 // 쓰는 로컬 헬퍼라 공용 유틸로 뽑지 않았다(이 코드베이스의 페이지별 로컬 중복 관례).
@@ -135,9 +145,12 @@ PillboxStyle pillboxStyle(MedSlotState state) {
 
 }  // namespace
 
-P3RecipientDetailDialog::P3RecipientDetailDialog(const RecipientDetail& detail, QWidget* parent)
-    : QDialog(parent), detail_(detail) {
+P3RecipientDetailDialog::P3RecipientDetailDialog(const RecipientDetail& detail,
+                                                   const QVector<OperatorOption>& operators, QWidget* parent)
+    : QDialog(parent), detail_(detail), operators_(operators) {
     setModal(true);
+    // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     setFixedWidth(Tokens::Layout::MODAL_W_M);
     setWindowTitle(QStringLiteral("대상자 상세 — %1").arg(detail_.card.name));
 
@@ -247,6 +260,15 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     row1->addWidget(makeFieldBlock(QStringLiteral("이름"), nameEdit_, tab), 1);
     auto* idField = makeReadOnlyField(QStringLiteral("%1 자동").arg(detail_.card.code), tab);
     row1->addWidget(makeFieldBlock(QStringLiteral("대상자 ID"), idField, tab), 1);
+
+    // 관리 담당자 — create dialog와 같은 후보 목록(계정관리(P7)의 관제담당자 계정). 현재
+    // 배정된 담당자가 있으면(detail_.card.operatorId) 그 항목을 미리 선택해둔다.
+    operatorCombo_ = new CareGuardComboBox(tab);
+    operatorCombo_->addItem(QStringLiteral("담당자 없음"), 0);
+    for (const auto& op : operators_) operatorCombo_->addItem(op.name, op.id);
+    const int operatorIdx = operatorCombo_->findData(detail_.card.operatorId);
+    if (operatorIdx >= 0) operatorCombo_->setCurrentIndex(operatorIdx);
+    row1->addWidget(makeFieldBlock(QStringLiteral("관리 담당자"), operatorCombo_, tab), 1);
     formCol->addLayout(row1);
 
     auto* row2 = new QHBoxLayout();
@@ -255,8 +277,10 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
         detail_.birthYear > 0 ? QString::number(detail_.birthYear) : QString(), tab);
     birthYearEdit_->setFont(QFont(Tokens::Font::MONO));
     row2->addWidget(makeFieldBlock(QStringLiteral("생년"), birthYearEdit_, tab), 1);
-    genderEdit_ = new QLineEdit(detail_.gender, tab);
-    row2->addWidget(makeFieldBlock(QStringLiteral("성별"), genderEdit_, tab), 1);
+    genderCombo_ = new CareGuardComboBox(tab);
+    genderCombo_->addItems({QStringLiteral("남"), QStringLiteral("여")});
+    if (detail_.gender == QStringLiteral("여")) genderCombo_->setCurrentIndex(1);
+    row2->addWidget(makeFieldBlock(QStringLiteral("성별"), genderCombo_, tab), 1);
     formCol->addLayout(row2);
 
     addressEdit_ = new QLineEdit(detail_.card.address, tab);
@@ -273,12 +297,12 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     row3->addWidget(makeFieldBlock(QStringLiteral("담당자 메모"), noteEdit_, tab), 1);
     layout->addLayout(row3);
 
-    // 담당 로봇 · 맵 배정 — 맵·로봇 매핑 페이지에서 등록된 항목이라 여기서는 표시만 한다.
-    // p5_map_page.cpp/p6_patrol_page.cpp의 robotChip 버튼과 같은 위젯을 그대로 재사용한다
-    // (QSS #robotChip: 1px 테두리 · 28px 높이 · 좌측 아이콘 + 한 줄 텍스트 — 라벨을 여러 개
-    // 겹쳐 만들다 생긴 "테두리가 글자를 덮는" 문제를 피하려면 이미 검증된 이 위젯을 쓰는 게 맞다).
+    // 담당 로봇 · 맵 배정 — p3_recipient_create_dialog.cpp와 같은 카탈로그·동작(로봇 고르면
+    // 그 로봇에 매핑된 맵 하나가 자동 채워짐). 맵 콤보는 표시 전용이라 저장 시 서버에 안
+    // 보낸다(create dialog와 동일 — DB엔 대상자별 "배정 맵"이라는 컬럼 자체가 없고 robot_id로만
+    // 간접 연결됨).
     auto* robotMapLabel = new QLabel(
-        QStringLiteral("담당 로봇 · 맵 배정 <span style='font-weight:400; color:%1;'>— 맵·로봇 매핑 페이지에서 등록된 항목</span>")
+        QStringLiteral("담당 로봇 · 맵 배정 <span style='font-weight:400; color:%1;'>— 맵·로봇 매핑 페이지에서 등록된 항목만 선택 가능</span>")
             .arg(Tokens::TEXT_MUTED.name()),
         tab);
     robotMapLabel->setTextFormat(Qt::RichText);
@@ -288,25 +312,30 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     auto* robotMapRow = new QHBoxLayout();
     robotMapRow->setSpacing(10);
 
-    auto* robotChip = new QPushButton(SimpleIcons::robot(Tokens::TEXT_SECONDARY, 13), QString(), tab);
-    robotChip->setObjectName("robotChip");
-    robotChip->setIconSize(QSize(13, 13));
-    robotChip->setText(QStringLiteral("  %1  LIMO · 정상  ▾").arg(detail_.card.robotCode));
-    connect(robotChip, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("담당 로봇 변경 — 맵·로봇 매핑 페이지에서 편집")); });
-    robotMapRow->addWidget(robotChip, 1);
+    robotCombo_ = new CareGuardComboBox(tab);
+    robotCombo_->addItem(QStringLiteral("로봇 선택"));
+    robotCombo_->addItems(kRobotCodes);
+    const int currentRobotIdx = kRobotCodes.indexOf(detail_.card.robotCode);
+    if (currentRobotIdx >= 0) robotCombo_->setCurrentIndex(currentRobotIdx + 1);
+    robotMapRow->addWidget(robotCombo_, 1);
 
-    auto* mapChip = new QPushButton(SimpleIcons::mapPin(Tokens::TEXT_SECONDARY, 12), QString(), tab);
-    mapChip->setObjectName("robotChip");
-    mapChip->setIconSize(QSize(12, 12));
-    mapChip->setText(QStringLiteral("  %1 맵  WP %2개  ▾")
-                          .arg(detail_.card.address)
-                          .arg(detail_.mapWaypointCount));
-    connect(mapChip, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("맵 배정 변경 — 맵·로봇 매핑 페이지에서 편집")); });
-    robotMapRow->addWidget(mapChip, 1);
-
+    mapCombo_ = new CareGuardComboBox(tab);
+    mapCombo_->addItem(QStringLiteral("맵 선택"));
+    if (currentRobotIdx >= 0 && currentRobotIdx < kRobotMaps.size()) {
+        mapCombo_->addItem(kRobotMaps[currentRobotIdx]);
+        mapCombo_->setCurrentIndex(1);
+    }
+    robotMapRow->addWidget(mapCombo_, 1);
     layout->addLayout(robotMapRow);
+
+    connect(robotCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        mapCombo_->clear();
+        mapCombo_->addItem(QStringLiteral("맵 선택"));
+        if (index >= 1 && index <= kRobotMaps.size()) {
+            mapCombo_->addItem(kRobotMaps[index - 1]);
+            mapCombo_->setCurrentIndex(1);
+        }
+    });
 
     auto* guardianHeader = new QHBoxLayout();
     auto* guardianLabel = new QLabel(
@@ -476,7 +505,9 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
             nameLabel->setText(QFontMetrics(nameLabel->font()).elidedText(nameText, Qt::ElideRight, kNameW));
             nameLabel->setToolTip(nameText);
             phoneLabel->setText(gg.phone);
-            channelLabel->setText(gg.notifyChannel);
+            channelLabel->setText(gg.isEmergencyFixed
+                                       ? QStringLiteral("모의 신고 전용")
+                                       : (gg.notifyEnabled ? QStringLiteral("수신") : QStringLiteral("미수신")));
         };
         refreshViewLabels();
 
@@ -524,9 +555,12 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
             editLayout->addSpacing(kGapNamePhone);
             auto* phoneEdit = new QLineEdit(editPage);
             phoneEdit->setFixedWidth(kPhoneW);
+            installLivePhoneFormatting(phoneEdit);  // 입력하는 즉시 하이픈이 보이도록
             editLayout->addWidget(phoneEdit);
             editLayout->addSpacing(kGapPhoneChannel);
-            auto* channelEdit = new QLineEdit(editPage);
+            // DB의 guardian.notify_enabled가 boolean이라 입력도 체크박스로 맞춘다(예전엔
+            // "문자 + 전화" 같은 자유 텍스트였는데 저장할 칸이 없어 결국 boolean으로 뭉개졌다).
+            auto* channelEdit = new QCheckBox(QStringLiteral("수신"), editPage);
             channelEdit->setFixedWidth(kChannelW);
             editLayout->addWidget(channelEdit);
             editLayout->addSpacing(kGapChannelEdit);
@@ -557,7 +591,7 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
                                                       : QStringLiteral("%1 (%2)").arg(gg.name, gg.relation);
                         nameEdit->setText(nameText);
                         phoneEdit->setText(gg.phone);
-                        channelEdit->setText(gg.notifyChannel);
+                        channelEdit->setChecked(gg.notifyEnabled);
                         stack->setCurrentIndex(1);
                     });
 
@@ -575,8 +609,10 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
                         }
                         detail_.guardians[r].name = name;
                         detail_.guardians[r].relation = relation;
-                        detail_.guardians[r].phone = phoneEdit->text().trimmed();
-                        detail_.guardians[r].notifyChannel = channelEdit->text().trimmed();
+                        // "-" 없이 숫자만 입력해도 저장 시점에 하이픈을 넣어준다(요청: 노출
+                        // 형식 가독성).
+                        detail_.guardians[r].phone = formatGuardianPhone(phoneEdit->text());
+                        detail_.guardians[r].notifyEnabled = channelEdit->isChecked();
                         refreshViewLabels();
                         stack->setCurrentIndex(0);
                     });
@@ -595,7 +631,7 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
                 autoEditGuardianIndex_ = -1;
                 nameEdit->setText(QString());
                 phoneEdit->setText(QString());
-                channelEdit->setText(QString());
+                channelEdit->setChecked(true);
                 stack->setCurrentIndex(1);
                 nameEdit->setFocus();
             }
@@ -771,11 +807,20 @@ QWidget* P3RecipientDetailDialog::buildTodayPillbox() {
 
 void P3RecipientDetailDialog::populateScheduleTable(QWidget* box) {
     // populateGuardianTable()과 같은 이유로 QGridLayout 대신 행-구분선 방식을 쓴다.
-    static const int kSlotW = 36, kTimeW = 60, kDaysW = 80;
+    // kTimeW는 콤보박스 드롭다운 화살표까지 들어가야 해서 QLineEdit 시절(60px, "08:00"
+    // placeholder가 잘리던 값)보다 넓혔다 — p3_recipient_create_dialog.cpp와 동일하게 맞춤.
+    static const int kSlotW = 36, kTimeW = 96, kDaysW = 80;
     static const int kIconW = 24, kIconGap = 6;
     // 보기 모드는 편집+삭제 두 아이콘, 수정 모드는 저장+취소 두 아이콘이 나란히 붙는다 —
     // 헤더의 마지막 칸도 이 두 아이콘 폭에 맞춰야 우측 끝 정렬이 흐트러지지 않는다.
     static const int kActionsW = kIconW * 2 + kIconGap;
+    static const QStringList kDefaultTimes = {QStringLiteral("08:00"), QStringLiteral("13:00"),
+                                               QStringLiteral("19:00")};
+    static const QStringList kTimePresets = {
+        QStringLiteral("06:00"), QStringLiteral("07:00"), QStringLiteral("07:30"), QStringLiteral("08:00"),
+        QStringLiteral("08:30"), QStringLiteral("09:00"), QStringLiteral("12:00"), QStringLiteral("12:30"),
+        QStringLiteral("13:00"), QStringLiteral("18:00"), QStringLiteral("18:30"), QStringLiteral("19:00"),
+        QStringLiteral("19:30"), QStringLiteral("20:00"), QStringLiteral("21:00"), QStringLiteral("22:00")};
 
     auto* boxLayout = new QVBoxLayout(box);
     boxLayout->setContentsMargins(0, 0, 0, 0);
@@ -883,7 +928,12 @@ void P3RecipientDetailDialog::populateScheduleTable(QWidget* box) {
 
         auto* drugEdit = new QLineEdit(editPage);
         editLayout->addWidget(drugEdit, 1);
-        auto* timeEdit = new QLineEdit(editPage);
+        // 편집 가능한 콤보박스 — 목록에서 골라도 되고, normalizeDoseTime()이 받아주는
+        // 형식이면 뭐든 직접 타이핑해도 된다(예: "9", "930").
+        auto* timeEdit = new CareGuardComboBox(editPage);
+        timeEdit->setEditable(true);
+        timeEdit->addItems(kTimePresets);
+        timeEdit->setCurrentText(QString());
         timeEdit->setFixedWidth(kTimeW);
         editLayout->addWidget(timeEdit);
         auto* daysEdit = new QLineEdit(editPage);
@@ -911,7 +961,7 @@ void P3RecipientDetailDialog::populateScheduleTable(QWidget* box) {
                     const MedicationScheduleItem& ss = detail_.schedules[r];
                     slotEdit->setText(QString::number(ss.slotNo));
                     drugEdit->setText(ss.drugName);
-                    timeEdit->setText(ss.doseTime);
+                    timeEdit->setCurrentText(ss.doseTime);
                     daysEdit->setText(ss.daysLabel);
                     stack->setCurrentIndex(1);
                 });
@@ -938,9 +988,29 @@ void P3RecipientDetailDialog::populateScheduleTable(QWidget* box) {
                         }
                     }
 
+                    // 저장 버튼을 누르는 즉시 검사한다 — 시각 형식이 이상하면 바로 이 자리에서
+                    // 고칠 수 있게(요청: 저장 시점부터 유효성 검사).
+                    const QString rawTime = timeEdit->currentText().trimmed();
+                    QString normalizedTime;
+                    if (!rawTime.isEmpty()) {
+                        normalizedTime = normalizeDoseTime(rawTime);
+                        if (normalizedTime.isEmpty()) {
+                            QMessageBox::warning(
+                                this, QStringLiteral("복용 시각 오류"),
+                                QStringLiteral("'%1'을(를) 시각으로 알아볼 수 없습니다.\n9, 09:30, 930처럼 "
+                                               "입력하거나 목록에서 골라주세요.")
+                                    .arg(rawTime));
+                            return;  // 수정 모드 유지 — 바로 고칠 수 있게
+                        }
+                    } else if (detail_.schedules[r].doseTime.isEmpty()) {
+                        normalizedTime = (slotNo >= 1 && slotNo <= 3) ? kDefaultTimes[slotNo - 1] : QString();
+                    } else {
+                        normalizedTime = detail_.schedules[r].doseTime;  // 안 건드렸으면 기존 값 유지
+                    }
+
                     detail_.schedules[r].slotNo = slotNo;
                     detail_.schedules[r].drugName = drugName;
-                    detail_.schedules[r].doseTime = timeEdit->text().trimmed();
+                    detail_.schedules[r].doseTime = normalizedTime;
                     detail_.schedules[r].daysLabel = daysEdit->text().trimmed();
                     refreshViewLabels();
                     stack->setCurrentIndex(0);
@@ -959,8 +1029,13 @@ void P3RecipientDetailDialog::populateScheduleTable(QWidget* box) {
 
         if (r == autoEditScheduleIndex_) {
             autoEditScheduleIndex_ = -1;
+            const int slotNo = detail_.schedules[r].slotNo;
             drugEdit->setText(QString());
-            timeEdit->setText(QString());
+            timeEdit->setCurrentText(QString());
+            if (timeEdit->lineEdit()) {
+                timeEdit->lineEdit()->setPlaceholderText(
+                    slotNo >= 1 && slotNo <= 3 ? kDefaultTimes[slotNo - 1] : QString());
+            }
             daysEdit->setText(QString());
             stack->setCurrentIndex(1);
             drugEdit->setFocus();
@@ -1118,8 +1193,21 @@ QWidget* P3RecipientDetailDialog::buildFooter() {
     auto* deactivateBtn = new QPushButton(QStringLiteral("대상자 비활성화"), footer);
     deactivateBtn->setProperty("variant", "secondary");
     deactivateBtn->setProperty("tone", "danger");
-    connect(deactivateBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("대상자 비활성화")); });
+    connect(deactivateBtn, &QPushButton::clicked, this, [this] {
+        QMessageBox box(this);
+        box.setWindowTitle(QStringLiteral("대상자 비활성화"));
+        box.setText(QStringLiteral("%1 대상자를 비활성화하시겠습니까?\n"
+                                    "비활성화하면 대상자 목록에서 사라지며, 되돌릴 수 없습니다.")
+                        .arg(detail_.card.name));
+        box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Cancel);
+        box.button(QMessageBox::Ok)->setText(QStringLiteral("확인"));
+        box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+        if (box.exec() != QMessageBox::Ok) return;
+
+        emit deactivateRequested(detail_.card.id);
+        reject();
+    });
     layout->addWidget(deactivateBtn);
 
     layout->addStretch();
@@ -1142,9 +1230,20 @@ void P3RecipientDetailDialog::handleSaveClicked() {
     const QString address = addressEdit_->text().trimmed();
     if (name.isEmpty() || address.isEmpty()) return;
 
-    // 이름·주소만 상위 카드에 실제로 반영된다. 생년·성별·지병·메모와 보호자·복약 스케줄은
-    // 저장 API가 없어 이 다이얼로그 세션 안에서만 유효하다(클래스 주석 참고).
-    emit basicInfoSaved(name, address);
+    detail_.card.name = name;
+    detail_.card.address = address;
+    detail_.birthYear = birthYearEdit_->text().trimmed().toInt();  // 파싱 실패 시 0(=미상)
+    detail_.gender = genderCombo_->currentText();
+    detail_.diseases = diseasesEdit_->text().trimmed();
+    detail_.note = noteEdit_->text().trimmed();
+    detail_.card.robotCode =
+        robotCombo_->currentIndex() > 0 ? robotCombo_->currentText() : QStringLiteral("미배정");
+    detail_.card.operatorId = operatorCombo_->currentData().toInt();
+    detail_.card.operatorName = detail_.card.operatorId > 0 ? operatorCombo_->currentText() : QString();
+
+    // detail_.guardians/schedules는 보호자·복약 스케줄 행의 저장(💾) 버튼을 누를 때마다
+    // 이미 갱신돼 있다 — 여기서 다시 모을 필요 없이 그대로 실어 보낸다.
+    emit saveRequested(detail_);
     accept();
 }
 

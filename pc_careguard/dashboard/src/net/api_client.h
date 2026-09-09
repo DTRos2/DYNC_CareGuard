@@ -23,6 +23,13 @@ public:
         bool isActive = false;
         int imageFileId = 0;     // 0이면 등록된 맵 이미지 없음
         QString imageUrl;        // "/media/files/{file_id}". 비어있으면 없음
+        // 캔버스 픽셀 <-> 실제 map 프레임 미터 환산에 필요 (map_server .yaml과 같은 값).
+        // 서버는 이미 내려주고 있었는데 예전엔 여기서 안 읽고 캔버스 쪽이 고정 배율
+        // (kPxPerMeter=40)을 썼다 — 실제 지도 해상도(대개 0.05)와 달라 "이동" 목표가
+        // 화면에서 클릭한 지점과 실제로 다른 곳이 되는 원인이었다.
+        double resolution = 0.0;  // m/px, 0이면 서버가 아직 못 줌(예: 미등록 맵)
+        double originX = 0.0;
+        double originY = 0.0;
     };
 
     // server/app/schemas.py::WaypointItem 대응.
@@ -68,6 +75,83 @@ public:
         int waypointsTotal = 0;
         int waypointsDone = 0;
         bool robotConnected = false;
+    };
+
+    // server/app/schemas.py::MissionItem 대응.
+    struct MissionInfo {
+        int id = 0;
+        QString status;  // "dispatched" 등 mission.status 값
+        bool robotConnected = false;
+    };
+
+    // server/app/schemas.py::GuardianItem 대응.
+    struct GuardianInfo {
+        int id = 0;
+        QString name;
+        QString phone;
+        QString relation;
+        int priority = 1;
+        bool notifyEnabled = true;
+    };
+
+    // server/app/schemas.py::MedicationScheduleItem 대응.
+    struct MedicationScheduleInfo {
+        int id = 0;
+        int slotNo = 1;
+        QString drugName;
+        QString doseTime;    // "HH:mm" (서버는 "HH:MM:SS"로 내려주며 초는 잘라낸다)
+        int daysOfWeek = 127;  // 요일 비트마스크. 월=1 화=2 수=4 목=8 금=16 토=32 일=64
+    };
+
+    // server/app/schemas.py::MedicationTodayItem 대응. 오늘 요일에 스케줄된 슬롯만 담긴다
+    // (대상자마다 슬롯 수가 다를 수 있어 항상 3개가 아님).
+    struct MedicationTodayInfo {
+        int slotNo = 1;
+        QString state;  // "done" / "missed" / "pending"
+    };
+
+    // server/app/schemas.py::MedicationHistoryDay 대응.
+    struct MedicationHistoryInfo {
+        QString date;          // "YYYY-MM-DD"
+        double adherence = -1.0;  // 1.0 정상 · 0.0 미수령 · -1.0 그날 스케줄 없음(빈칸)
+    };
+
+    // server/app/schemas.py::RecipientItem 대응.
+    struct RecipientInfo {
+        int id = 0;
+        QString code;         // "C-001"
+        QString name;
+        int robotId = 0;      // 0 = 미배정
+        QString robotCode;    // 미배정이면 빈 문자열
+        QString gender;       // "male" / "female" / "other". 미상이면 빈 문자열
+        QString birthDate;    // "YYYY-MM-DD". 미상이면 빈 문자열
+        QString homeAddress;
+        QString diseases;
+        QString note;
+        int operatorId = 0;    // 담당 관제담당자 계정 id. 0 = 미배정
+        QString operatorName;  // 미배정이면 빈 문자열
+        // "normal"/"attention"/"emergency" — 로봇 오프라인 여부는 안 실려 있다(WS robot_status로
+        // 대시보드가 별도 판정 후 이 값과 조합).
+        QString level = QStringLiteral("normal");
+        QString statusSummary;
+        QVector<MedicationTodayInfo> medsToday;
+    };
+
+    // 대상자 상세/등록 모달의 "관리 담당자" 콤보를 채우는 후보 목록. server/app/accounts.py::
+    // list_accounts()가 반환하는 AccountItem 중 role_code == "operator"인 것만 추린 것 —
+    // 계정관리(P7)처럼 담당 배정 전용 엔드포인트를 새로 만들지 않고 이미 있는 GET /accounts를
+    // 그대로 재사용한다(계정 수는 적어 필터 비용이 무시할 만하다).
+    struct OperatorInfo {
+        int id = 0;
+        QString name;  // careguard_user.display_name
+    };
+
+    // server/app/schemas.py::RecipientDetailItem 대응.
+    struct RecipientDetailInfo {
+        RecipientInfo recipient;
+        QVector<GuardianInfo> guardians;
+        QVector<MedicationScheduleInfo> schedules;
+        QVector<MedicationHistoryInfo> history;  // 최근 28일. 목록(RecipientInfo)에는 없음
     };
 
     template <typename T>
@@ -143,6 +227,80 @@ public:
     // POST /patrol-runs — 순찰 시작.
     void startPatrolRun(int robotId, int routeId, const QString& trigger, ItemCallback<PatrolRunInfo> callback);
 
+    // POST /missions — P3 "복약 재안내" 버튼. medication_scheduler가 없어 스케줄을 안 거치고
+    // 즉시 mission을 만들어 로봇에 다운링크를 보낸다(robots.py 스코프 밖이라 robot.code로 보냄).
+    // 로봇 쪽은 아직 이 명령을 실행하지 않는다 — mission 기록·다운링크 전송까지만 실동작.
+    void startMedicationMission(const QString& robotCode, ItemCallback<MissionInfo> callback);
+
+    // GET /recipients — P3 대상자 목록. 위험도(level)·상태 요약·복약 배지는 care_event
+    // 연동이 아직 없어 이 응답에 없다 — 호출부가 등록 직후 기본값(정상/미확인)을 채운다.
+    void fetchRecipients(ListCallback<RecipientInfo> callback);
+    // GET /recipients/{id} — P3 상세 모달이 여는 대상자 1명의 보호자·복약 스케줄까지.
+    void fetchRecipientDetail(int recipientId, ItemCallback<RecipientDetailInfo> callback);
+
+    // POST /recipients — "대상자 등록" 모달. server/app/schemas.py::RecipientCreate 대응.
+    struct GuardianCreateParams {
+        QString name;
+        QString phone;
+        QString relation;
+        int priority = 1;
+        bool notifyEnabled = true;
+    };
+    struct MedicationScheduleCreateParams {
+        int slotNo = 1;
+        QString drugName;
+        QString doseTime;  // "HH:mm", 반드시 유효한 시각이어야 한다(호출 전 검증)
+        int daysOfWeek = 127;
+    };
+    struct RecipientCreateParams {
+        QString name;
+        QString gender;  // "male" / "female" / "other" / 빈 문자열(미상)
+        QString birthDate;  // "YYYY-MM-DD". 비어 있으면 서버에 안 보낸다
+        QString homeAddress;
+        QString diseases;
+        QString note;
+        QString robotCode;  // 비어 있으면 미배정
+        int operatorId = 0;  // 0이면 서버에 안 보낸다 — RecipientCreate.operator_id가 None이 되어 미배정으로 저장됨
+        QVector<GuardianCreateParams> guardians;
+        QVector<MedicationScheduleCreateParams> schedules;
+    };
+    void createRecipient(const RecipientCreateParams& params, ItemCallback<RecipientDetailInfo> callback);
+    // PUT /recipients/{id} — P3 대상자 상세 모달의 "저장". 필드 구성은 등록과 동일 —
+    // 보호자·복약 스케줄은 지금 보낸 목록으로 서버가 통째로 교체한다.
+    void updateRecipient(int recipientId, const RecipientCreateParams& params,
+                          ItemCallback<RecipientDetailInfo> callback);
+    // POST /recipients/{id}/deactivate — P3 상세 모달의 "대상자 비활성화". 하드 삭제가 아니라
+    // recipient.deregistered_at을 찍어 목록·조회에서만 제외한다(서버 쪽 주석 참고).
+    void deactivateRecipient(int recipientId, SimpleCallback callback);
+
+    // GET /accounts — 대상자 등록/상세 모달의 "관리 담당자" 콤보 후보. role_code=="operator"
+    // 이면서 활성 계정인 것만 추려서 넘긴다(비활성 계정에 새로 배정하는 건 막는다).
+    void fetchOperators(ListCallback<OperatorInfo> callback);
+
+    // POST /patrol-runs/drive-to-point — P6 "이동"(단일 웨이포인트 주행). 순찰과 달리
+    // patrol_run을 기록하지 않고, 도착해도 충전소로 복귀하지 않는다(제자리에 머묾).
+    // mapId는 downlink_node가 Nav2를 자동으로 준비하는 데 필요하다(맵 다운로드+런치+
+    // 초기 위치).
+    void driveToPoint(const QString& robotCode, int mapId, const QString& code, double xMeters,
+                       double yMeters, double yawRad, SimpleCallback callback);
+
+    // POST /patrol-runs/prepare-navigation — 실제 순찰/이동 목표 없이 Nav2만 미리
+    // 준비시킨다(P6 페이지를 열거나 다른 로봇의 맵으로 전환할 때 호출). 로봇이 아직
+    // 안 켜져 있어도 에러가 아니라 그냥 robot_connected:false로 조용히 알려줄
+    // 뿐이라, 이 호출은 실패해도 팝업을 띄우지 않는다(SimpleCallback 결과를 무시해도
+    // 되게 설계) — 그래서 콜백 없는 오버로드를 둔다.
+    void prepareNavigation(const QString& robotCode, int mapId);
+
+    // POST /patrol-runs/set-initial-pose — "위치 보정"(캔버스 클릭+드래그로 위치·방향
+    // 직접 지정). Nav2를 새로 켜지 않고, 이미 떠 있는 AMCL의 초기 위치 추정치만
+    // 다시 잡는다 — 자동 세팅(충전 스테이션 좌표 가정)이 틀렸을 때 쓴다.
+    void setInitialPose(const QString& robotCode, int mapId, double xMeters, double yMeters, double yawRad,
+                         SimpleCallback callback);
+
+    // POST /patrol-runs/shutdown-robot — "로봇 종료" 버튼. 이 로봇에서 켜져 있는
+    // 베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크를 전부 내린다.
+    void shutdownRobot(const QString& robotCode, SimpleCallback callback);
+
     // POST /teleop/{robot_code} — 방향키 패널이 계산한 목표 속도를 로봇에 그대로 전달한다.
     void sendTeleop(const QString& robotCode, double linearMps, double angularRadps);
 
@@ -158,6 +316,8 @@ private:
     static MapInfo parseMap(const QJsonObject& o);
     static PatrolRouteInfo parsePatrolRoute(const QJsonObject& o);
     static PatrolScheduleInfo parsePatrolSchedule(const QJsonObject& o);
+    static RecipientInfo parseRecipient(const QJsonObject& o);
+    static RecipientDetailInfo parseRecipientDetail(const QJsonObject& o);
 
     QNetworkAccessManager* netManager_;
     QString serverUrl_;

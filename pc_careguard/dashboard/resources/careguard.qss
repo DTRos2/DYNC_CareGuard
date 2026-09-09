@@ -309,11 +309,40 @@ QCalendarWidget QAbstractItemView#qt_calendar_calendarview QHeaderView::section 
 QSpinBox::up-button, QSpinBox::down-button,
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0; border: none; }
 QComboBox::drop-down { border: none; width: 22px; }
+/* 편집 가능한(setEditable(true)) QComboBox의 내부 QLineEdit도 위 공용 QLineEdit 규칙에 걸려
+   자기 테두리·radius·배경을 또 그린다 — 콤보 자신의 박스 안에 radius 있는 박스가 하나 더
+   보이는 원인. 콤보에 소속된 QLineEdit만 투명·무테두리로 되돌려 콤보의 외곽 박스만 남긴다. */
+QComboBox QLineEdit {
+    border: none; background: transparent; border-radius: 0px; padding: 0px;
+}
+/* 목록(QAbstractItemView) 자신은 배경을 안 칠한다 — 불투명 배경을 칠하면 컨테이너
+   (QComboBoxPrivateContainer)가 그리는 둥근 모서리를 목록의 각진 사각형이 그대로 덮어버려
+   radius가 안 보인다. 그래서 테두리·배경·radius는 전부 컨테이너 쪽(CareGuardComboBox::
+   showPopup()이 컨테이너에 직접 씌우는 인라인 스타일시트)이 맡고, 여기서는 선택 하이라이트
+   색만 지정한다. */
 QComboBox QAbstractItemView {
-    background: #FFFFFF; border: 1px solid #CDD5DD; border-radius: 8px;
+    background: transparent; border: none; border-radius: 0px;
     selection-background-color: #E0F5F2; selection-color: #0B7A6E;
     outline: none; padding: 4px;
 }
+/* outline:none은 뷰 전체의 포커스 사각형만 지우고, "현재 항목"(키보드 포커스가 있는 행) 하나에
+   델리게이트가 따로 그리는 점선/실선 테두리는 안 지운다 — 비편집형 콤보(로봇·맵 배정)는 열자마자
+   현재 선택 인덱스(기본 0번)에 그 표시가 바로 보여서 "컨테이너 안에 테두리가 있다"로 보였다
+   (편집형인 복약 시각 콤보는 이 표시가 잘 안 걸려서 안 보였음). 항목 단위로 한 번 더 지운다. */
+QComboBox QAbstractItemView::item { border: none; outline: none; }
+QComboBox QAbstractItemView::item:selected, QComboBox QAbstractItemView::item:focus {
+    border: none; outline: none;
+}
+/* 항목이 다 안 보일 수 있을 때 Qt가 자동으로 붙이는 "더 보기" 스크롤 화살표
+   (QComboBoxPrivateScroller)는 목록 맨 위/아래에 자기만의 각진 기본 배경을 그린다 — 그게
+   컨테이너의 둥근 아래쪽 모서리를 덮어버려 그 부분만 각지게 보이는 원인이었다
+   (실제로 grab() 자가 캡처로 재현: 아래쪽 모서리가 이 위젯 때문에 각져 있었음). 배경을
+   투명하게 비워 컨테이너의 radius가 그대로 비쳐 보이게 한다 — 화살표 글리프 자체는 계속
+   그려지므로 스크롤 가능하다는 표시는 남는다.
+   (이 위젯은 "메뉴형" 팝업에서만 나타나는데, careguard_combo_box.cpp의 NoMenuPopupStyle이
+   그 경로 자체를 꺼버려서 지금은 실제로 걸릴 일이 없다 — 그래도 남겨두면 안전하므로
+   지우지 않는다.) */
+QComboBoxPrivateScroller { background: transparent; border: none; }
 
 QCheckBox { spacing: 6px; color: #16202B; font-size: 13px; }
 QCheckBox::indicator {
@@ -341,6 +370,7 @@ QPushButton#segBtn {
 }
 QPushButton#segBtn[pos="first"] { border-top-left-radius: 6px; border-bottom-left-radius: 6px; }
 QPushButton#segBtn[pos="last"]  { border-top-right-radius: 6px; border-bottom-right-radius: 6px; }
+QPushButton#segBtn[pos="only"]  { border-radius: 6px; }
 QPushButton#segBtn:checked { background: #E0F5F2; color: #0B7A6E; font-weight: 500; }
 
 /* ---------- 배너 ---------- */

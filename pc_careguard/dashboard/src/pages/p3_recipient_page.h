@@ -15,6 +15,10 @@ class QFrame;
 class QResizeEvent;
 class QTimer;
 class LiveSearchLineEdit;
+class ApiClient;
+class WsClient;
+class QJsonObject;
+class QLineEdit;
 
 // P3 대상자 관리. gui/wireframe/v1/p3_recipient_management_wireframe.html,
 // CareGuard_DESIGN_SYSTEM.md §5-2(대상자 카드)·§6(idx 2)·§7-1/7-2(상태 판정·퀵액션) 기준.
@@ -39,6 +43,26 @@ struct RecipientCard {
     Tokens::Level level;
     QString statusSummary;  // 상태 요약 한 줄 (§5-2, 심박 블록을 대체)
     MedSlotState meds[3] = {MedSlotState::Pending, MedSlotState::Pending, MedSlotState::Pending};
+    // mockRecipients()의 4개 카드는 이 필드를 안 채워 0으로 남는다 — 상세 조회 시
+    // id<=0이면 openDetail()이 mockRecipientDetail()로 폴백한다(실 DB에 없는 mock 행이라서).
+    int id = 0;  // recipient.id. 0 = 서버에 없는 mock 카드
+    int operatorId = 0;    // 담당 관제담당자 계정 id. 0 = 미배정
+    QString operatorName;  // 미배정이면 빈 문자열 — 카드·상세 모달 표시용
+    // 서버가 care_event로 판정한 위험도(Normal/Attention/Emergency만, Offline은 안 옴) —
+    // level과 분리해서 따로 들고 있어야 한다. WS robot_status로 로봇이 재연결됐을 때 level을
+    // Offline에서 되돌릴 값이 필요한데, 예전엔 무조건 Normal로 되돌려서 실제로는 위험 상태였던
+    // 대상자도 재연결 순간 카드가 정상으로 잘못 표시되는 문제가 있었다(handleWsMessage 참고).
+    // 새 필드를 struct 끝에 두는 이유: mockRecipients() 등 위치 기반 중괄호 초기화 호출부가
+    // 이미 있어서, 중간에 끼우면 그 호출부들의 인자 순서가 전부 밀려 컴파일이 깨진다.
+    Tokens::Level riskLevel = Tokens::Level::Normal;
+};
+
+// 대상자 등록/상세 모달의 "관리 담당자" 콤보 후보 1명. ApiClient::OperatorInfo의 화면 모델
+// 버전 — 다이얼로그가 net/api_client.h에 직접 의존하지 않도록 얇게 감싼다(RecipientCard가
+// ApiClient::RecipientInfo를 감싸는 것과 같은 이유).
+struct OperatorOption {
+    int id = 0;
+    QString name;
 };
 
 // 와이어프레임 그대로의 mock 데이터. 실 연동 전까지 GUI 검증용으로만 사용한다.
@@ -54,7 +78,10 @@ struct GuardianContact {
     QString name;
     QString relation;
     QString phone;
-    QString notifyChannel;  // "문자 + 전화" 등 표시용
+    // guardian.notify_enabled(boolean)와 1:1 — 예전엔 "문자 + 전화" 같은 자유 텍스트였는데
+    // DB엔 그걸 담을 칸이 없어(§project_p3_recipient_db_persistence) 저장 시 아무튼 boolean으로
+    // 뭉개졌다. 아예 입력 단계부터 체크박스로 바꿔 DB 타입과 맞춘다.
+    bool notifyEnabled = true;
     bool isEmergencyFixed = false;
 };
 
@@ -90,10 +117,29 @@ struct RecipientDetail {
 
 RecipientDetail mockRecipientDetail(const RecipientCard& card);
 
+// 복약 시각 자유 입력을 "HH:mm"으로 정규화한다. "9"/"09"/"9:30"/"930"/"0930"처럼 콜론·자릿수
+// 형식을 몰라도 되게 다양한 표기를 받아들인다(요청: 시각 입력에 유연성을 달라). 못 알아보면
+// 빈 문자열 — 호출부가 이걸로 저장 시점 유효성 검사를 한다. 생성/상세 모달 둘 다 공유한다.
+QString normalizeDoseTime(const QString& raw);
+
+// 보호자 연락처를 "010-1234-5678"류 하이픈 형식으로 점진적으로 정규화한다(요청: 입력하는
+// 순간부터 하이픈이 보이도록). 자릿수가 안 늘어도(완성되지 않아도) 그때까지 입력한 만큼
+// 자연스럽게 그룹을 나눠 보여준다 — QLineEdit::textEdited에 연결해 실시간으로도 쓸 수 있다.
+QString formatGuardianPhone(const QString& raw);
+
+// phoneEdit에 입력하는 즉시 formatGuardianPhone()으로 하이픈을 넣어 보여준다. 커서 위치도
+// "그 앞에 숫자가 몇 개 있었는지" 기준으로 보정해, 하이픈이 새로 끼어들어도 커서가 엉뚱한
+// 곳으로 튀지 않게 한다. 생성/상세 모달의 보호자 연락처 입력칸이 공유해서 쓴다.
+void installLivePhoneFormatting(QLineEdit* phoneEdit);
+
 class P3RecipientPage : public QWidget {
     Q_OBJECT
 public:
     explicit P3RecipientPage(QWidget* parent = nullptr);
+
+signals:
+    // 긴급 카드의 "이벤트 확인" 클릭. MainWindow가 P2 이벤트 페이지로 전환 + 필터링에 연결한다.
+    void eventCheckRequested(const QString& recipientName);
 
 protected:
     // 창 크기가 바뀔 때마다 카드 그리드 열 수를 다시 계산해 반응형으로 재배치한다 (P4와 동일 패턴).
@@ -106,15 +152,26 @@ private:
     void rebuildGrid();
     int computeColumnCount() const;
     QVector<int> visibleIndexesSorted() const;
-    void showComingSoon(const QString& feature);
+    // GET /recipients. 실패하면(서버 미기동 등) mockRecipients()로 폴백해 화면은 계속 동작하게 한다.
+    void loadRecipientsFromServer();
     void openDetail(int recipientIndex);
     void registerRecipient();
+    // P3RecipientDetailDialog::saveRequested — 상세 모달 "저장" 클릭. PUT /recipients/{id}로
+    // 기본정보·보호자·복약 스케줄을 실제로 갱신한다.
+    void saveRecipientUpdate(const RecipientDetail& detail);
+    // P3RecipientDetailDialog::deactivateRequested — 상세 모달 "대상자 비활성화" 확인 클릭.
+    // POST /recipients/{id}/deactivate로 실제 처리하고, 성공하면 카드를 목록에서 뺀다.
+    void deactivateRecipient(int recipientId);
+    // ATTENTION 카드 "복약 재안내" 클릭. POST /missions로 실제 mission을 만들고 로봇에
+    // 다운링크를 보낸다 — medication_scheduler가 없어 스케줄을 거치지 않는 즉시 실행.
+    void requestMedicationReannounce(const QString& robotCode, const QString& recipientName);
+    // /ws/dashboard가 push하는 robot_status(로봇 연결/해제)를 받아 OFFLINE 카드를 자동으로
+    // 갱신한다 — "재연결 시도" 버튼 없이 로봇이 실제로 재연결되면 카드가 저절로 바뀐다.
+    void handleWsMessage(const QJsonObject& message);
 
+    ApiClient* apiClient_ = nullptr;
+    WsClient* wsClient_ = nullptr;
     QVector<RecipientCard> recipients_;
-    // "대상자 등록"으로 만든 대상자의 guardians/schedules 등 상세 데이터. mockRecipientDetail()은
-    // C-001~004 외 코드를 모르므로(TODO: API 붙으면 이 지도는 통째로 삭제), 여기 있으면 이걸
-    // 우선 쓴다(openDetail() 참고).
-    QMap<QString, RecipientDetail> customDetails_;
 
     QWidget* gridPage_ = nullptr;
     QGridLayout* grid_ = nullptr;

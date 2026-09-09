@@ -65,4 +65,13 @@ def generate_launch_description():
             name='rviz2',
             arguments=['-d', rviz_config_dir],
             output='screen'),
+
+        # 대시보드 P5 매핑 카드의 "경과·탐색면적" 표시용 — cartographer_node와 같은
+        # 프로세스 그룹으로 떠서, downlink_node._stop_slam()이 그룹 전체를 죽일 때
+        # 같이 종료된다(매핑 재시작 = 경과·면적도 자동으로 0부터 다시 시작).
+        Node(
+            package='careguard_mission',
+            executable='slam_progress_publisher',
+            name='slam_progress_publisher',
+            output='screen'),
     ])

@@ -21,6 +21,7 @@ setup(
         'console_scripts': [
             'patrol_task = careguard_mission.patrol_task:main',
             'mission_scheduler = careguard_mission.mission_scheduler:main',
+            'slam_progress_publisher = careguard_mission.slam_progress_publisher:main',
         ],
     },
 )

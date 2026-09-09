@@ -26,6 +26,13 @@ amcl이 안 떠 있어 그 토픽에 퍼블리셔가 전혀 없다 — 매핑 �
 /camera/color/image_raw/compressed(orbbec_camera, sensor_msgs/CompressedImage)도
 같은 방식으로 relay한다 — 이미 JPEG로 압축되어 있어 재인코딩 없이 그대로
 base64만 씌워 보낸다(대시보드 P5/P6 우측 상단 카메라 라이브 박스용).
+
+/plan(nav2_planner, nav_msgs/Path)도 relay한다 — 순찰(Nav2) 중 로봇이 실제로
+따라가려는 전역 경로를 대시보드 P6에 rviz2처럼 선으로 그려주기 위함
+(2026-09-08 요청으로 추가, 실 로봇 미검증).
+
+video_recorder.py가 남긴 mp4+json 업로드도 이 노드가 같이 맡는다 —
+media_uploader.start_video_upload_watcher() 백그라운드 스레드 하나만 띄운다.
 """
 import asyncio
 import base64
@@ -38,13 +45,13 @@ import numpy as np
 import rclpy
 import tf2_ros
 from geometry_msgs.msg import PoseWithCovarianceStamped
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, LaserScan
 from std_msgs.msg import String
 
-from . import ws_config
+from . import media_uploader, ws_config
 
 RECONNECT_DELAY_SEC = 3.0
 
@@ -97,6 +104,11 @@ class UplinkNode(Node):
 
         self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self._on_pose, 10)
         self.create_subscription(OccupancyGrid, '/map', self._on_map, 1)
+        # 순찰(Nav2) 중 planner_server가 발행하는 전역 경로 — rviz2가 지도 위에 그려주는
+        # "로봇이 가려는 길" 선과 같은 것. 대시보드 P6에도 똑같이 그려주기 위한 relay.
+        # QoS는 nav2_planner의 기본(RELIABLE, TRANSIENT_LOCAL 아님, KEEP_LAST)과 맞춘
+        # 기본 프로파일로 충분하다 — /scan·/map과 달리 BEST_EFFORT가 필요하지 않다.
+        self.create_subscription(Path, '/plan', self._on_global_plan, 10)
         self.create_subscription(String, '/careguard/patrol_status', self._on_status_topic, 10)
         self.create_subscription(String, '/careguard/slam_status', self._on_status_topic, 10)
         # orbbec_camera가 발행하는 압축(JPEG) 이미지 — 재인코딩 없이 그대로 relay하면
@@ -117,6 +129,9 @@ class UplinkNode(Node):
 
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
+
+        # 영상 업로드 워처. WS 연결과 무관한 별개의 백그라운드 스레드.
+        media_uploader.start_video_upload_watcher(self.get_logger())
 
     # ---------- ROS2 콜백: 들어오는 대로 asyncio 루프에 넘겨서 전송한다 ----------
 
@@ -147,6 +162,19 @@ class UplinkNode(Node):
             'origin_y': msg.info.origin.position.y,
             'pgm_base64': base64.b64encode(pgm_bytes).decode('ascii'),
         })
+
+    def _on_global_plan(self, msg: Path):
+        """Nav2 planner_server가 goal마다 다시 계산해 발행하는 전역 경로(map 프레임,
+        이미 실제 미터 좌표라 slam_scan_update처럼 TF 변환이 필요 없다) — rviz2에서
+        보이는 "로봇이 가려는 길" 초록/파란 선과 같은 것을 대시보드에도 보여준다.
+        poses가 비어 있으면(목표 취소/도달 등으로 경로가 사라짐) 빈 배열을 보내
+        대시보드가 그려둔 선을 지우게 한다.
+        """
+        points = []
+        for pose in msg.poses:
+            points.append(round(pose.pose.position.x, 3))
+            points.append(round(pose.pose.position.y, 3))
+        self._send({'type': 'patrol_path_update', 'points': points})
 
     def _on_scan(self, msg: LaserScan):
         self._latest_scan = msg
@@ -240,7 +268,11 @@ class UplinkNode(Node):
     async def _connect_forever(self):
         import websockets
 
-        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}'
+        # role=uplink — 서버가 downlink(명령 수신)와 다른 딕셔너리에 이 연결을 담는다.
+        # 안 붙이면(role 생략) 서버가 downlink로 취급해, 와이파이 재연결 타이밍에 따라
+        # 이 연결이 downlink의 명령 수신 자리를 가로챌 수 있다(server/app/ws/robot_ws.py
+        # 참고 — 실제로 이 문제로 teleop/저장 명령이 조용히 씹히는 버그가 있었다).
+        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}&role=uplink'
         while rclpy.ok():
             try:
                 async with websockets.connect(url) as ws:
@@ -262,7 +294,11 @@ def main(args=None):
         rclpy.spin(node)
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGINT 시 rclpy가 내부적으로 먼저 shutdown()을 부를 수 있어, 여기서
+        # 무조건 또 부르면 "rcl_shutdown already called"로 비정상 종료한다
+        # (slam_progress_publisher.py에서 실제로 겪은 버그, 같은 패턴이라 방어).
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

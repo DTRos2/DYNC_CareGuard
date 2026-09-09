@@ -86,7 +86,18 @@ class WaypointManager:
     def _go_through(self, poses: List[PoseStamped]):
         if not poses:
             return None
-        self._navigator.goThroughPoses(poses)
+        if len(poses) == 1:
+            # 단일 목적지는 goToPose로 보낸다 — goThroughPoses는 "여러 지점을
+            # 매끄럽게 지나가는" 용도라 goal_checker가 goToPose만큼 엄격하게
+            # 정지시키지 않고, 도착 지점을 지나쳐버리는 걸 실 로봇 테스트로
+            # 확인했다("이동"으로 웨이포인트를 클릭하면 그 지점을 지나쳐 더 감).
+            # 이 코드베이스의 모든 호출부(patrol_task._execute의 웨이포인트별
+            # 루프, dock_return)가 실제로는 항상 좌표를 하나씩만 넘기므로, 이
+            # 분기가 사실상 전부를 처리하고 여러 개짜리 goThroughPoses 경로는
+            # 나중에 진짜 다중 웨이포인트 일괄 이동이 필요해질 때를 위해 남겨둔다.
+            self._navigator.goToPose(poses[0])
+        else:
+            self._navigator.goThroughPoses(poses)
         while not self._navigator.isTaskComplete():
             pass
         return self._navigator.getResult()

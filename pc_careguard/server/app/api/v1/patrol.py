@@ -5,6 +5,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ... import db
 from ...schemas import (
+    DriveToPointRequest,
+    DriveToPointResponse,
     PatrolRouteCreate,
     PatrolRouteItem,
     PatrolRouteUpdate,
@@ -13,6 +15,9 @@ from ...schemas import (
     PatrolScheduleCreate,
     PatrolScheduleItem,
     PatrolScheduleUpdate,
+    PrepareNavigationRequest,
+    SetInitialPoseRequest,
+    ShutdownRobotRequest,
 )
 from ...ws import robot_ws
 
@@ -267,6 +272,10 @@ async def start_patrol_run(
             "type": "patrol_start",
             "run_id": row["id"],
             "waypoints": [{"code": w["code"], "x": w["pos_x"], "y": w["pos_y"], "yaw": w["yaw"]} for w in waypoints],
+            # downlink_node가 이걸로 Nav2를 자동으로 준비한다(맵 다운로드+런치+초기
+            # 위치) — 없으면 사용자가 SSH로 navigation_diff_launch.py를 직접 켜야
+            # 순찰 중 로봇 위치가 대시보드에 뜬다.
+            "map_id": route["map_id"],
         },
     )
     return PatrolRunItem(**row, robot_connected=connected)
@@ -275,6 +284,77 @@ async def start_patrol_run(
 @runs_router.post("", response_model=PatrolRunItem, status_code=201)
 async def create_patrol_run(payload: PatrolRunCreate):
     return await start_patrol_run(payload.robot_id, payload.route_id, payload.trigger)
+
+
+@runs_router.post("/drive-to-point", response_model=DriveToPointResponse)
+async def drive_to_point(payload: DriveToPointRequest):
+    """P6 "이동" — 순찰이 아니라 이 좌표 하나로만 로봇을 보내고, 도착 후 충전소로
+    복귀시키지 않는다(제자리에 머문다). patrol_run을 새로 기록하지 않는 일회성
+    명령이라 run_id=0으로 보낸다 — ws/robot_ws.py::_update_patrol_run은 존재하지
+    않는 run_id의 UPDATE를 0행 영향으로 조용히 무시하므로 안전하다.
+    """
+    connected = await robot_ws.send_command(
+        payload.robot_code,
+        {
+            "type": "patrol_start",
+            "run_id": 0,
+            "waypoints": [{"code": payload.code, "x": payload.x, "y": payload.y, "yaw": payload.yaw}],
+            "return_to_charging": False,
+            "map_id": payload.map_id,
+        },
+    )
+    if not connected:
+        raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
+    return DriveToPointResponse(robot_connected=connected)
+
+
+@runs_router.post("/prepare-navigation", response_model=DriveToPointResponse)
+async def prepare_navigation(payload: PrepareNavigationRequest):
+    """P6 페이지가 열리거나(showEvent) 다른 로봇의 맵으로 전환될 때(loadMapData) —
+    실제 순찰/이동 목표 없이 Nav2만 미리 준비시킨다. 로봇이 안 켜져 있거나 아직
+    안 켜져 있어도 에러가 아니다(robot_connected: false로 조용히 알려줄 뿐) — GUI가
+    이걸로 팝업을 띄우지 않고 배너만 갱신한다.
+    """
+    connected = await robot_ws.send_command(
+        payload.robot_code,
+        {"type": "nav_prepare", "map_id": payload.map_id},
+    )
+    return DriveToPointResponse(robot_connected=connected)
+
+
+@runs_router.post("/set-initial-pose", response_model=DriveToPointResponse)
+async def set_initial_pose(payload: SetInitialPoseRequest):
+    """P6 "위치 보정" — 지도 클릭+드래그로 사용자가 직접 지정한 로봇의 실제 위치·
+    방향으로 AMCL 초기 위치를 즉석에서 다시 잡는다. nav_prepare/drive-to-point와
+    달리 Nav2를 새로 켜지 않는다(이미 떠 있다고 가정) — 자동 초기 위치 추정(충전
+    스테이션 좌표)이 로봇이 실제로 그 자리에 없어서 틀렸을 때 쓰는 수동 보정.
+    """
+    connected = await robot_ws.send_command(
+        payload.robot_code,
+        {
+            "type": "set_initial_pose",
+            "map_id": payload.map_id,
+            "x": payload.x,
+            "y": payload.y,
+            "yaw": payload.yaw,
+        },
+    )
+    if not connected:
+        raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
+    return DriveToPointResponse(robot_connected=connected)
+
+
+@runs_router.post("/shutdown-robot", response_model=DriveToPointResponse)
+async def shutdown_robot(payload: ShutdownRobotRequest):
+    """P6 "로봇 종료" 버튼 — 베이스 구동(teleop_launch.py)·Nav2/SLAM·rviz2·업링크·
+    다운링크를 전부 내린다. 명령을 처리하는 다운링크 자신도 마지막에 스스로
+    끝나므로(downlink_node.py::_shutdown_everything), 이 호출 직후 로봇 연결이
+    끊기는 것이 정상이다 — 대시보드는 그걸로 "완전히 꺼졌다"고 판단한다.
+    """
+    connected = await robot_ws.send_command(payload.robot_code, {"type": "shutdown_all"})
+    if not connected:
+        raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
+    return DriveToPointResponse(robot_connected=connected)
 
 
 @runs_router.get("/{run_id}", response_model=PatrolRunItem)

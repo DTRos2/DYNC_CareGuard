@@ -108,9 +108,16 @@ public slots:
     void setVelocity(qreal linearMps, qreal angularRadps);
     // 파일로 등록된 맵을 반영: 배지·라벨을 "맵 등록됨"으로 바꾸고 배경 이미지를 표시한다.
     void applyRegisteredMap(const QImage& image, const QString& mapName, const QString& robotId);
+    // 서버가 릴레이한 실제 slam_progress(로봇의 slam_progress_publisher가 발행한
+    // 경과시간·occupancy grid 탐색면적)를 반영한다. elapsedTimer_는 다음 서버 갱신
+    // 전까지 화면을 매끄럽게 이어 보여주는 로컬 보간용이고, 값 자체의 기준(진실)은
+    // 이 슬롯으로 들어오는 서버 값이다 — 호출될 때마다 로컬 카운터를 덮어써 드리프트를
+    // 바로잡는다.
+    void applyProgress(int elapsedSec, qreal areaM2);
 
 private:
     void tickElapsed();
+    void updateStatsLabel();
 
     QLabel* badge_;
     QLabel* targetLabel_;

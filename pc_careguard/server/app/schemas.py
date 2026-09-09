@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -271,6 +271,48 @@ class PatrolRunCreate(BaseModel):
     trigger: str = "manual"  # "schedule" / "manual" / "recheck"
 
 
+class DriveToPointRequest(BaseModel):
+    # P6 "이동"(단일 웨이포인트 주행) — patrol_run으로 기록하지 않는 일회성 명령이라
+    # route_id 없이 좌표를 직접 받는다. GUI가 캔버스에 이미 갖고 있는 값을 그대로 보낸다
+    # (patrol_start가 waypoints를 route_id 재조회 없이 좌표로 직접 싣는 것과 같은 이유).
+    robot_code: str
+    code: str = "AD_HOC"
+    x: float
+    y: float
+    yaw: float = 0.0
+    # downlink_node가 Nav2를 자동으로 준비하는 데 필요하다(map.id) — GUI가
+    # maps_[currentMapIndex_].serverMapId를 그대로 보낸다.
+    map_id: int
+
+
+class DriveToPointResponse(BaseModel):
+    robot_connected: bool
+
+
+class PrepareNavigationRequest(BaseModel):
+    # P6 페이지를 열거나 다른 로봇의 맵으로 전환할 때 — 실제 순찰/이동 목표 없이
+    # Nav2(맵 다운로드+런치+초기 위치)만 미리 준비시킨다. "웨이포인트를 보내기
+    # 전에도 로봇 현재 위치부터 보고 싶다"는 요청에 대응.
+    robot_code: str
+    map_id: int
+
+
+class SetInitialPoseRequest(BaseModel):
+    # P6 "위치 보정" — 지도 클릭+드래그로 로봇의 실제 현재 위치·방향을 직접 지정해
+    # AMCL 초기 위치를 다시 잡는다. nav_prepare(자동, 충전 스테이션 좌표 가정)가
+    # 로봇이 충전소 밖에서 켜졌을 때 틀리는 문제의 수동 보정 경로.
+    robot_code: str
+    map_id: int
+    x: float
+    y: float
+    yaw: float = 0.0
+
+
+class ShutdownRobotRequest(BaseModel):
+    # P6 "로봇 종료" 버튼 — 베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크를 전부 내린다.
+    robot_code: str
+
+
 class PatrolRunItem(BaseModel):
     id: int
     robot_id: int
@@ -316,3 +358,107 @@ class RobotThresholds(BaseModel):
     reconnect_retry_sec: int = Field(default=30, ge=1, le=600)
     med_missed_wait_min: int = Field(default=10, ge=1, le=1440)
     med_reannounce_count: int = Field(default=2, ge=0, le=20)
+
+
+class MissionCreate(BaseModel):
+    robot_code: str
+    kind: str = "medication"  # 이번 스코프에선 P3 "복약 재안내" 버튼만 이걸로 미션을 만든다
+
+
+class MissionItem(BaseModel):
+    id: int
+    robot_id: int
+    kind: str
+    status: str
+    created_at: datetime
+    dispatched_at: Optional[datetime] = None
+    robot_connected: bool = False
+
+
+class GuardianCreate(BaseModel):
+    name: str
+    phone: str
+    relation: Optional[str] = None
+    priority: int = 1
+    notify_enabled: bool = True
+
+
+class GuardianItem(BaseModel):
+    id: int
+    name: str
+    phone: str
+    relation: Optional[str] = None
+    priority: int
+    notify_enabled: bool
+
+
+class MedicationScheduleCreate(BaseModel):
+    # medication_schedule.slot_no CHECK(1~3)과 동일한 제약. P3 등록 모달은 UI상 4번째
+    # 이상 칸도 만들 수 있어(대상자 상세 모달의 "칸 없으면 계속 증가" 정책과 동일) 그런
+    # 값이 오면 recipient.py가 사전에 걸러 422로 막는다.
+    slot_no: int
+    drug_name: str
+    dose_time: time  # "HH:MM"
+    days_of_week: int = 127  # 요일 비트마스크. 월=1 화=2 수=4 목=8 금=16 토=32 일=64, 매일=127
+
+
+class MedicationScheduleItem(BaseModel):
+    id: int
+    slot_no: int
+    drug_name: str
+    dose_time: time
+    days_of_week: int
+
+
+class RecipientCreate(BaseModel):
+    name: str
+    gender: Optional[str] = None  # 'male' / 'female' / 'other'. recipient.gender CHECK와 동일
+    birth_date: Optional[date] = None
+    home_address: Optional[str] = None
+    diseases: Optional[str] = None
+    note: Optional[str] = None
+    robot_code: Optional[str] = None  # 미배정이면 None
+    operator_id: Optional[int] = None  # 담당 관제담당자 계정 id. 미배정이면 None
+    guardians: List[GuardianCreate] = []
+    schedules: List[MedicationScheduleCreate] = []
+
+
+class MedicationTodayItem(BaseModel):
+    # 오늘 요일에 해당하는 스케줄 슬롯만 담는다 — 대상자마다 슬롯 수가 다를 수 있어(꼭 3개일
+    # 필요 없음) 스케줄이 없는 슬롯은 아예 목록에서 빠진다.
+    slot_no: int
+    state: str  # "done" / "missed" / "pending". medication_log 결과가 아직 없으면 pending
+
+
+class MedicationHistoryDay(BaseModel):
+    date: date
+    adherence: float  # 1.0 그날 스케줄 전부 수령 · 0.0 하나라도 미수령 · -1.0 그날 스케줄 없음(빈칸)
+
+
+class RecipientItem(BaseModel):
+    id: int
+    code: str
+    name: str
+    robot_id: Optional[int] = None
+    robot_code: Optional[str] = None
+    gender: Optional[str] = None
+    birth_date: Optional[date] = None
+    home_address: Optional[str] = None
+    diseases: Optional[str] = None
+    note: Optional[str] = None
+    operator_id: Optional[int] = None  # recipient.operator_id. 미배정이면 None
+    operator_name: Optional[str] = None  # careguard_user.display_name 조인. 미배정이면 None
+    # "normal"/"attention"/"emergency" — 열려있는(open/acknowledged) care_event 중 가장 심각한
+    # 것 하나로 정한다. severity='info'는 위험도를 올리지 않는다(대시보드 Tokens::Level에
+    # Info가 없음, media.py의 SEVERITY_TAGS와 같은 분류). 로봇 오프라인(offline)은 이 값에
+    # 안 실린다 — 대시보드가 WS robot_status로 별도 판정해 이 값과 조합한다.
+    level: str = "normal"
+    status_summary: str = "등록됨 · 이상 없음"  # 활성 이벤트 있으면 care_event.summary로 대체
+    meds_today: List[MedicationTodayItem] = []
+    created_at: datetime
+
+
+class RecipientDetailItem(RecipientItem):
+    guardians: List[GuardianItem] = []
+    schedules: List[MedicationScheduleItem] = []
+    history: List[MedicationHistoryDay] = []  # 최근 28일. 목록(List) 조회에는 없고 상세에만 있다
