@@ -45,6 +45,27 @@ NAV2_READY_TIMEOUT_SEC = 30.0
 # rclpy 노드 하나 뜨는 정도라 Nav2보다는 훨씬 빠르지만 여유를 둔다.
 PATROL_TASK_READY_TIMEOUT_SEC = 15.0
 
+# video_recorder가 떠서 patrol_recording 토픽 구독을 advertise할 때까지 기다리는
+# 최대 시간. patrol_task와 같은 이유로 여유를 두되, ROS2 노드 하나 뜨는 정도라
+# 짧게 잡는다.
+VIDEO_RECORDER_READY_TIMEOUT_SEC = 10.0
+
+# careguard_perception/config.py의 PATROL_RECORDING_TOPIC과 같은 문자열 —
+# patrol_task.py가 이미 같은 이유로 중복 정의하고 있다(패키지 간 공유 없이
+# 토픽명을 각자 하드코딩하는 이 코드베이스의 기존 방식). video_recorder가
+# 이 토픽을 실제로 구독하기 시작했는지 확인하는 용도로만 쓴다 — 이 노드가
+# 직접 이 토픽에 publish하지는 않는다(그건 patrol_task.py의 역할).
+PATROL_RECORDING_TOPIC = '/careguard/perception/patrol_recording'
+
+# audio_player(HMI 스피커 담당)가 떠서 안내 토픽 구독을 advertise할 때까지
+# 기다리는 최대 시간.
+VOICE_ANNOUNCER_READY_TIMEOUT_SEC = 10.0
+
+# careguard_hmi/config.py의 VOICE_TOPIC과 같은 문자열 — PATROL_RECORDING_TOPIC과
+# 같은 이유·같은 방식으로 audio_player가 이 토픽을 구독하기 시작했는지
+# 확인하는 용도로만 쓴다(이 노드가 직접 publish하지는 않음, patrol_task.py가 한다).
+VOICE_TOPIC = '/careguard/voice/announce'
+
 
 class DownlinkNode(Node):
     def __init__(self):
@@ -60,6 +81,14 @@ class DownlinkNode(Node):
         # 패턴으로 이 노드가 대신 관리한다.
         self._patrol_task_process = None
         self._patrol_task_map_id = 0
+        # video_recorder(careguard_perception)는 patrol_task와 달리 map_id에
+        # 묶이지 않는다(카메라 프레임을 계속 버퍼링/이벤트 클립·순찰 클립을 만들 뿐
+        # 특정 맵 지식이 필요 없다) — 한 번 뜨면 계속 재사용하고, patrol_task처럼
+        # map이 바뀔 때마다 재시작하지 않는다.
+        self._video_recorder_process = None
+        # audio_player(careguard_hmi)도 video_recorder와 같은 이유로 map_id에
+        # 안 묶인다 — 한 번 뜨면 계속 재사용한다.
+        self._voice_announcer_process = None
         self._ws = None
         # P5 방향키 패널 -> 실제 구동. limo_base(/limo/limo_base)가 이미 /cmd_vel을
         # 구독하고 있다(실 로봇에서 topic info로 확인됨) — 네임스페이스 없이 그대로 쓴다.
@@ -145,6 +174,14 @@ class DownlinkNode(Node):
             self.get_logger().warn('nav_prepare에 유효한 map_id가 없습니다')
             return
         self._ensure_navigation_running(map_id)
+        # video_recorder를 patrol_task보다 먼저 띄워야 한다 — patrol_task가 뜨자마자
+        # patrol_start 신호를 patrol_recording 토픽으로 쏘는데, video_recorder가 아직
+        # 구독을 시작하기 전이면(늦게 join한 구독자는 그 전에 발행된 메시지를 못 받는다)
+        # 그 신호를 조용히 놓친다 — 순서를 꼭 지킨다.
+        self._ensure_video_recorder_running()
+        # video_recorder와 같은 이유(늦게 join한 구독자는 이전 메시지를 못 받음) —
+        # audio_player도 patrol_task보다 먼저 떠 있어야 순찰 시작 안내를 놓치지 않는다.
+        self._ensure_voice_announcer_running()
         # patrol_task도 같이 미리 띄워둔다 — 그래야 첫 "이동" 클릭 때 patrol_task
         # 기동을 기다리는 지연이 없고, CAREGUARD_MAP_ID도 항상 지금 보고 있는 맵과
         # 맞는 상태로 미리 맞춰진다.
@@ -193,6 +230,16 @@ class DownlinkNode(Node):
         if map_id > 0 and not self._ensure_navigation_running(map_id):
             self.get_logger().error('Nav2 준비 실패로 순찰을 시작하지 않습니다')
             return
+
+        # patrol_task가 뜨자마자(또는 이미 떠있는 채로 이 goal을 받자마자) patrol_start
+        # 신호를 patrol_recording 토픽으로 쏘므로, 그 전에 video_recorder가 구독을
+        # 시작해둬야 한다(늦게 join한 구독자는 이미 발행된 메시지를 못 받는다) — 아래
+        # _ensure_patrol_task_running보다 반드시 먼저 부른다. 녹화 인프라 준비 실패가
+        # 순찰 자체를 막을 이유는 없으므로(카메라 미연결 등으로도 실패할 수 있다)
+        # 반환값은 로그만 남기고 무시한다 — 순찰은 그대로 진행된다.
+        self._ensure_video_recorder_running()
+        # 같은 이유로 audio_player도 patrol_task보다 먼저 떠 있어야 한다.
+        self._ensure_voice_announcer_running()
 
         # patrol_task도 Nav2처럼 map_id 기준으로 (재)기동을 보장한다 — 아래 이유 참고.
         if map_id > 0:
@@ -399,6 +446,12 @@ class DownlinkNode(Node):
             self._terminate_process_group(self._patrol_task_process, 'patrol_task')
             self._patrol_task_process = None
             self._patrol_task_map_id = 0
+        if self._video_recorder_process is not None and self._video_recorder_process.poll() is None:
+            self._terminate_process_group(self._video_recorder_process, 'video_recorder')
+            self._video_recorder_process = None
+        if self._voice_announcer_process is not None and self._voice_announcer_process.poll() is None:
+            self._terminate_process_group(self._voice_announcer_process, 'audio_player')
+            self._voice_announcer_process = None
 
         self._kill_external_process_group('careguard_bringup teleop_launch.py', '베이스 구동')
         self._kill_external_process_group('careguard_agent uplink_node', '업링크')
@@ -536,6 +589,70 @@ class DownlinkNode(Node):
             self.get_logger().error(f'{PATROL_TASK_READY_TIMEOUT_SEC:.0f}초 안에 patrol_task 액션 서버가 안 떴습니다')
             return False
         return True
+
+    def _ensure_video_recorder_running(self) -> bool:
+        """video_recorder(careguard_perception)가 이미 떠있는지 확인하고, 아니면
+        새로 띄운다. _ensure_patrol_task_running과 같은 패턴이지만 map_id에는
+        묶이지 않는다 — 카메라 프레임을 계속 버퍼링하다가 이벤트/순찰 트리거가
+        오면 클립을 만들 뿐이라 특정 맵을 알 필요가 없다.
+
+        이게 없으면(2026-09-09 실 로봇 테스트로 확인) patrol_task가 순찰 시작/종료
+        신호를 patrol_recording 토픽으로 잘 보내도 구독하는 노드가 아예 없어 순찰
+        영상이 하나도 안 찍혔다 — patrol_task를 이 노드가 대신 띄우는 것과 같은
+        이유·같은 패턴으로 video_recorder도 대신 관리해 사람이 SSH로 따로 안
+        켜도 되게 한다.
+
+        실패해도(카메라 드라이버 미기동 등으로 노드 자체는 뜨지만 프레임이 안
+        들어올 수 있다) 순찰 자체를 막지는 않는다 — 호출부가 반환값을 무시해도
+        되도록 실패 시에도 False만 돌려주고 예외를 던지지 않는다.
+        """
+        if self._video_recorder_process is not None and self._video_recorder_process.poll() is None:
+            return True  # 이미 떠있다 — 재사용
+
+        # _nav_process/_patrol_task_process와 같은 이유 — 이 다운링크가 재시작된
+        # 적이 있으면 이전 생애에 띄운 video_recorder가 고아로 남아있을 수 있다.
+        self._kill_external_process_group('careguard_perception video_recorder', '(정리) 이전 video_recorder')
+
+        self._video_recorder_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_perception', 'video_recorder'], start_new_session=True)
+
+        # count_subscribers로 "노드가 떴는지"가 아니라 "patrol_recording 토픽을 실제로
+        # 구독하기 시작했는지"를 확인한다 — 호출부(_prepare_navigation/_start_patrol)가
+        # 이 뒤에 곧바로 patrol_task를 띄우면 patrol_task가 시작하자마자 이 토픽에
+        # publish하므로, 구독이 아직 안 잡힌 채로 그 메시지가 나가면 조용히 유실된다.
+        deadline = time.monotonic() + VIDEO_RECORDER_READY_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            if self.count_subscribers(PATROL_RECORDING_TOPIC) > 0:
+                return True
+            time.sleep(0.3)
+        self.get_logger().warn(
+            f'{VIDEO_RECORDER_READY_TIMEOUT_SEC:.0f}초 안에 video_recorder가 patrol_recording 토픽을 '
+            '구독하지 않았습니다 — 순찰은 계속 진행하지만 영상이 안 찍힐 수 있습니다')
+        return False
+
+    def _ensure_voice_announcer_running(self) -> bool:
+        """audio_player(careguard_hmi)가 이미 떠있는지 확인하고, 아니면 새로
+        띄운다. _ensure_video_recorder_running과 완전히 같은 패턴 — map_id에
+        안 묶이고, 준비 실패해도(piper-tts/음성 모델 미설치·스피커 미연결 등) 순찰 자체를
+        막지 않는다(호출부가 반환값을 무시해도 되게 False만 돌려준다).
+        """
+        if self._voice_announcer_process is not None and self._voice_announcer_process.poll() is None:
+            return True  # 이미 떠있다 — 재사용
+
+        self._kill_external_process_group('careguard_hmi audio_player', '(정리) 이전 audio_player')
+
+        self._voice_announcer_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_hmi', 'audio_player'], start_new_session=True)
+
+        deadline = time.monotonic() + VOICE_ANNOUNCER_READY_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            if self.count_subscribers(VOICE_TOPIC) > 0:
+                return True
+            time.sleep(0.3)
+        self.get_logger().warn(
+            f'{VOICE_ANNOUNCER_READY_TIMEOUT_SEC:.0f}초 안에 audio_player가 안내 토픽을 '
+            '구독하지 않았습니다 — 순찰은 계속 진행하지만 음성 안내가 안 나올 수 있습니다')
+        return False
 
     def _download_map(self, map_id: int) -> str:
         """서버 GET /maps/active에서 이 로봇의 활성 맵 메타데이터+이미지를 받아
