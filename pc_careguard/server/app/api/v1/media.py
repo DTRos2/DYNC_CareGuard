@@ -176,7 +176,7 @@ def upload_map_image(
         raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
     robot_id = robot["id"]
 
-    robot_dir = MAP_DIR / str(robot_id)
+    robot_dir = MAP_DIR / robot_code
     robot_dir.mkdir(parents=True, exist_ok=True)
 
     ext = Path(file.filename).suffix
