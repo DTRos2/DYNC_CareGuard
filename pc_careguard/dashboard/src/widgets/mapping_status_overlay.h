@@ -6,6 +6,7 @@ class QLabel;
 class QResizeEvent;
 class QMouseEvent;
 class QGridLayout;
+class QEvent;
 
 // P5 "매핑 현황" 펼침 오버레이 — 문서 §6: "레이아웃을 밀지 않는" 자식 오버레이 위젯.
 // 헤더(this)는 일반 카드 한 줄이고, 클릭하면 같은 부모 위에 떠 있는 패널(panel_)을
@@ -33,6 +34,10 @@ signals:
 protected:
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
+    // 미리보기 아이콘뿐 아니라 행 전체(라벨 위)를 눌러도 mapPreviewRequested가 나가도록
+    // — addRow()가 각 rowFrame에 "robotId" 프로퍼티를 심고 installEventFilter(this)로
+    // 등록한다. P6PatrolPage::eventFilter(웨이포인트 목록 "행 클릭 = 편집")와 같은 패턴.
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     struct RowWidgets {
