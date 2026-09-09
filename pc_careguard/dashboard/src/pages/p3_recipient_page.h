@@ -46,6 +46,23 @@ struct RecipientCard {
     // mockRecipients()의 4개 카드는 이 필드를 안 채워 0으로 남는다 — 상세 조회 시
     // id<=0이면 openDetail()이 mockRecipientDetail()로 폴백한다(실 DB에 없는 mock 행이라서).
     int id = 0;  // recipient.id. 0 = 서버에 없는 mock 카드
+    int operatorId = 0;    // 담당 관제담당자 계정 id. 0 = 미배정
+    QString operatorName;  // 미배정이면 빈 문자열 — 카드·상세 모달 표시용
+    // 서버가 care_event로 판정한 위험도(Normal/Attention/Emergency만, Offline은 안 옴) —
+    // level과 분리해서 따로 들고 있어야 한다. WS robot_status로 로봇이 재연결됐을 때 level을
+    // Offline에서 되돌릴 값이 필요한데, 예전엔 무조건 Normal로 되돌려서 실제로는 위험 상태였던
+    // 대상자도 재연결 순간 카드가 정상으로 잘못 표시되는 문제가 있었다(handleWsMessage 참고).
+    // 새 필드를 struct 끝에 두는 이유: mockRecipients() 등 위치 기반 중괄호 초기화 호출부가
+    // 이미 있어서, 중간에 끼우면 그 호출부들의 인자 순서가 전부 밀려 컴파일이 깨진다.
+    Tokens::Level riskLevel = Tokens::Level::Normal;
+};
+
+// 대상자 등록/상세 모달의 "관리 담당자" 콤보 후보 1명. ApiClient::OperatorInfo의 화면 모델
+// 버전 — 다이얼로그가 net/api_client.h에 직접 의존하지 않도록 얇게 감싼다(RecipientCard가
+// ApiClient::RecipientInfo를 감싸는 것과 같은 이유).
+struct OperatorOption {
+    int id = 0;
+    QString name;
 };
 
 // 와이어프레임 그대로의 mock 데이터. 실 연동 전까지 GUI 검증용으로만 사용한다.
@@ -142,6 +159,9 @@ private:
     // P3RecipientDetailDialog::saveRequested — 상세 모달 "저장" 클릭. PUT /recipients/{id}로
     // 기본정보·보호자·복약 스케줄을 실제로 갱신한다.
     void saveRecipientUpdate(const RecipientDetail& detail);
+    // P3RecipientDetailDialog::deactivateRequested — 상세 모달 "대상자 비활성화" 확인 클릭.
+    // POST /recipients/{id}/deactivate로 실제 처리하고, 성공하면 카드를 목록에서 뺀다.
+    void deactivateRecipient(int recipientId);
     // ATTENTION 카드 "복약 재안내" 클릭. POST /missions로 실제 mission을 만들고 로봇에
     // 다운링크를 보낸다 — medication_scheduler가 없어 스케줄을 거치지 않는 즉시 실행.
     void requestMedicationReannounce(const QString& robotCode, const QString& recipientName);

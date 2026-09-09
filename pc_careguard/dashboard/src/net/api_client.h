@@ -113,6 +113,19 @@ public:
         int daysOfWeek = 127;  // 요일 비트마스크. 월=1 화=2 수=4 목=8 금=16 토=32 일=64
     };
 
+    // server/app/schemas.py::MedicationTodayItem 대응. 오늘 요일에 스케줄된 슬롯만 담긴다
+    // (대상자마다 슬롯 수가 다를 수 있어 항상 3개가 아님).
+    struct MedicationTodayInfo {
+        int slotNo = 1;
+        QString state;  // "done" / "missed" / "pending"
+    };
+
+    // server/app/schemas.py::MedicationHistoryDay 대응.
+    struct MedicationHistoryInfo {
+        QString date;          // "YYYY-MM-DD"
+        double adherence = -1.0;  // 1.0 정상 · 0.0 미수령 · -1.0 그날 스케줄 없음(빈칸)
+    };
+
     // server/app/schemas.py::RecipientItem 대응.
     struct RecipientInfo {
         int id = 0;
@@ -125,6 +138,22 @@ public:
         QString homeAddress;
         QString diseases;
         QString note;
+        int operatorId = 0;    // 담당 관제담당자 계정 id. 0 = 미배정
+        QString operatorName;  // 미배정이면 빈 문자열
+        // "normal"/"attention"/"emergency" — 로봇 오프라인 여부는 안 실려 있다(WS robot_status로
+        // 대시보드가 별도 판정 후 이 값과 조합).
+        QString level = QStringLiteral("normal");
+        QString statusSummary;
+        QVector<MedicationTodayInfo> medsToday;
+    };
+
+    // 대상자 상세/등록 모달의 "관리 담당자" 콤보를 채우는 후보 목록. server/app/accounts.py::
+    // list_accounts()가 반환하는 AccountItem 중 role_code == "operator"인 것만 추린 것 —
+    // 계정관리(P7)처럼 담당 배정 전용 엔드포인트를 새로 만들지 않고 이미 있는 GET /accounts를
+    // 그대로 재사용한다(계정 수는 적어 필터 비용이 무시할 만하다).
+    struct OperatorInfo {
+        int id = 0;
+        QString name;  // careguard_user.display_name
     };
 
     // server/app/schemas.py::RecipientDetailItem 대응.
@@ -132,6 +161,7 @@ public:
         RecipientInfo recipient;
         QVector<GuardianInfo> guardians;
         QVector<MedicationScheduleInfo> schedules;
+        QVector<MedicationHistoryInfo> history;  // 최근 28일. 목록(RecipientInfo)에는 없음
     };
 
     template <typename T>
@@ -242,6 +272,7 @@ public:
         QString diseases;
         QString note;
         QString robotCode;  // 비어 있으면 미배정
+        int operatorId = 0;  // 0이면 서버에 안 보낸다 — RecipientCreate.operator_id가 None이 되어 미배정으로 저장됨
         QVector<GuardianCreateParams> guardians;
         QVector<MedicationScheduleCreateParams> schedules;
     };
@@ -250,6 +281,13 @@ public:
     // 보호자·복약 스케줄은 지금 보낸 목록으로 서버가 통째로 교체한다.
     void updateRecipient(int recipientId, const RecipientCreateParams& params,
                           ItemCallback<RecipientDetailInfo> callback);
+    // POST /recipients/{id}/deactivate — P3 상세 모달의 "대상자 비활성화". 하드 삭제가 아니라
+    // recipient.deregistered_at을 찍어 목록·조회에서만 제외한다(서버 쪽 주석 참고).
+    void deactivateRecipient(int recipientId, SimpleCallback callback);
+
+    // GET /accounts — 대상자 등록/상세 모달의 "관리 담당자" 콤보 후보. role_code=="operator"
+    // 이면서 활성 계정인 것만 추려서 넘긴다(비활성 계정에 새로 배정하는 건 막는다).
+    void fetchOperators(ListCallback<OperatorInfo> callback);
 
     // POST /patrol-runs/drive-to-point — P6 "이동"(단일 웨이포인트 주행). 순찰과 달리
     // patrol_run을 기록하지 않고, 도착해도 충전소로 복귀하지 않는다(제자리에 머묾).

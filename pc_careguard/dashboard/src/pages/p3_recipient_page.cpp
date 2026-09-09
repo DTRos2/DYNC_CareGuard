@@ -82,6 +82,29 @@ const char* statusProp(Tokens::Level level) {
     return Tokens::Prop::NORMAL;
 }
 
+// server/app/schemas.py::RecipientItem.level 대응. "offline"은 여기 없다 — 서버는 로봇
+// 연결 상태를 모르고(WS robot_status로만 판정), care_event 기반 위험도만 내려준다.
+Tokens::Level riskLevelFromCode(const QString& code) {
+    if (code == QStringLiteral("emergency")) return Tokens::Level::Emergency;
+    if (code == QStringLiteral("attention")) return Tokens::Level::Attention;
+    return Tokens::Level::Normal;
+}
+
+// ApiClient::RecipientInfo::medsToday(오늘 요일에 스케줄된 슬롯만 담긴 목록)를 카드의
+// 고정 3칸 배열로 펼친다. 스케줄이 없는 슬롯은 meds[]의 기본값(Pending)을 그대로 둔다 —
+// "예정"과 "스케줄 없음"을 시각적으로 구분하는 상태가 없어서(§P3RecipientPage 논의) 빈
+// 슬롯은 지금은 Pending과 같은 모양으로 보인다.
+void applyMedsToday(const QVector<ApiClient::MedicationTodayInfo>& medsToday, MedSlotState (&meds)[3]) {
+    meds[0] = meds[1] = meds[2] = MedSlotState::Pending;
+    for (const auto& m : medsToday) {
+        if (m.slotNo < 1 || m.slotNo > 3) continue;
+        MedSlotState state = MedSlotState::Pending;
+        if (m.state == QStringLiteral("done")) state = MedSlotState::Done;
+        else if (m.state == QStringLiteral("missed")) state = MedSlotState::Missed;
+        meds[m.slotNo - 1] = state;
+    }
+}
+
 // 상태 요약 한 줄(§5-2, 심박 블록을 대체)의 텍스트 색. OFFLINE은 recipientCard QSS가
 // 하위 QLabel을 전부 회색으로 덮어써서 role 지정과 무관하게 흐려진다.
 const char* summaryRole(Tokens::Level level) {
@@ -500,10 +523,15 @@ void P3RecipientPage::loadRecipientsFromServer() {
             card.name = info.name;
             card.robotCode = info.robotCode.isEmpty() ? QStringLiteral("미배정") : info.robotCode;
             card.address = info.homeAddress;
-            // level·statusSummary·meds는 care_event 연동이 없어(§P3RecipientPage 클래스 주석)
-            // 실제 위험 판정을 못 한다 — 등록 직후 기본값으로만 채운다.
-            card.level = Tokens::Level::Normal;
-            card.statusSummary = QStringLiteral("등록됨 · 아직 순찰 기록 없음");
+            card.operatorId = info.operatorId;
+            card.operatorName = info.operatorName;
+            // 로봇 연결 상태(Offline)는 여기 없다 — 페이지 진입 직후엔 항상 온라인으로 가정하고
+            // riskLevel을 그대로 표시 레벨로 쓴다. 이후 WS robot_status가 오면 handleWsMessage()가
+            // riskLevel을 보존한 채 Offline과 조합한다.
+            card.riskLevel = riskLevelFromCode(info.level);
+            card.level = card.riskLevel;
+            card.statusSummary = info.statusSummary;
+            applyMedsToday(info.medsToday, card.meds);
             cards.append(card);
         }
         recipients_ = cards;
@@ -693,6 +721,13 @@ void P3RecipientPage::rebuildGrid() {
         idLabel->setProperty("role", "mono");
         cardLayout->addWidget(idLabel);
 
+        auto* operatorLabel = new QLabel(
+            QStringLiteral("관리 담당자: %1")
+                .arg(rc.operatorName.isEmpty() ? QStringLiteral("미배정") : rc.operatorName),
+            card);
+        operatorLabel->setProperty("role", "muted");
+        cardLayout->addWidget(operatorLabel);
+
         auto* summaryLabel = new QLabel(rc.statusSummary, card);
         summaryLabel->setProperty("role", summaryRole(rc.level));
         summaryLabel->setWordWrap(true);
@@ -779,10 +814,12 @@ void P3RecipientPage::handleWsMessage(const QJsonObject& message) {
     bool changed = false;
     for (RecipientCard& rc : recipients_) {
         if (rc.robotCode != robotCode) continue;
-        // 재연결(온라인)은 OFFLINE 카드만 NORMAL로 되돌린다. 연결 해제(오프라인)는 로봇
-        // 상태를 확인할 수 없다는 뜻이라 현재 레벨과 무관하게 OFFLINE으로 덮어쓴다.
+        // 재연결(온라인)은 OFFLINE 카드를 riskLevel(care_event 기반 위험도)로 되돌린다 —
+        // 예전엔 무조건 NORMAL로 되돌려서, 실제로는 미수령 등으로 주의·응급 상태였던 대상자도
+        // 재연결 순간 카드가 정상으로 잘못 표시됐다. 연결 해제(오프라인)는 로봇 상태를 확인할
+        // 수 없다는 뜻이라 현재 레벨과 무관하게 OFFLINE으로 덮어쓴다.
         if (online && rc.level == Tokens::Level::Offline) {
-            rc.level = Tokens::Level::Normal;
+            rc.level = rc.riskLevel;
             changed = true;
         } else if (!online && rc.level != Tokens::Level::Offline) {
             rc.level = Tokens::Level::Offline;
@@ -847,9 +884,12 @@ RecipientDetail recipientDetailFromApi(const ApiClient::RecipientDetailInfo& inf
     d.card.robotCode =
         info.recipient.robotCode.isEmpty() ? QStringLiteral("미배정") : info.recipient.robotCode;
     d.card.address = info.recipient.homeAddress;
-    // level·statusSummary·meds는 care_event 연동이 없어 실제 위험 판정을 못 한다(클래스 상단 주석 참고).
-    d.card.level = Tokens::Level::Normal;
-    d.card.statusSummary = QStringLiteral("등록됨 · 아직 순찰 기록 없음");
+    d.card.operatorId = info.recipient.operatorId;
+    d.card.operatorName = info.recipient.operatorName;
+    d.card.riskLevel = riskLevelFromCode(info.recipient.level);
+    d.card.level = d.card.riskLevel;  // 로봇 오프라인 여부는 openDetail()이 카드 최신값으로 덮어씀
+    d.card.statusSummary = info.recipient.statusSummary;
+    applyMedsToday(info.recipient.medsToday, d.card.meds);
 
     d.gender = genderLabelFromCode(info.recipient.gender);
     d.birthYear = info.recipient.birthDate.left(4).toInt();
@@ -880,6 +920,13 @@ RecipientDetail recipientDetailFromApi(const ApiClient::RecipientDetailInfo& inf
         d.schedules.append(item);
     }
 
+    for (const auto& h : info.history) {
+        MedicationDayRecord rec;
+        rec.date = QDate::fromString(h.date, QStringLiteral("yyyy-MM-dd"));
+        rec.adherence = h.adherence;
+        d.history.append(rec);
+    }
+
     return d;
 }
 
@@ -889,42 +936,54 @@ void P3RecipientPage::openDetail(int recipientIndex) {
     if (recipientIndex < 0 || recipientIndex >= recipients_.size()) return;
     const RecipientCard card = recipients_[recipientIndex];
 
-    auto openWithDetail = [this, recipientIndex](RecipientDetail detail) {
-        if (recipientIndex >= recipients_.size()) return;  // 조회 대기 중 목록이 바뀌었으면 방어
-        detail.card = recipients_[recipientIndex];  // 이름·주소 등 카드 쪽 최신값으로 덮어쓴다
+    // "관리 담당자" 콤보 후보는 계정관리(P7)에서 수시로 바뀔 수 있어, 모달을 열 때마다
+    // GET /accounts로 새로 받아온다(대상자 목록처럼 페이지 진입 시 한 번만 캐싱하지 않음).
+    apiClient_->fetchOperators([this, recipientIndex, card](bool, const QVector<ApiClient::OperatorInfo>& items) {
+        QVector<OperatorOption> operators;
+        for (const auto& o : items) operators.append(OperatorOption{o.id, o.name});
 
-        auto* dialog = new P3RecipientDetailDialog(detail, this);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        connect(dialog, &P3RecipientDetailDialog::saveRequested, this,
-                [this, recipientIndex](const RecipientDetail& saved) {
-                    if (recipientIndex < recipients_.size()) {
-                        // 서버 응답을 기다리는 동안에도 화면에 바로 반영한다 — 정확한 값은
-                        // saveRecipientUpdate()의 콜백이 도착하는 대로 한 번 더 덮어쓴다.
-                        recipients_[recipientIndex].name = saved.card.name;
-                        recipients_[recipientIndex].address = saved.card.address;
-                        rebuildGrid();
-                    }
-                    saveRecipientUpdate(saved);
-                });
-        dialog->exec();
-    };
+        auto openWithDetail = [this, recipientIndex, operators](RecipientDetail detail) {
+            if (recipientIndex >= recipients_.size()) return;  // 조회 대기 중 목록이 바뀌었으면 방어
+            detail.card = recipients_[recipientIndex];  // 이름·주소 등 카드 쪽 최신값으로 덮어쓴다
 
-    if (card.id <= 0) {
-        // 서버 연결 실패로 남아있는 mock 카드 — DB에 없으니 조회할 수 없다.
-        openWithDetail(mockRecipientDetail(card));
-        return;
-    }
+            auto* dialog = new P3RecipientDetailDialog(detail, operators, this);
+            dialog->setAttribute(Qt::WA_DeleteOnClose);
+            connect(dialog, &P3RecipientDetailDialog::saveRequested, this,
+                    [this, recipientIndex](const RecipientDetail& saved) {
+                        if (recipientIndex < recipients_.size()) {
+                            // 서버 응답을 기다리는 동안에도 화면에 바로 반영한다 — 정확한 값은
+                            // saveRecipientUpdate()의 콜백이 도착하는 대로 한 번 더 덮어쓴다.
+                            recipients_[recipientIndex].name = saved.card.name;
+                            recipients_[recipientIndex].address = saved.card.address;
+                            recipients_[recipientIndex].operatorId = saved.card.operatorId;
+                            recipients_[recipientIndex].operatorName = saved.card.operatorName;
+                            rebuildGrid();
+                        }
+                        saveRecipientUpdate(saved);
+                    });
+            connect(dialog, &P3RecipientDetailDialog::deactivateRequested, this,
+                    [this](int recipientId) { deactivateRecipient(recipientId); });
+            dialog->exec();
+        };
 
-    apiClient_->fetchRecipientDetail(
-        card.id, [this, openWithDetail, card](bool ok, const ApiClient::RecipientDetailInfo& info, const QString&) {
-            if (!ok) {
-                QMessageBox::warning(this, QStringLiteral("조회 실패"),
-                                      QStringLiteral("대상자 상세 정보를 불러오지 못했습니다."));
-                openWithDetail(mockRecipientDetail(card));
-                return;
-            }
-            openWithDetail(recipientDetailFromApi(info));
-        });
+        if (card.id <= 0) {
+            // 서버 연결 실패로 남아있는 mock 카드 — DB에 없으니 조회할 수 없다.
+            openWithDetail(mockRecipientDetail(card));
+            return;
+        }
+
+        apiClient_->fetchRecipientDetail(
+            card.id,
+            [this, openWithDetail, card](bool ok, const ApiClient::RecipientDetailInfo& info, const QString&) {
+                if (!ok) {
+                    QMessageBox::warning(this, QStringLiteral("조회 실패"),
+                                          QStringLiteral("대상자 상세 정보를 불러오지 못했습니다."));
+                    openWithDetail(mockRecipientDetail(card));
+                    return;
+                }
+                openWithDetail(recipientDetailFromApi(info));
+            });
+    });
 }
 
 namespace {
@@ -943,6 +1002,7 @@ bool buildRecipientParams(const RecipientDetail& detail, ApiClient::RecipientCre
     params.diseases = detail.diseases;
     params.note = detail.note;
     if (detail.card.robotCode != QStringLiteral("미배정")) params.robotCode = detail.card.robotCode;
+    params.operatorId = detail.card.operatorId;
 
     for (const auto& g : detail.guardians) {
         if (g.isEmergencyFixed) continue;  // 119·112는 화면 전용 표시라 서버에 안 보낸다
@@ -987,28 +1047,35 @@ void P3RecipientPage::registerRecipient() {
     // 서버가 실제 채번을 하므로 이건 사용자에게 보여주는 미리보기일 뿐이다 — 등록 완료 후
     // 카드는 서버가 돌려준 진짜 code로 다시 채워진다(아래 createRecipient 콜백).
     const QString nextCodePreview = QStringLiteral("C-%1").arg(recipients_.size() + 1, 3, 10, QChar('0'));
-    P3RecipientCreateDialog dialog(nextCodePreview, this);
-    if (dialog.exec() != QDialog::Accepted) return;
 
-    const RecipientDetail detail = dialog.resultDetail();
+    // "관리 담당자" 콤보 후보를 모달을 열기 전에 미리 받아온다 — openDetail()과 같은 이유.
+    apiClient_->fetchOperators([this, nextCodePreview](bool, const QVector<ApiClient::OperatorInfo>& items) {
+        QVector<OperatorOption> operators;
+        for (const auto& o : items) operators.append(OperatorOption{o.id, o.name});
 
-    ApiClient::RecipientCreateParams params;
-    QString error;
-    if (!buildRecipientParams(detail, &params, &error)) {
-        QMessageBox::warning(this, QStringLiteral("등록 실패"), error);
-        return;
-    }
+        P3RecipientCreateDialog dialog(nextCodePreview, operators, this);
+        if (dialog.exec() != QDialog::Accepted) return;
 
-    apiClient_->createRecipient(
-        params, [this](bool ok, const ApiClient::RecipientDetailInfo& info, const QString& err) {
-            if (!ok) {
-                QMessageBox::warning(this, QStringLiteral("등록 실패"),
-                                      QStringLiteral("대상자 등록에 실패했습니다: %1").arg(err));
-                return;
-            }
-            recipients_.append(recipientDetailFromApi(info).card);
-            rebuildGrid();
-        });
+        const RecipientDetail detail = dialog.resultDetail();
+
+        ApiClient::RecipientCreateParams params;
+        QString error;
+        if (!buildRecipientParams(detail, &params, &error)) {
+            QMessageBox::warning(this, QStringLiteral("등록 실패"), error);
+            return;
+        }
+
+        apiClient_->createRecipient(
+            params, [this](bool ok, const ApiClient::RecipientDetailInfo& info, const QString& err) {
+                if (!ok) {
+                    QMessageBox::warning(this, QStringLiteral("등록 실패"),
+                                          QStringLiteral("대상자 등록에 실패했습니다: %1").arg(err));
+                    return;
+                }
+                recipients_.append(recipientDetailFromApi(info).card);
+                rebuildGrid();
+            });
+    });
 }
 
 void P3RecipientPage::saveRecipientUpdate(const RecipientDetail& detail) {
@@ -1036,10 +1103,37 @@ void P3RecipientPage::saveRecipientUpdate(const RecipientDetail& detail) {
                 card.name = updated.name;
                 card.address = updated.address;
                 card.robotCode = updated.robotCode;
+                card.operatorId = updated.operatorId;
+                card.operatorName = updated.operatorName;
+                card.riskLevel = updated.riskLevel;
+                // 로봇이 지금 Offline으로 표시 중이면 그 상태를 지운다 — 저장은 위험도만 새로
+                // 반영하고, 연결 여부는 WS robot_status만 바꿀 수 있다(handleWsMessage 참고).
+                if (card.level != Tokens::Level::Offline) card.level = updated.riskLevel;
+                card.statusSummary = updated.statusSummary;
+                for (int i = 0; i < 3; ++i) card.meds[i] = updated.meds[i];
                 break;
             }
             rebuildGrid();
         });
+}
+
+void P3RecipientPage::deactivateRecipient(int recipientId) {
+    if (recipientId <= 0) return;  // 서버 연결 실패로 남은 mock 카드 — 처리할 원본이 없다
+
+    apiClient_->deactivateRecipient(recipientId, [this, recipientId](bool ok, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("비활성화 실패"),
+                                  QStringLiteral("대상자를 비활성화하지 못했습니다: %1").arg(err));
+            return;
+        }
+        for (int i = 0; i < recipients_.size(); ++i) {
+            if (recipients_[i].id == recipientId) {
+                recipients_.remove(i);
+                break;
+            }
+        }
+        rebuildGrid();
+    });
 }
 
 #include "p3_recipient_page.moc"

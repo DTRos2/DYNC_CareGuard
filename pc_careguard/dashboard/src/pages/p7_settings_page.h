@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "dialogs/p7_account_dialog.h"
+#include "dialogs/p7_robot_dialog.h"
 #include "theme/tokens.h"
 
 class QTableWidget;
@@ -15,6 +16,10 @@ class QNetworkReply;
 class QDateEdit;
 class QEvent;
 class LiveSearchLineEdit;
+class WsClient;
+class QJsonObject;
+class QLineEdit;
+class QComboBox;
 
 // P7 시스템 설정 — 로봇 관리 / 계정 관리 / 임계값·알림 / 감사 로그 4탭.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 6), §7 참고.
@@ -36,13 +41,13 @@ protected:
 
 private:
     struct RobotRow {
+        int dbId = -1;  // robot.id — 등록 해제(DELETE /robots/{id}) API 호출에 필요
         QString id;
         QString ip;
         QString ns;
         QString mapRecipient;
         Tokens::Level level;
         QString statusDetail;  // 온라인/오프라인 상세 텍스트
-        QString nodeSummary;   // "6/6 정상" 등
         // --- 로봇 등록/수정 모달용 (와이어프레임 대응) ---
         QString name;               // 표시 이름, 예: "3호기"
         QString model = QStringLiteral("limo");
@@ -50,12 +55,6 @@ private:
         QString recipientLabel = QStringLiteral("미배정");  // "이말순 (C-003)" 형태
         QString wsHost = QStringLiteral("192.168.0.9");      // 서버 WebSocket 호스트 (데모용 고정값)
         QString connectionDetail;   // "최근 ping 응답 0.4s 전 · 세션 3d 2h"
-    };
-
-    struct NodeDetail {
-        QString name;
-        bool warn;
-        QString detail;  // "up 3d 2h" 또는 "응답 지연 2.1s"
     };
 
     struct AccountRow {
@@ -99,6 +98,12 @@ private:
     void openRobotDialog(int rowIndex);  // -1이면 신규 등록
     void populateRobotRow(int r);
     void refreshRobotTable();
+    void fetchRobots();  // GET /robots
+    void handleRobotsReply(QNetworkReply* reply);
+    void registerRobot(const RobotDialog::RobotData& data);  // POST /robots
+    void assignRobotRecipient(int robotDbId, int recipientId);  // PUT /robots/{id}/recipient
+    void deregisterRobot(int dbId);  // DELETE /robots/{id}
+    void handleWsMessage(const QJsonObject& message);  // WsClient::messageReceived — type으로 분기
 
     void openAccountDialog(int rowIndex);  // -1이면 신규 등록
     void populateAccountRow(int r);
@@ -119,12 +124,18 @@ private:
     void handleRecipientsReply(QNetworkReply* reply);
     void assignRecipients(int userId, const QVector<int>& recipientIds);  // PUT /accounts/{id}/recipients
 
+    void refreshThresholdRobotCombo();  // robots_ 갱신될 때마다 콤보 항목도 다시 채운다
+    void fetchRobotThresholds(int robotDbId);  // GET /robots/{id}/thresholds — 콤보 선택 바뀔 때
+    void saveThresholdsForCurrentRobot();  // PUT /robots/{id}/thresholds — "이 로봇에 저장"
+    void applyThresholdsToAllRobots();  // PUT /robots/thresholds/apply-all — "전체 로봇에 적용"
+
     QTableWidget* robotTable_ = nullptr;
     QLabel* robotCountLabel_ = nullptr;
     QTableWidget* accountTable_ = nullptr;
     QLabel* accountCountLabel_ = nullptr;
     QPushButton* accountRegisterBtn_ = nullptr;
     QPushButton* deleteAccountBtn_ = nullptr;
+    WsClient* wsClient_ = nullptr;
 
     QTableWidget* auditTable_ = nullptr;
     QDateEdit* auditStartDateEdit_ = nullptr;
@@ -135,11 +146,18 @@ private:
     // setCurrentUserLoginId()로 실제 로그인 ID가 들어오기 전까지의 기본값.
     QString currentUserLoginId_ = QStringLiteral("admin");
 
+    QComboBox* thresholdRobotCombo_ = nullptr;
+    QLineEdit* batteryAttentionEdit_ = nullptr;
+    QLineEdit* batteryReturnEdit_ = nullptr;
+    QLineEdit* voiceWaitEdit_ = nullptr;
+    QLineEdit* reconnectRetryEdit_ = nullptr;
+    QLineEdit* medMissedWaitEdit_ = nullptr;
+    QLineEdit* medReannounceEdit_ = nullptr;
+
     QNetworkAccessManager* netManager_ = nullptr;
     QString serverUrl_;
 
     std::vector<RobotRow> robots_;
-    std::vector<NodeDetail> r03Nodes_;
     std::vector<AccountRow> accounts_;
     std::vector<RecipientRow> recipients_;
     std::vector<AuditRow> auditLog_;

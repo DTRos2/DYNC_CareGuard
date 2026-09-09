@@ -30,12 +30,12 @@ public:
         QString name;                                     // 표시 이름
         QString model = QStringLiteral("limo");
         int rosDomainId = 0;
+        QString ip;                                         // 로봇에 고정 할당된 IP, 등록 시에만 저장됨
         QString recipientLabel = QStringLiteral("미배정");  // "이말순 (C-003)" 또는 "미배정"
+        int recipientId = -1;                               // 체크된 대상자의 recipient.id, 없으면 -1
         bool connected = false;                            // Edit 전용 — 연결 상태 미리보기에 사용
         QString wsHost = QStringLiteral("<서버>");          // ws://<wsHost>:8080/ws/robot/<code>
         QString connectionDetail;                          // "최근 ping 응답 0.4s 전 · 세션 3d 2h" (연결 시)
-        QString warnNode;                                  // 비어있으면 경고 배너 없음, 아니면 노드 이름
-        QString warnDetail;                                // "응답 지연 2.1s"
     };
 
     RobotDialog(Mode mode, const RobotData& data, const QVector<RecipientOption>& recipients = {},
@@ -60,6 +60,7 @@ private:
     QLineEdit* nameEdit_;
     QComboBox* modelCombo_;
     QLineEdit* rosDomainEdit_;
+    QLineEdit* ipEdit_;
     LiveSearchLineEdit* recipientSearchEdit_;
     CheckableListWidget* recipientListWidget_;
     QPushButton* saveBtn_;

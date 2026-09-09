@@ -145,8 +145,9 @@ PillboxStyle pillboxStyle(MedSlotState state) {
 
 }  // namespace
 
-P3RecipientDetailDialog::P3RecipientDetailDialog(const RecipientDetail& detail, QWidget* parent)
-    : QDialog(parent), detail_(detail) {
+P3RecipientDetailDialog::P3RecipientDetailDialog(const RecipientDetail& detail,
+                                                   const QVector<OperatorOption>& operators, QWidget* parent)
+    : QDialog(parent), detail_(detail), operators_(operators) {
     setModal(true);
     // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
@@ -259,6 +260,15 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     row1->addWidget(makeFieldBlock(QStringLiteral("이름"), nameEdit_, tab), 1);
     auto* idField = makeReadOnlyField(QStringLiteral("%1 자동").arg(detail_.card.code), tab);
     row1->addWidget(makeFieldBlock(QStringLiteral("대상자 ID"), idField, tab), 1);
+
+    // 관리 담당자 — create dialog와 같은 후보 목록(계정관리(P7)의 관제담당자 계정). 현재
+    // 배정된 담당자가 있으면(detail_.card.operatorId) 그 항목을 미리 선택해둔다.
+    operatorCombo_ = new CareGuardComboBox(tab);
+    operatorCombo_->addItem(QStringLiteral("담당자 없음"), 0);
+    for (const auto& op : operators_) operatorCombo_->addItem(op.name, op.id);
+    const int operatorIdx = operatorCombo_->findData(detail_.card.operatorId);
+    if (operatorIdx >= 0) operatorCombo_->setCurrentIndex(operatorIdx);
+    row1->addWidget(makeFieldBlock(QStringLiteral("관리 담당자"), operatorCombo_, tab), 1);
     formCol->addLayout(row1);
 
     auto* row2 = new QHBoxLayout();
@@ -1183,8 +1193,21 @@ QWidget* P3RecipientDetailDialog::buildFooter() {
     auto* deactivateBtn = new QPushButton(QStringLiteral("대상자 비활성화"), footer);
     deactivateBtn->setProperty("variant", "secondary");
     deactivateBtn->setProperty("tone", "danger");
-    connect(deactivateBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("대상자 비활성화")); });
+    connect(deactivateBtn, &QPushButton::clicked, this, [this] {
+        QMessageBox box(this);
+        box.setWindowTitle(QStringLiteral("대상자 비활성화"));
+        box.setText(QStringLiteral("%1 대상자를 비활성화하시겠습니까?\n"
+                                    "비활성화하면 대상자 목록에서 사라지며, 되돌릴 수 없습니다.")
+                        .arg(detail_.card.name));
+        box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+        box.setDefaultButton(QMessageBox::Cancel);
+        box.button(QMessageBox::Ok)->setText(QStringLiteral("확인"));
+        box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+        if (box.exec() != QMessageBox::Ok) return;
+
+        emit deactivateRequested(detail_.card.id);
+        reject();
+    });
     layout->addWidget(deactivateBtn);
 
     layout->addStretch();
@@ -1215,6 +1238,8 @@ void P3RecipientDetailDialog::handleSaveClicked() {
     detail_.note = noteEdit_->text().trimmed();
     detail_.card.robotCode =
         robotCombo_->currentIndex() > 0 ? robotCombo_->currentText() : QStringLiteral("미배정");
+    detail_.card.operatorId = operatorCombo_->currentData().toInt();
+    detail_.card.operatorName = detail_.card.operatorId > 0 ? operatorCombo_->currentText() : QString();
 
     // detail_.guardians/schedules는 보호자·복약 스케줄 행의 저장(💾) 버튼을 누를 때마다
     // 이미 갱신돼 있다 — 여기서 다시 모을 필요 없이 그대로 실어 보낸다.

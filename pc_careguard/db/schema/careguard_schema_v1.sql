@@ -81,6 +81,7 @@ CREATE TABLE robot (
     name            VARCHAR(64) NOT NULL,
     model           VARCHAR(64) NOT NULL DEFAULT 'limo',
     ros_domain_id   INTEGER CHECK (ros_domain_id IS NULL OR ros_domain_id BETWEEN 0 AND 232),
+    ip              VARCHAR(45),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deregistered_at TIMESTAMPTZ
 );
@@ -94,8 +95,30 @@ COMMENT ON COLUMN robot.code IS '로봇 코드. MQTT 토픽 cg/v1/robot/{code}/.
 COMMENT ON COLUMN robot.name IS '로봇 표시 이름';
 COMMENT ON COLUMN robot.model IS '로봇 모델명';
 COMMENT ON COLUMN robot.ros_domain_id IS '로봇 내부 전용 ROS_DOMAIN_ID. 로봇마다 분리해 DDS가 기계 경계를 넘지 않게 한다';
+COMMENT ON COLUMN robot.ip IS '로봇에 고정 할당된 IP (등록 시 직접 입력, 자동 갱신 아님)';
 COMMENT ON COLUMN robot.created_at IS '로봇 등록 시간';
 COMMENT ON COLUMN robot.deregistered_at IS '로봇 등록 해제 시간. NULL이면 사용 중';
+
+CREATE TABLE robot_threshold (
+    robot_id              INTEGER PRIMARY KEY,
+    battery_attention_pct SMALLINT NOT NULL DEFAULT 30,
+    battery_return_pct    SMALLINT NOT NULL DEFAULT 20,
+    voice_wait_sec        SMALLINT NOT NULL DEFAULT 8,
+    reconnect_retry_sec   SMALLINT NOT NULL DEFAULT 30,
+    med_missed_wait_min   SMALLINT NOT NULL DEFAULT 10,
+    med_reannounce_count  SMALLINT NOT NULL DEFAULT 2,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE robot_threshold IS '로봇별 임계값·알림 설정 (시스템 설정 > 임계값·알림 탭). 행이 없는 로봇은 기본값(위 컬럼 DEFAULT)을 쓴다';
+COMMENT ON COLUMN robot_threshold.robot_id IS 'robot.id — 로봇 한 대당 설정 행 하나';
+COMMENT ON COLUMN robot_threshold.battery_attention_pct IS '배터리 주의 알림 기준 (%)';
+COMMENT ON COLUMN robot_threshold.battery_return_pct IS '배터리 자동 복귀 기준 (%)';
+COMMENT ON COLUMN robot_threshold.voice_wait_sec IS '음성 응답 대기 시간 (초)';
+COMMENT ON COLUMN robot_threshold.reconnect_retry_sec IS '재연결 재시도 주기 (초)';
+COMMENT ON COLUMN robot_threshold.med_missed_wait_min IS '복약 미수령 판정까지 대기 시간 (분)';
+COMMENT ON COLUMN robot_threshold.med_reannounce_count IS '복약 재안내 횟수';
+COMMENT ON COLUMN robot_threshold.updated_at IS '마지막 저장 시간';
 
 
 -- =========================================================

@@ -20,7 +20,8 @@ class QPushButton;
 class P3RecipientCreateDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit P3RecipientCreateDialog(const QString& nextCode, QWidget* parent = nullptr);
+    explicit P3RecipientCreateDialog(const QString& nextCode, const QVector<OperatorOption>& operators,
+                                      QWidget* parent = nullptr);
 
     // exec() == Accepted 이후에만 유효하다.
     RecipientCard resultCard() const { return detail_.card; }
@@ -54,6 +55,7 @@ private:
     QLineEdit* noteEdit_ = nullptr;
     QComboBox* robotCombo_ = nullptr;
     QComboBox* mapCombo_ = nullptr;
+    QComboBox* operatorCombo_ = nullptr;
 
     QWidget* guardianTableBox_ = nullptr;
     int autoEditGuardianIndex_ = -1;

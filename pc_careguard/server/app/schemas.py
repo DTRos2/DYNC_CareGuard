@@ -1,7 +1,7 @@
 from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
@@ -120,17 +120,6 @@ class VideoEventItem(BaseModel):
     retention_until: Optional[datetime] = None
     view_count: int = 0
     view_history: List[ViewHistoryEntry] = []
-
-
-class RobotItem(BaseModel):
-    # GET /maps/active와 달리 아직 맵이 없는(SLAM 전) 로봇도 포함한다 — 매핑 페이지의
-    # 로봇 선택처럼 "맵 없는 로봇"을 골라야 하는 화면이 이 스키마를 쓴다.
-    id: int
-    code: str  # 예: "R-01"
-    name: str
-    model: str
-    ip: Optional[str] = None
-    created_at: datetime
 
 
 class MapCreate(BaseModel):
@@ -348,6 +337,45 @@ class PatrolRunItem(BaseModel):
     robot_connected: bool = False
 
 
+class RobotItem(BaseModel):
+    id: int
+    code: str
+    name: str
+    model: str
+    ros_domain_id: Optional[int] = None
+    ip: Optional[str] = None
+    map_recipient: str = "-"
+    is_online: bool
+
+
+class RegisterRobotRequest(BaseModel):
+    # DB 제약(robot.code VARCHAR(16), robot.ros_domain_id CHECK 0~232)과 동일한 범위를
+    # 여기서도 검증한다 — 안 그러면 DB 제약 위반이 그대로 처리 안 된 예외로 터져 500이
+    # 되고, 클라이언트는 "서버에 연결할 수 없습니다" 같은 엉뚱한 메시지를 보게 된다.
+    code: str = Field(max_length=16)
+    name: str
+    model: str = "limo"
+    ros_domain_id: Optional[int] = Field(default=None, ge=0, le=232)
+    ip: Optional[str] = Field(default=None, max_length=45)
+
+
+class RegisterRobotResponse(RobotItem):
+    pass
+
+
+class AssignRobotRecipientRequest(BaseModel):
+    recipient_id: Optional[int] = None  # None이면 배정 해제
+
+
+class RobotThresholds(BaseModel):
+    battery_attention_pct: int = Field(default=30, ge=0, le=100)
+    battery_return_pct: int = Field(default=20, ge=0, le=100)
+    voice_wait_sec: int = Field(default=8, ge=1, le=120)
+    reconnect_retry_sec: int = Field(default=30, ge=1, le=600)
+    med_missed_wait_min: int = Field(default=10, ge=1, le=1440)
+    med_reannounce_count: int = Field(default=2, ge=0, le=20)
+
+
 class MissionCreate(BaseModel):
     robot_code: str
     kind: str = "medication"  # 이번 스코프에선 P3 "복약 재안내" 버튼만 이걸로 미션을 만든다
@@ -406,8 +434,21 @@ class RecipientCreate(BaseModel):
     diseases: Optional[str] = None
     note: Optional[str] = None
     robot_code: Optional[str] = None  # 미배정이면 None
+    operator_id: Optional[int] = None  # 담당 관제담당자 계정 id. 미배정이면 None
     guardians: List[GuardianCreate] = []
     schedules: List[MedicationScheduleCreate] = []
+
+
+class MedicationTodayItem(BaseModel):
+    # 오늘 요일에 해당하는 스케줄 슬롯만 담는다 — 대상자마다 슬롯 수가 다를 수 있어(꼭 3개일
+    # 필요 없음) 스케줄이 없는 슬롯은 아예 목록에서 빠진다.
+    slot_no: int
+    state: str  # "done" / "missed" / "pending". medication_log 결과가 아직 없으면 pending
+
+
+class MedicationHistoryDay(BaseModel):
+    date: date
+    adherence: float  # 1.0 그날 스케줄 전부 수령 · 0.0 하나라도 미수령 · -1.0 그날 스케줄 없음(빈칸)
 
 
 class RecipientItem(BaseModel):
@@ -421,9 +462,19 @@ class RecipientItem(BaseModel):
     home_address: Optional[str] = None
     diseases: Optional[str] = None
     note: Optional[str] = None
+    operator_id: Optional[int] = None  # recipient.operator_id. 미배정이면 None
+    operator_name: Optional[str] = None  # careguard_user.display_name 조인. 미배정이면 None
+    # "normal"/"attention"/"emergency" — 열려있는(open/acknowledged) care_event 중 가장 심각한
+    # 것 하나로 정한다. severity='info'는 위험도를 올리지 않는다(대시보드 Tokens::Level에
+    # Info가 없음, media.py의 SEVERITY_TAGS와 같은 분류). 로봇 오프라인(offline)은 이 값에
+    # 안 실린다 — 대시보드가 WS robot_status로 별도 판정해 이 값과 조합한다.
+    level: str = "normal"
+    status_summary: str = "등록됨 · 이상 없음"  # 활성 이벤트 있으면 care_event.summary로 대체
+    meds_today: List[MedicationTodayItem] = []
     created_at: datetime
 
 
 class RecipientDetailItem(RecipientItem):
     guardians: List[GuardianItem] = []
     schedules: List[MedicationScheduleItem] = []
+    history: List[MedicationHistoryDay] = []  # 최근 28일. 목록(List) 조회에는 없고 상세에만 있다

@@ -15,6 +15,7 @@
 
 #include "theme/tokens.h"
 #include "widgets/checkable_list_widget.h"
+#include "widgets/dropdown_fix_combo_box.h"
 #include "widgets/korean_search.h"
 #include "widgets/live_search_line_edit.h"
 #include "widgets/simple_icons.h"
@@ -22,18 +23,6 @@
 namespace {
 constexpr int kRosDomainMin = 0;
 constexpr int kRosDomainMax = 232;
-
-// Qt::FramelessWindowHint 다이얼로그 안에서는 QComboBox가 팝업 위치를 잘못 계산해서
-// 콤보 박스 바로 아래가 아니라 다이얼로그 중간쯤에 뜬다. 팝업을 띄운 직후 콤보 박스
-// 바로 아래로 직접 옮겨서 고정한다.
-class DropDownFixComboBox : public QComboBox {
-public:
-    using QComboBox::QComboBox;
-    void showPopup() override {
-        QComboBox::showPopup();
-        view()->window()->move(mapToGlobal(QPoint(0, height())));
-    }
-};
 }  // namespace
 
 RobotDialog::RobotDialog(Mode mode, const RobotData& data, const QVector<RecipientOption>& recipients,
@@ -57,28 +46,6 @@ RobotDialog::RobotDialog(Mode mode, const RobotData& data, const QVector<Recipie
     auto* body = new QVBoxLayout();
     body->setContentsMargins(16, 14, 16, 14);
     body->setSpacing(12);
-
-    // 노드 경고 배너 (Edit 모드 + warnNode가 있을 때만)
-    if (isEdit && !data.warnNode.isEmpty()) {
-        auto* banner = new QFrame(this);
-        banner->setObjectName("banner");
-        banner->setProperty("level", Tokens::Prop::ATTENTION);
-        auto* bl = new QHBoxLayout(banner);
-        bl->setContentsMargins(9, 7, 9, 7);
-        bl->setSpacing(8);
-        auto* icon = new QLabel(banner);
-        icon->setPixmap(SimpleIcons::alertTriangle(Tokens::ATTENTION.main, 14).pixmap(14, 14));
-        bl->addWidget(icon);
-        auto* text = new QLabel(
-            QStringLiteral("노드 <b style=\"font-family:'JetBrains Mono'\">%1</b> %2 · "
-                            "설정 변경 후 재시작이 필요할 수 있습니다")
-                .arg(data.warnNode, data.warnDetail),
-            banner);
-        text->setTextFormat(Qt::RichText);
-        text->setWordWrap(true);
-        bl->addWidget(text, 1);
-        body->addWidget(banner);
-    }
 
     // 로봇 코드 · 표시 이름 · 모델 · ROS_DOMAIN_ID — 한 줄에 하나씩 세로로 나열.
     {
@@ -138,6 +105,24 @@ RobotDialog::RobotDialog(Mode mode, const RobotData& data, const QVector<Recipie
         col->addWidget(rosDomainEdit_);
         if (!isEdit) {
             auto* hint = new QLabel(QStringLiteral("0–232 · 로봇마다 다르게"), this);
+            hint->setProperty("role", "muted");
+            hint->setStyleSheet(QStringLiteral("font-size:11px;"));
+            col->addWidget(hint);
+        }
+        body->addLayout(col);
+    }
+    {
+        auto* col = new QVBoxLayout();
+        col->setSpacing(5);
+        auto* label = new QLabel(QStringLiteral("IP"), this);
+        label->setProperty("role", "label");
+        col->addWidget(label);
+        ipEdit_ = new QLineEdit(data.ip, this);
+        ipEdit_->setFont(QFont(Tokens::Font::MONO));
+        ipEdit_->setPlaceholderText(QStringLiteral("예) 192.168.0.9"));
+        col->addWidget(ipEdit_);
+        if (!isEdit) {
+            auto* hint = new QLabel(QStringLiteral("서버에는 등록 시에만 저장됨"), this);
             hint->setProperty("role", "muted");
             hint->setStyleSheet(QStringLiteral("font-size:11px;"));
             col->addWidget(hint);
@@ -369,11 +354,13 @@ void RobotDialog::handleSaveClicked() {
     result.name = name;
     result.model = modelCombo_->currentText();
     result.rosDomainId = rosDomainEdit_->text().trimmed().toInt();
+    result.ip = ipEdit_->text().trimmed();
     result.recipientLabel = QStringLiteral("미배정");
     for (int i = 0; i < recipientListWidget_->count(); ++i) {
         QListWidgetItem* item = recipientListWidget_->item(i);
         if (item->checkState() == Qt::Checked) {
             result.recipientLabel = item->text();
+            result.recipientId = item->data(Qt::UserRole).toInt();
             break;
         }
     }
