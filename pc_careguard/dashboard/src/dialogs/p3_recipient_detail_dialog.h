@@ -18,15 +18,20 @@ class QComboBox;
 // "저장" 클릭 시 이름·생년·성별·주소·지병·메모 + 보호자·복약 스케줄 전체를 saveRequested로
 // 내보낸다 — 호출부(P3RecipientPage::saveRecipientUpdate)가 PUT /recipients/{id}로 실제
 // 저장한다. 보호자·복약 스케줄의 행 단위 추가·삭제·수정은 이 다이얼로그 안(detail_)에서
-// 먼저 반영되고, 최종 "저장"을 눌러야 서버에 실제로 올라간다. 사진 업로드·대상자 비활성화는
+// 먼저 반영되고, 최종 "저장"을 눌러야 서버에 실제로 올라간다. "대상자 비활성화"는 확인 후
+// deactivateRequested를 내보내고 곧바로 닫는다(저장 버튼과 무관한 별도 동작). 사진 업로드는
 // 여전히 안내 메시지로 대체한다.
 class P3RecipientDetailDialog : public QDialog {
     Q_OBJECT
 public:
-    explicit P3RecipientDetailDialog(const RecipientDetail& detail, QWidget* parent = nullptr);
+    explicit P3RecipientDetailDialog(const RecipientDetail& detail, const QVector<OperatorOption>& operators,
+                                      QWidget* parent = nullptr);
 
 signals:
     void saveRequested(const RecipientDetail& detail);
+    // "대상자 비활성화" 확인 후. 호출부(P3RecipientPage)가 POST /recipients/{id}/deactivate로
+    // 실제 처리하고, 성공하면 카드를 목록에서 뺀다.
+    void deactivateRequested(int recipientId);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -53,6 +58,7 @@ private:
     void handleSaveClicked();
 
     RecipientDetail detail_;
+    QVector<OperatorOption> operators_;  // "관리 담당자" 콤보 후보 — buildBasicInfoTab()에서 채운다
     QWidget* guardianTableBox_ = nullptr;
     int autoEditGuardianIndex_ = -1;  // addGuardian() 직후 이 행을 자동으로 수정 모드로 연다
     QWidget* scheduleTableBox_ = nullptr;
@@ -66,6 +72,7 @@ private:
     QLineEdit* noteEdit_ = nullptr;
     QComboBox* robotCombo_ = nullptr;
     QComboBox* mapCombo_ = nullptr;  // 로봇 선택에 따라 자동 채워지는 표시 전용(제출 안 됨) — create dialog와 동일
+    QComboBox* operatorCombo_ = nullptr;
 
     // eventFilter()의 IME 누수 방지용 — 위젯별 "이 시각까지는 새어 들어온 커밋을 삼킨다" 마감시각.
     QHash<QObject*, qint64> imeGuardDeadline_;
