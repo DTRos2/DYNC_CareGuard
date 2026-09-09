@@ -81,6 +81,7 @@ CREATE TABLE robot (
     name            VARCHAR(64) NOT NULL,
     model           VARCHAR(64) NOT NULL DEFAULT 'limo',
     ros_domain_id   INTEGER CHECK (ros_domain_id IS NULL OR ros_domain_id BETWEEN 0 AND 232),
+    ip              VARCHAR(45),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deregistered_at TIMESTAMPTZ
 );
@@ -94,6 +95,7 @@ COMMENT ON COLUMN robot.code IS '로봇 코드. MQTT 토픽 cg/v1/robot/{code}/.
 COMMENT ON COLUMN robot.name IS '로봇 표시 이름';
 COMMENT ON COLUMN robot.model IS '로봇 모델명';
 COMMENT ON COLUMN robot.ros_domain_id IS '로봇 내부 전용 ROS_DOMAIN_ID. 로봇마다 분리해 DDS가 기계 경계를 넘지 않게 한다';
+COMMENT ON COLUMN robot.ip IS '로봇에 고정 할당된 IP (등록 시 직접 입력, 자동 갱신 아님)';
 COMMENT ON COLUMN robot.created_at IS '로봇 등록 시간';
 COMMENT ON COLUMN robot.deregistered_at IS '로봇 등록 해제 시간. NULL이면 사용 중';
 

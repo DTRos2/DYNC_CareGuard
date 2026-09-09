@@ -2,18 +2,21 @@
 #include <QWidget>
 #include <QImage>
 #include <QMap>
+#include <QVector>
+
+#include "net/api_client.h"
 
 class QLabel;
 class QPushButton;
 class QLineEdit;
 class QComboBox;
+class QMenu;
 class SlamMappingCard;
 class TeleopPanel;
 class MappingStatusOverlay;
 class QKeyEvent;
 class QShowEvent;
 class QFrame;
-class ApiClient;
 class WsClient;
 class QJsonObject;
 
@@ -66,6 +69,19 @@ private:
     // (GET /maps/active). 새로 파일로 등록/SLAM 저장한 맵은 이 경로를 타지 않고
     // openFileRegisterDialog()에서 바로 markMapDeployed()를 부른다.
     void loadActiveMapsFromServer();
+    // GET /robots — 맵 유무와 무관하게 등록된 전체 로봇 목록을 받아 헤더의 로봇
+    // 드롭다운을 채운다(예전엔 "R-04" 고정 표시였다 — 2026-09-09 요청). 아직 맵이
+    // 없는 로봇도 여기 나와야 매핑을 시작할 수 있어 GET /maps/active로는 못 만든다.
+    void loadRobotsFromServer();
+    void rebuildRobotMenu();
+    // robotChipBtn_ 텍스트를 "코드 · 온라인/오프라인" 형태로 다시 그린다 —
+    // switchToRobot()과 robot_status WS 처리(handleWsMessage) 둘 다에서 부른다.
+    void updateRobotChipText();
+    // 로봇 드롭다운에서 다른 로봇을 고르면 페이지 전체(SLAM 캔버스·온라인 배너·저장
+    // 정보 카드·텔레옵/비상정지 대상)가 그 로봇 기준으로 바뀐다. P6PatrolPage::
+    // switchToMap과 같은 패턴 — 다만 P5는 로봇당 편집 가능한 상태(웨이포인트 등)가
+    // 없어서 저장·복원 없이 바로 로봇 코드만 바꾸고 캔버스를 새로 채운다.
+    void switchToRobot(int index);
     // "매핑 시작" 버튼 — POST /slam-jobs로 현재 로봇의 SLAM 매핑을 시작시킨다
     // (체크리스트 ⑧). 화면상 텔레옵·SlamMapView 시뮬레이션은 서버 연동 여부와 무관하게
     // 그대로 동작한다 — 이 호출은 실제 로봇에게 명령을 전달하는 별도 경로다.
@@ -88,6 +104,9 @@ private:
     SlamMappingCard* slamCard_;
     TeleopPanel* teleopPanel_;
     QPushButton* robotChipBtn_;
+    QMenu* robotMenu_;
+    QVector<ApiClient::RobotInfo> robots_;
+    int currentRobotIndex_ = -1;
     // "맵 저장 정보" 카드의 맵 이름 입력칸 — "SLAM 맵 저장·배포" 클릭 시 이 값을 실제
     // 저장될 이름으로 서버에 넘겨야 해서 멤버로 들고 있는다("매핑 시작" 시점엔 아직
     // 로봇이 지도를 다 그리기 전이라 이름이 확정 안 됐을 수 있어, 이름 확정은 저장
@@ -100,7 +119,8 @@ private:
     // 서버에 뭘 취소해야 할지 알아야 해서 필요) — startMappingOnServer 성공 시 채우고,
     // cancelMappingOnServer 성공 시 0으로 되돌린다.
     int currentSlamJobId_ = 0;
-    // 헤더의 로봇 칩은 지금 "R-04" 고정 표시다(로봇 목록 API는 이번 스코프 밖) — 매핑
-    // 시작·WS 필터링에 쓰는 로봇 코드도 이 상수를 그대로 따른다.
+    // 헤더 로봇 드롭다운에서 선택된 로봇 — GET /robots 응답이 오기 전 기본값은 "R-04"
+    // (기존 하드코딩 값과 동일하게 유지). 매핑 시작·WS 필터링·텔레옵 전송 대상이
+    // 전부 이 값을 따른다. switchToRobot()이 바뀔 때마다 갱신한다.
     QString currentRobotCode_ = QStringLiteral("R-04");
 };

@@ -197,6 +197,14 @@ def update_account(user_id: int, payload: UpdateAccountRequest):
             (payload.display_name, role["id"], payload.is_active, user_id),
         )
 
+        # 활성 계정을 비활성화하면 담당 중이던 대상자를 미배정으로 되돌린다(delete_accounts와 동일한
+        # 방침) — 비활성 계정이 대상자를 계속 담당한 것처럼 남아 있으면 안 된다.
+        if current["is_active"] and not payload.is_active:
+            cur.execute(
+                "UPDATE recipient SET operator_id = NULL WHERE operator_id = %s AND deregistered_at IS NULL",
+                (user_id,),
+            )
+
         # 활성 상태가 실제로 바뀐 경우에만 activate/deactivate로, 그 외 수정은 account_update로 남긴다.
         # 실제 로그인 세션(조작 주체) 연동은 범위 밖이라 user_id는 대상 계정 자신으로 기록한다.
         if current["is_active"] != payload.is_active:

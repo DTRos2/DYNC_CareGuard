@@ -46,7 +46,11 @@ def list_active_maps():
                 rc.name AS recipient_name,
                 m.resolution, m.origin_x, m.origin_y, m.origin_yaw,
                 m.width_px, m.height_px, m.is_active, m.created_at,
-                f.id AS image_file_id
+                f.id AS image_file_id,
+                COALESCE(m.raw_yaml->>'mode', 'trinary') AS mode,
+                COALESCE((m.raw_yaml->>'negate')::int, 0) AS negate,
+                COALESCE((m.raw_yaml->>'occupied_thresh')::float, 0.65) AS occupied_thresh,
+                COALESCE((m.raw_yaml->>'free_thresh')::float, 0.196) AS free_thresh
             FROM map m
             JOIN robot r ON r.id = m.robot_id
             LEFT JOIN recipient rc
@@ -142,7 +146,11 @@ def create_map(payload: MapCreate):
                 rc.name AS recipient_name,
                 m.resolution, m.origin_x, m.origin_y, m.origin_yaw,
                 m.width_px, m.height_px, m.is_active, m.created_at,
-                f.id AS image_file_id
+                f.id AS image_file_id,
+                COALESCE(m.raw_yaml->>'mode', 'trinary') AS mode,
+                COALESCE((m.raw_yaml->>'negate')::int, 0) AS negate,
+                COALESCE((m.raw_yaml->>'occupied_thresh')::float, 0.65) AS occupied_thresh,
+                COALESCE((m.raw_yaml->>'free_thresh')::float, 0.196) AS free_thresh
             FROM map m
             JOIN robot r ON r.id = m.robot_id
             LEFT JOIN recipient rc

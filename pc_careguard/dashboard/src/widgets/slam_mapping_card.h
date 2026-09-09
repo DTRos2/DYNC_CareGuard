@@ -108,6 +108,10 @@ public slots:
     void setVelocity(qreal linearMps, qreal angularRadps);
     // 파일로 등록된 맵을 반영: 배지·라벨을 "맵 등록됨"으로 바꾸고 배경 이미지를 표시한다.
     void applyRegisteredMap(const QImage& image, const QString& mapName, const QString& robotId);
+    // P5 로봇 전환 시 호출 — view_를 비우고(resetMapping) 아직 이 로봇에 맵이 없다는
+    // 초기 상태로 배지·라벨·경과시간을 되돌린다. 전환 직후 registeredMaps_에 이미지가
+    // 있으면 이어서 applyRegisteredMap()이 다시 채운다.
+    void resetForRobot(const QString& robotId);
     // 서버가 릴레이한 실제 slam_progress(로봇의 slam_progress_publisher가 발행한
     // 경과시간·occupancy grid 탐색면적)를 반영한다. elapsedTimer_는 다음 서버 갱신
     // 전까지 화면을 매끄럽게 이어 보여주는 로컬 보간용이고, 값 자체의 기준(진실)은

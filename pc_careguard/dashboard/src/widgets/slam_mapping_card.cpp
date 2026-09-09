@@ -423,6 +423,18 @@ void SlamMappingCard::applyRegisteredMap(const QImage& image, const QString& map
     targetLabel_->setText(QStringLiteral("%1 · %2").arg(mapName, robotId));
 }
 
+void SlamMappingCard::resetForRobot(const QString& robotId) {
+    view_->resetMapping();
+    badge_->setText(QStringLiteral("SLAM 매핑 중"));
+    badge_->setProperty("level", "info");
+    badge_->style()->unpolish(badge_);
+    badge_->style()->polish(badge_);
+    targetLabel_->setText(QStringLiteral("맵 없음 · %1").arg(robotId));
+    elapsedSeconds_ = 0;
+    areaM2_ = 0.0;
+    updateStatsLabel();
+}
+
 void SlamMappingCard::setVelocity(qreal linearMps, qreal angularRadps) {
     moving_ = !qFuzzyIsNull(linearMps) || !qFuzzyIsNull(angularRadps);
 }

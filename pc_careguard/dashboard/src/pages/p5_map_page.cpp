@@ -1,5 +1,6 @@
 #include "p5_map_page.h"
 
+#include <QAction>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -7,6 +8,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
@@ -81,6 +83,7 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
 
     apiClient_ = new ApiClient(this);
     loadActiveMapsFromServer();
+    loadRobotsFromServer();
 
     wsClient_ = new WsClient(this);
     connect(wsClient_, &WsClient::messageReceived, this, &P5MapPage::handleWsMessage);
@@ -147,7 +150,10 @@ QWidget* P5MapPage::buildHeaderRow() {
     robotChipBtn_ = new QPushButton(SimpleIcons::robot(Tokens::TEXT_SECONDARY, 13), QString(), row);
     robotChipBtn_->setObjectName("robotChip");
     robotChipBtn_->setIconSize(QSize(13, 13));
-    robotChipBtn_->setText(QStringLiteral("  R-04  ● 온라인  ▾"));
+    robotMenu_ = new QMenu(robotChipBtn_);
+    robotChipBtn_->setMenu(robotMenu_);
+    connect(robotMenu_, &QMenu::aboutToShow, this, [this] { robotMenu_->move(robotMenu_->pos() + QPoint(0, 6)); });
+    updateRobotChipText();
     layout->addWidget(robotChipBtn_);
 
     auto* registerBtn = new QPushButton(SimpleIcons::upload(Tokens::TEXT_SECONDARY, 12), QStringLiteral("파일로 등록"), row);
@@ -341,6 +347,13 @@ void P5MapPage::loadActiveMapsFromServer() {
                         const QImage image = PgmImageLoader::loadFromData(data);
                         if (image.isNull()) return;
                         registeredMaps_[robotCode] = RegisteredMapInfo{image, mapName, recipientName};
+                        // 지금 화면에 떠 있는 로봇의 맵이면 캔버스도 바로 갱신한다 — 이게
+                        // 없으면 이미 배포된 맵이 있는 로봇으로 전환해도(또는 페이지를 막
+                        // 열었을 때) 이 조회가 끝나기 전엔 캔버스가 빈 채로 남는다.
+                        if (robotCode == currentRobotCode_) {
+                            slamCard_->applyRegisteredMap(image, mapName, robotCode);
+                            mapNameEdit_->setText(mapName);
+                        }
                     });
             }
 
@@ -359,6 +372,63 @@ void P5MapPage::loadActiveMapsFromServer() {
                 });
         }
     });
+}
+
+void P5MapPage::loadRobotsFromServer() {
+    apiClient_->fetchRobots([this](bool ok, const QVector<ApiClient::RobotInfo>& robots) {
+        // 서버 미기동/robot 테이블이 비어 있으면 드롭다운은 빈 채로 둔다 — 이전
+        // currentRobotCode_ 기본값("R-04")으로 계속 동작한다.
+        if (!ok || robots.isEmpty()) return;
+        robots_ = robots;
+        rebuildRobotMenu();
+
+        int initialIndex = 0;
+        for (int i = 0; i < robots_.size(); ++i) {
+            if (robots_[i].code == currentRobotCode_) {
+                initialIndex = i;
+                break;
+            }
+        }
+        currentRobotIndex_ = -1;  // switchToRobot의 "이미 선택된 로봇" 얼리리턴을 피한다.
+        switchToRobot(initialIndex);
+    });
+}
+
+void P5MapPage::rebuildRobotMenu() {
+    robotMenu_->clear();
+    for (int i = 0; i < robots_.size(); ++i) {
+        const ApiClient::RobotInfo& r = robots_[i];
+        auto* action = robotMenu_->addAction(QStringLiteral("%1 (%2)").arg(r.code, r.name));
+        connect(action, &QAction::triggered, this, [this, i] { switchToRobot(i); });
+    }
+}
+
+void P5MapPage::updateRobotChipText() {
+    const QString status = robotOnline_ ? QStringLiteral("● 온라인") : QStringLiteral("○ 오프라인");
+    robotChipBtn_->setText(QStringLiteral("  %1  %2  ▾").arg(currentRobotCode_, status));
+}
+
+void P5MapPage::switchToRobot(int index) {
+    if (index < 0 || index >= robots_.size() || index == currentRobotIndex_) return;
+    currentRobotIndex_ = index;
+    currentRobotCode_ = robots_[index].code;
+
+    // 이전 로봇의 SLAM 작업/온라인 상태를 새 로봇에 이어서 들고 있으면 안 된다 —
+    // P6PatrolPage::loadMapData와 같은 이유(로봇을 바꿨는데 이전 로봇 기준 상태가
+    // 남아있으면 안전 문제로 이어질 수 있다).
+    currentSlamJobId_ = 0;
+    robotOnline_ = false;
+    robotOfflineBanner_->setVisible(true);
+    updateRobotChipText();
+
+    if (registeredMaps_.contains(currentRobotCode_)) {
+        const RegisteredMapInfo& info = registeredMaps_.value(currentRobotCode_);
+        slamCard_->applyRegisteredMap(info.image, info.mapName, currentRobotCode_);
+        mapNameEdit_->setText(info.mapName);
+    } else {
+        slamCard_->resetForRobot(currentRobotCode_);
+        mapNameEdit_->setText(QStringLiteral("새 맵"));
+    }
 }
 
 void P5MapPage::startMappingOnServer() {
@@ -422,6 +492,7 @@ void P5MapPage::handleWsMessage(const QJsonObject& message) {
         if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
         robotOnline_ = message.value(QStringLiteral("online")).toBool();
         robotOfflineBanner_->setVisible(!robotOnline_);
+        updateRobotChipText();
         return;
     }
 
@@ -514,10 +585,10 @@ void P5MapPage::handleEmergencyStop() {
     // Space와 같은 경로(velocityChanged(0,0))라 확인 대화상자를 띄우기 전에 이미
     // 실제 로봇에도 정지 명령이 나간다 — 안전이 우선이라 사용자 확인을 기다리지 않는다.
     teleopPanel_->handleKeyPress(Qt::Key_Space);
-    const auto reply =
-        QMessageBox::warning(this, QStringLiteral("비상정지"),
-                              QStringLiteral("R-04를 비상정지합니다. 진행 중인 매핑 주행이 중단됩니다."),
-                              QMessageBox::Cancel | QMessageBox::Ok, QMessageBox::Ok);
+    const auto reply = QMessageBox::warning(
+        this, QStringLiteral("비상정지"),
+        QStringLiteral("%1를 비상정지합니다. 진행 중인 매핑 주행이 중단됩니다.").arg(currentRobotCode_),
+        QMessageBox::Cancel | QMessageBox::Ok, QMessageBox::Ok);
     if (reply == QMessageBox::Ok) {
         slamCard_->setVelocity(0.0, 0.0);
     }

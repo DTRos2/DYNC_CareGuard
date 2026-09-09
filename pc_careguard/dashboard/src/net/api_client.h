@@ -13,6 +13,16 @@ class QNetworkReply;
 class ApiClient : public QObject {
     Q_OBJECT
 public:
+    // server/app/schemas.py::RobotItem 대응. GET /maps/active와 달리 아직 맵이
+    // 없는(SLAM 전) 로봇도 포함한다 — P5MapPage의 로봇 선택 드롭다운이 쓴다.
+    struct RobotInfo {
+        int id = 0;
+        QString code;   // 예: "R-01"
+        QString name;   // 예: "1호기"
+        QString model;  // 예: "limo"
+        QString ip;     // 비어있으면 없음
+    };
+
     // server/app/schemas.py::MapItem 대응.
     struct MapInfo {
         int id = 0;
@@ -162,6 +172,8 @@ public:
 
     explicit ApiClient(QObject* parent = nullptr);
 
+    // GET /robots — 등록된 전체 로봇 목록(맵 유무 무관). P5 로봇 선택 드롭다운용.
+    void fetchRobots(ListCallback<RobotInfo> callback);
     // GET /maps/active — 로봇별 현재 활성 맵 목록.
     void fetchActiveMaps(ListCallback<MapInfo> callback);
     // GET /waypoints?map_id= — 맵 위 활성 웨이포인트 목록.
@@ -312,6 +324,7 @@ private:
                  std::function<void(bool, const QByteArray&, const QString&)> callback);
     void sendDelete(const QString& path, SimpleCallback callback);
 
+    static RobotInfo parseRobot(const QJsonObject& o);
     static WaypointInfo parseWaypoint(const QJsonObject& o);
     static MapInfo parseMap(const QJsonObject& o);
     static PatrolRouteInfo parsePatrolRoute(const QJsonObject& o);

@@ -223,8 +223,8 @@ QWidget* P6PatrolPage::buildCanvasCard() {
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(6);
 
-    auto* addModeBtn = new QPushButton(QStringLiteral("WP 추가"), canvasToolbarRow_);
-    auto* moveModeBtn = new QPushButton(QStringLiteral("이동"), canvasToolbarRow_);
+    auto* addModeBtn = new QPushButton(QStringLiteral("WP 편집"), canvasToolbarRow_);
+    auto* moveModeBtn = new QPushButton(QStringLiteral("로봇 이동"), canvasToolbarRow_);
     for (auto* btn : {addModeBtn, moveModeBtn}) {
         btn->setObjectName("segBtn");
         btn->setCheckable(true);
@@ -478,7 +478,10 @@ QWidget* P6PatrolPage::buildScheduleCard() {
     titleRow->addStretch();
     auto* addBtn = new QPushButton(QStringLiteral("+ 추가"), card);
     addBtn->setObjectName("linkBtn");
-    connect(addBtn, &QPushButton::clicked, this, [this] { toggleScheduleForm(true); });
+    connect(addBtn, &QPushButton::clicked, this, [this] {
+        scheduleEditIndex_ = -1;
+        toggleScheduleForm(true);
+    });
     titleRow->addWidget(addBtn);
     outer->addLayout(titleRow);
 
@@ -528,10 +531,10 @@ QWidget* P6PatrolPage::buildScheduleCard() {
     formLayout->addSpacing(8);
 
     auto* formBtnRow = new QHBoxLayout();
-    auto* saveBtn = new QPushButton(QStringLiteral("저장"), scheduleForm_);
-    saveBtn->setProperty("variant", "primary");
-    connect(saveBtn, &QPushButton::clicked, this, &P6PatrolPage::addScheduleFromForm);
-    formBtnRow->addWidget(saveBtn, /*stretch=*/1);
+    scheduleSaveBtn_ = new QPushButton(QStringLiteral("저장"), scheduleForm_);
+    scheduleSaveBtn_->setProperty("variant", "primary");
+    connect(scheduleSaveBtn_, &QPushButton::clicked, this, &P6PatrolPage::saveScheduleFromForm);
+    formBtnRow->addWidget(scheduleSaveBtn_, /*stretch=*/1);
     auto* cancelBtn = new QPushButton(QStringLiteral("취소"), scheduleForm_);
     cancelBtn->setProperty("variant", "secondary");
     connect(cancelBtn, &QPushButton::clicked, this, [this] { toggleScheduleForm(false); });
@@ -928,17 +931,23 @@ void P6PatrolPage::rebuildScheduleList() {
         Schedule& sched = schedules_[i];
         auto* row = new QFrame(listFrame);
         if (i + 1 < schedules_.size()) row->setStyleSheet(QStringLiteral("border-bottom:1px solid #E3E8ED;"));
-        auto* rowLayout = new QHBoxLayout(row);
+        // 오른쪽 컬럼이 236px로 고정돼 있어 이름·시각·요일·토글·편집·삭제를 한 줄에
+        // 다 넣으면 편집/삭제 버튼이 카드 밖으로 밀려나 클릭이 안 먹는 문제가 있었다
+        // ("편집은 되는데 삭제가 안돼" 리포트, 2026-09-09 — 삭제 버튼이 맨 끝이라 항상
+        // 잘려나갔던 것). 정보 줄과 액션 줄을 분리해 액션 버튼이 항상 보이게 한다.
+        auto* rowLayout = new QVBoxLayout(row);
         rowLayout->setContentsMargins(8, 6, 8, 6);
-        rowLayout->setSpacing(6);
+        rowLayout->setSpacing(4);
 
+        auto* infoRow = new QHBoxLayout();
+        infoRow->setSpacing(6);
         auto* nameLabel = new QLabel(sched.routeName, row);
         nameLabel->setStyleSheet(QStringLiteral("font-size:11px;"));
-        rowLayout->addWidget(nameLabel);
+        infoRow->addWidget(nameLabel);
         auto* timeLabel = new QLabel(sched.timeText, row);
         timeLabel->setProperty("role", "mono");
         timeLabel->setStyleSheet(QStringLiteral("color:#5A6774; font-size:11px;"));
-        rowLayout->addWidget(timeLabel);
+        infoRow->addWidget(timeLabel);
 
         QString daysText = QStringLiteral("매일");
         if (sched.days.size() != 7) {
@@ -949,8 +958,13 @@ void P6PatrolPage::rebuildScheduleList() {
         auto* daysLabel = new QLabel(daysText, row);
         daysLabel->setProperty("role", "muted");
         daysLabel->setStyleSheet(QStringLiteral("font-size:11px;"));
-        rowLayout->addWidget(daysLabel);
-        rowLayout->addStretch();
+        infoRow->addWidget(daysLabel);
+        infoRow->addStretch();
+        rowLayout->addLayout(infoRow);
+
+        auto* actionRow = new QHBoxLayout();
+        actionRow->setSpacing(4);
+        actionRow->addStretch();
 
         auto* toggle = new ToggleSwitch(row);
         toggle->setChecked(sched.enabled);
@@ -963,8 +977,25 @@ void P6PatrolPage::rebuildScheduleList() {
                                                      const QString&) {});
             }
         });
-        rowLayout->addWidget(toggle);
+        actionRow->addWidget(toggle);
 
+        auto* editBtn = new QPushButton(row);
+        editBtn->setIcon(SimpleIcons::edit(Tokens::TEXT_MUTED, 12));
+        editBtn->setProperty("variant", "ghost");
+        editBtn->setFixedSize(20, 20);
+        editBtn->setIconSize(QSize(12, 12));
+        connect(editBtn, &QPushButton::clicked, this, [this, i] { startEditSchedule(i); });
+        actionRow->addWidget(editBtn);
+
+        auto* deleteBtn = new QPushButton(row);
+        deleteBtn->setIcon(SimpleIcons::trash(Tokens::TEXT_MUTED, 12));
+        deleteBtn->setProperty("variant", "ghost");
+        deleteBtn->setFixedSize(20, 20);
+        deleteBtn->setIconSize(QSize(12, 12));
+        connect(deleteBtn, &QPushButton::clicked, this, [this, i] { deleteScheduleAt(i); });
+        actionRow->addWidget(deleteBtn);
+
+        rowLayout->addLayout(actionRow);
         listLayout->addWidget(row);
     }
 
@@ -1231,25 +1262,89 @@ void P6PatrolPage::keyReleaseEvent(QKeyEvent* event) {
 }
 
 void P6PatrolPage::toggleScheduleForm(bool show) {
-    if (show) {
+    if (show && scheduleEditIndex_ < 0) {
         scheduleRouteCombo_->clear();
         scheduleRouteCombo_->addItems(routes_.keys());
+        scheduleRouteCombo_->setEnabled(true);
         scheduleTimeEdit_->setTime(QTime(10, 0));
         for (int i = 0; i < scheduleDayChips_.size(); ++i) scheduleDayChips_[i]->setChecked(i < 5);
+        scheduleSaveBtn_->setText(QStringLiteral("저장"));
     }
+    if (!show) scheduleEditIndex_ = -1;
     scheduleForm_->setVisible(show);
 }
 
-void P6PatrolPage::addScheduleFromForm() {
-    Schedule sched;
-    sched.routeName = scheduleRouteCombo_->currentText();
-    sched.timeText = scheduleTimeEdit_->time().toString(QStringLiteral("HH:mm"));
-    sched.enabled = true;
-    for (int i = 0; i < scheduleDayChips_.size(); ++i) {
-        if (scheduleDayChips_[i]->isChecked()) sched.days.append(i);
-    }
-    if (sched.routeName.isEmpty() || sched.days.isEmpty()) return;
+void P6PatrolPage::startEditSchedule(int index) {
+    if (index < 0 || index >= schedules_.size()) return;
+    scheduleEditIndex_ = index;
+    toggleScheduleForm(true);  // scheduleEditIndex_가 이미 설정돼 있어 위 기본값 리셋은 건너뛴다
 
+    const Schedule& sched = schedules_[index];
+    scheduleRouteCombo_->clear();
+    scheduleRouteCombo_->addItems(routes_.keys());
+    const int routeIdx = scheduleRouteCombo_->findText(sched.routeName);
+    if (routeIdx >= 0) scheduleRouteCombo_->setCurrentIndex(routeIdx);
+    // PUT /patrol-schedules는 route_id 변경을 지원하지 않아 편집 중엔 경로를 고정한다.
+    scheduleRouteCombo_->setEnabled(false);
+    const QTime t = QTime::fromString(sched.timeText, QStringLiteral("HH:mm"));
+    scheduleTimeEdit_->setTime(t.isValid() ? t : QTime(10, 0));
+    for (int i = 0; i < scheduleDayChips_.size(); ++i) scheduleDayChips_[i]->setChecked(sched.days.contains(i));
+    scheduleSaveBtn_->setText(QStringLiteral("수정 저장"));
+}
+
+void P6PatrolPage::deleteScheduleAt(int index) {
+    if (index < 0 || index >= schedules_.size()) return;
+    const Schedule sched = schedules_[index];
+    const auto reply = QMessageBox::question(
+        this, QStringLiteral("스케줄 삭제"),
+        QStringLiteral("%1 %2 스케줄을 삭제할까요?").arg(sched.routeName, sched.timeText),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+
+    if (scheduleEditIndex_ == index) toggleScheduleForm(false);
+    schedules_.remove(index);
+    rebuildScheduleList();
+
+    if (sched.serverId > 0) {
+        apiClient_->deletePatrolSchedule(sched.serverId, [](bool, const QString&) {});
+    }
+}
+
+void P6PatrolPage::saveScheduleFromForm() {
+    const QString routeName = scheduleRouteCombo_->currentText();
+    const QString timeText = scheduleTimeEdit_->time().toString(QStringLiteral("HH:mm"));
+    QVector<int> days;
+    for (int i = 0; i < scheduleDayChips_.size(); ++i) {
+        if (scheduleDayChips_[i]->isChecked()) days.append(i);
+    }
+    if (routeName.isEmpty() || days.isEmpty()) return;
+
+    int daysBitmask = 0;
+    for (int d : days) daysBitmask |= (1 << d);
+
+    if (scheduleEditIndex_ >= 0 && scheduleEditIndex_ < schedules_.size()) {
+        const int editIndex = scheduleEditIndex_;
+        Schedule& sched = schedules_[editIndex];
+        sched.timeText = timeText;
+        sched.days = days;
+        const int serverId = sched.serverId;
+        rebuildScheduleList();
+        toggleScheduleForm(false);
+
+        if (serverId > 0) {
+            apiClient_->updatePatrolSchedule(
+                serverId,
+                QJsonObject{{"run_time", timeText + QStringLiteral(":00")}, {"days_of_week", daysBitmask}},
+                [](bool, const ApiClient::PatrolScheduleInfo&, const QString&) {});
+        }
+        return;
+    }
+
+    Schedule sched;
+    sched.routeName = routeName;
+    sched.timeText = timeText;
+    sched.days = days;
+    sched.enabled = true;
     schedules_.append(sched);
     const int newIndex = schedules_.size() - 1;
     rebuildScheduleList();
@@ -1262,8 +1357,6 @@ void P6PatrolPage::addScheduleFromForm() {
     const MapData& current = maps_[currentMapIndex_];
     if (!current.routeServerIds.contains(sched.routeName)) return;
 
-    int daysBitmask = 0;
-    for (int d : sched.days) daysBitmask |= (1 << d);
     apiClient_->createPatrolSchedule(
         current.routeServerIds.value(sched.routeName), sched.timeText, daysBitmask,
         [this, newIndex](bool ok, const ApiClient::PatrolScheduleInfo& info, const QString&) {

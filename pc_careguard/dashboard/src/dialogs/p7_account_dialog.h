@@ -12,8 +12,8 @@ class QLabel;
 class QVBoxLayout;
 class IconLineEdit;
 class LiveSearchLineEdit;
-class CheckableListWidget;
 class QKeyEvent;
+class QTableWidget;
 
 // P7 계정 등록·수정 모달 — p7_robot_account_modal_wireframe_rev2.html §3~4 대응.
 class AccountDialog : public QDialog {
@@ -26,11 +26,15 @@ public:
     struct RecipientOption {
         int id = -1;
         QString code;   // "C-001"
+        QString name;   // "김순자" — 재배정·비활성화 경고 메시지 조립용
         QString label;  // "김순자 (C-001) · R-01" 형태. 선택 목록의 항목 표시 텍스트로 쓴다
         bool assigned = false;  // 이 계정이 현재 담당 중인지 (목록 초기 체크 상태에 반영)
+        int currentOperatorId = -1;    // 현재 담당 계정 id (이 다이얼로그를 연 시점 기준). 미배정이면 -1
+        QString currentOperatorName;   // 위 계정의 표시 이름. 미배정이면 빈 문자열
     };
 
     struct AccountData {
+        int dbId = -1;      // careguard_user.id — Edit 모드에서만 채워짐. 재배정/비활성화 경고 판단용
         QString loginId;
         QString displayName;
         QString password;  // Register 모드에서만 채워짐. 서버 전송용 평문 — 해시는 서버가 한다
@@ -62,6 +66,9 @@ private:
     void togglePasswordVisibility();
     void togglePasswordConfirmVisibility();
     void applyRecipientFilter(const QString& query);
+    // 다른 계정이 이미 담당 중인 대상자를 체크하면 재배정 확인 팝업을 띄운다.
+    // 취소하면 체크를 되돌린다(중복 배정 방지).
+    void handleRecipientReassignCheck(QCheckBox* checkbox, int recipientId, bool checked);
     // Enter/Return으로는 저장·닫힘이 안 되게 막는다(오타 입력 중 실수로 저장되는 것 방지).
     // Esc는 QDialog 기본 동작(reject)이 그대로 처리하도록 둔다.
     void keyPressEvent(QKeyEvent* event) override;
@@ -86,5 +93,7 @@ private:
     QFrame* selfBlockBanner_;
     QFrame* lastAdminBlockBanner_;
     LiveSearchLineEdit* recipientSearchEdit_ = nullptr;
-    CheckableListWidget* recipientListWidget_ = nullptr;
+    QTableWidget* recipientTable_ = nullptr;
+    // handleRecipientReassignCheck()가 취소 시 체크를 되돌릴 때 QCheckBox::toggled 재귀 호출을 막는 가드.
+    bool recipientReassignGuard_ = false;
 };

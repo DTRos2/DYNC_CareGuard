@@ -17,6 +17,7 @@ import signal
 import subprocess
 import threading
 import time
+from typing import Tuple
 
 import rclpy
 import requests
@@ -485,19 +486,24 @@ class DownlinkNode(Node):
             self.get_logger().error('SLAM 매핑 중에는 순찰을 시작할 수 없습니다 — 먼저 매핑을 취소하세요')
             return False
 
-        if self._nav_process is not None and self._nav_process.poll() is None:
-            if self._nav_map_id == map_id:
-                return True  # 이미 이 맵으로 떠있다 — 재사용
-            self.get_logger().info(f'다른 맵으로 떠있던 Nav2를 종료하고 map_id={map_id}로 다시 띄웁니다')
-            self._terminate_process_group(self._nav_process, 'Nav2')
-            self._nav_process = None
-            self._nav_map_id = 0
-
         try:
-            yaml_path = self._download_map(map_id)
+            # map_id가 같아도 서버 쪽 내용이 바뀌었을 수 있어(재매핑 후 같은 이름으로
+            # 저장 — _download_map 문서 참고) 재사용 여부를 판단하기 전에 항상 먼저
+            # 최신 상태를 받아온다.
+            yaml_path, changed = self._download_map(map_id)
         except Exception as exc:  # noqa: BLE001 - 다운로드 실패 원인이 다양해 전부 여기서 로그만 남긴다
             self.get_logger().error(f'맵 다운로드 실패: {exc}')
             return False
+
+        if self._nav_process is not None and self._nav_process.poll() is None:
+            if self._nav_map_id == map_id and not changed:
+                return True  # 이미 이 맵으로, 내용도 그대로 떠있다 — 재사용
+            reason = (f'map_id={map_id}는 그대로지만 내용이 바뀐 지도' if self._nav_map_id == map_id
+                      else f'다른 맵(map_id={map_id})')
+            self.get_logger().info(f'{reason}로 전환 — 기존 Nav2를 종료하고 다시 띄웁니다')
+            self._terminate_process_group(self._nav_process, 'Nav2')
+            self._nav_process = None
+            self._nav_map_id = 0
 
         self.get_logger().info(f'Nav2 시작: map_id={map_id} ({yaml_path})')
         # self._nav_process가 None인 건 "Nav2가 안 떠있다"가 아니라 "이 다운링크가
@@ -566,11 +572,20 @@ class DownlinkNode(Node):
         실제로 겪음) 캐시가 비어(또는 예전 지도 것으로 남아) "순찰 후 충전소 복귀"가
         조용히 빈 동작으로 끝나거나 엉뚱한 좌표로 갔다 — _ensure_navigation_running과
         같은 이유·같은 패턴으로 이 노드가 대신 관리해 사람이 신경 안 써도 되게 한다.
+
+        map_id가 같아도 매번 무조건 재시작한다 — _ensure_navigation_running과 달리
+        여기선 map_id 하나만 보고 "이미 이 지도로 떠있다"고 재사용하면 안 된다.
+        map(robot_id, name) UNIQUE 제약 때문에 같은 이름으로 재매핑해도 map_id가
+        안 바뀌는데, 그러면 충전 스테이션 좌표는 새로 매핑한 값으로 바뀌었어도
+        patrol_task는 최초 기동 때 캐시한 예전 좌표를 계속 쓴다 — "지도를 바꿔도
+        이전 지도 기준으로 동작한다"는 리포트(2026-09-09)와 같은 원인의 버그다.
+        patrol_task는 Nav2와 달리 재시작 비용이 아주 작은 `ros2 run` 노드 하나라
+        (런치 트리·amcl·costmap 없음), Nav2처럼 "내용이 바뀌었는지" 따로 비교하는
+        대신 이 함수가 불릴 때마다 항상 새로 띄우는 쪽이 더 단순하고 안전하다 —
+        이 함수는 순찰이 실제로 진행 중일 땐 호출되지 않는다(nav_prepare로 미리
+        띄우거나, 새 순찰을 시작하기 직전에만 부른다 — _start_patrol 참고).
         """
         if self._patrol_task_process is not None and self._patrol_task_process.poll() is None:
-            if self._patrol_task_map_id == map_id:
-                return True  # 이미 이 맵으로 떠있다 — 재사용
-            self.get_logger().info(f'다른 맵으로 떠있던 patrol_task를 종료하고 map_id={map_id}로 다시 띄웁니다')
             self._terminate_process_group(self._patrol_task_process, 'patrol_task')
             self._patrol_task_process = None
             self._patrol_task_map_id = 0
@@ -655,12 +670,30 @@ class DownlinkNode(Node):
         return False
 
     def _download_map(self, map_id: int) -> str:
+    def _download_map(self, map_id: int) -> Tuple[str, bool]:
         """서버 GET /maps/active에서 이 로봇의 활성 맵 메타데이터+이미지를 받아
-        로봇 로컬에 저장하고, 만들어진 .yaml 경로를 반환한다. write_map_yaml_sidecar
-        (server/app/api/v1/media.py)가 서버 쪽에 만드는 것과 같은 포맷을 로봇
-        쪽에서 다시 만드는 셈이다 — 서버가 raw_yaml을 GET /maps/active로는 안
-        내려주므로(이미지 서빙용 최소 필드만 응답), negate/occupied_thresh/
-        free_thresh는 map_saver_cli 기본값을 그대로 쓴다.
+        로봇 로컬에 저장하고, (만들어진 .yaml 경로, 내용이 실제로 바뀌었는지)를
+        반환한다. write_map_yaml_sidecar(server/app/api/v1/media.py)가 서버
+        쪽에 만드는 것과 같은 포맷을 로봇 쪽에서 다시 만드는 셈이다.
+
+        두 번째 반환값(changed)이 필요한 이유: map(robot_id, name)엔 UNIQUE
+        제약이 있어서, 같은 이름으로 재매핑하면 서버는 새 map 행을 만들지 않고
+        기존 행을 그대로 UPDATE한다(map.py::create_map의 ON CONFLICT — map.id가
+        안 바뀌어야 그 맵에 이미 등록된 웨이포인트가 계속 유효하다). 그래서
+        map_id만 보고 "이미 이 지도로 떠있으니 그대로 둔다"고 판단하면, 같은
+        이름으로 재매핑해도 로봇은 예전 이미지·resolution·origin으로 계속 Nav2를
+        띄운 채로 남는다 — "순찰 페이지에서 지도를 바꿔도 이전 지도의 nav2가
+        여전히 켜져있다" 리포트(2026-09-09)의 원인이었다. _ensure_navigation_running이
+        이 값으로 map_id가 같아도 재기동이 필요한지 판단한다.
+
+        mode/negate/occupied_thresh/free_thresh는 예전엔 GET /maps/active가 안
+        내려줘서 map_saver_cli 기본값(trinary/0/0.65/0.196)을 무조건 하드코딩했다
+        — 실제 DB의 raw_yaml엔 free_thresh=0.25로 저장된 맵도 있어서, 그 맵으로
+        순찰하는 로봇은 원본과 다른 값으로 점유/자유 공간을 해석하고 있었다
+        (스케일 문제와는 별개의 버그, 2026-09-09 확인). 이제 서버가 map.raw_yaml에서
+        뽑아 내려주는 값을 그대로 쓴다 — 옛날에 등록돼 raw_yaml에 이 키가 없는
+        맵은 서버가 이미 map_saver_cli 기본값으로 채워 보내므로 여기서 또 폴백할
+        필요는 없다.
 
         robot_code로만 찾지 않고 응답의 id가 요청받은 map_id와 실제로 같은지도
         확인한다 — robot_code당 활성 맵은 보통 하나뿐이라 대부분은 어차피 같지만,
@@ -684,20 +717,32 @@ class DownlinkNode(Node):
 
         image_resp = requests.get(f"{ws_config.SERVER_HTTP_URL}{entry['image_url']}", timeout=30)
         image_resp.raise_for_status()
-        with open(pgm_path, 'wb') as f:
-            f.write(image_resp.content)
+        new_image_bytes = image_resp.content
 
         yaml_content = {
             'image': os.path.basename(pgm_path),
+            'mode': entry.get('mode') or 'trinary',
             'resolution': entry.get('resolution') or 0.05,
             'origin': [entry.get('origin_x', 0.0), entry.get('origin_y', 0.0), entry.get('origin_yaw', 0.0)],
-            'negate': 0,
-            'occupied_thresh': 0.65,
-            'free_thresh': 0.196,
+            'negate': entry.get('negate', 0),
+            'occupied_thresh': entry.get('occupied_thresh', 0.65),
+            'free_thresh': entry.get('free_thresh', 0.196),
         }
-        with open(yaml_path, 'w') as f:
-            yaml.safe_dump(yaml_content, f, default_flow_style=None, sort_keys=False)
-        return yaml_path
+        new_yaml_bytes = yaml.safe_dump(yaml_content, default_flow_style=None, sort_keys=False).encode()
+
+        changed = True
+        if os.path.exists(pgm_path) and os.path.exists(yaml_path):
+            with open(pgm_path, 'rb') as f:
+                old_image_bytes = f.read()
+            with open(yaml_path, 'rb') as f:
+                old_yaml_bytes = f.read()
+            changed = new_image_bytes != old_image_bytes or new_yaml_bytes != old_yaml_bytes
+
+        with open(pgm_path, 'wb') as f:
+            f.write(new_image_bytes)
+        with open(yaml_path, 'wb') as f:
+            f.write(new_yaml_bytes)
+        return yaml_path, changed
 
     def _save_map(self, message: dict):
         # "SLAM 맵 저장·배포" 버튼(P5MapPage) -> POST /slam-jobs/{id}/save ->

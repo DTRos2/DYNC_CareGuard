@@ -4,16 +4,42 @@ from typing import List
 
 from . import db
 from .ws.robot_ws import is_connected
-from .schemas import RegisterRobotRequest, RegisterRobotResponse, RobotItem, RobotThresholds
+from .schemas import (
+    AssignRobotRecipientRequest,
+    RegisterRobotRequest,
+    RegisterRobotResponse,
+    RobotItem,
+    RobotThresholds,
+)
 
 router = APIRouter(prefix="/robots", tags=["robots"])
 
+# map/recipient은 서브쿼리로만 곁들이고 FROM/JOIN 대상은 robot 하나뿐이다 — 아직 맵이
+# 없는(SLAM 전) 로봇도 반드시 여기 나와야 한다. P5 매핑 페이지의 로봇 선택 드롭다운이
+# "맵 없는 로봇"을 고를 수 있어야 하는 게 바로 이 목록이라(GET /maps/active는 맵 있는
+# 로봇만 내려줘서 그 용도로 못 쓴다), map을 JOIN/필터링에 쓰지 않도록 주의할 것.
 LIST_QUERY = """
-    SELECT id, code, name, model, ros_domain_id
-    FROM robot
-    WHERE deregistered_at IS NULL
-    ORDER BY id
+    SELECT r.id, r.code, r.name, r.model, r.ros_domain_id, r.ip,
+        (SELECT rec.name FROM recipient rec
+         WHERE rec.robot_id = r.id AND rec.deregistered_at IS NULL
+         LIMIT 1) AS recipient_name,
+        (SELECT m.name FROM map m
+         WHERE m.robot_id = r.id AND m.is_active = TRUE
+         ORDER BY m.created_at DESC LIMIT 1) AS map_name
+    FROM robot r
+    WHERE r.deregistered_at IS NULL
+    ORDER BY r.id
 """
+
+
+def _map_recipient_label(map_name, recipient_name) -> str:
+    if map_name and recipient_name:
+        return f"{map_name} · {recipient_name}"
+    if map_name:
+        return f"{map_name} · 미배정"
+    if recipient_name:
+        return f"- · {recipient_name}"
+    return "-"
 
 
 def _row_to_item(row) -> RobotItem:
@@ -23,6 +49,8 @@ def _row_to_item(row) -> RobotItem:
         name=row["name"],
         model=row["model"],
         ros_domain_id=row["ros_domain_id"],
+        ip=row["ip"],
+        map_recipient=_map_recipient_label(row["map_name"], row["recipient_name"]),
         is_online=is_connected(row["code"]),
     )
 
@@ -43,11 +71,11 @@ def register_robot(payload: RegisterRobotRequest):
         try:
             cur.execute(
                 """
-                INSERT INTO robot (code, name, model, ros_domain_id)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO robot (code, name, model, ros_domain_id, ip)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (payload.code, payload.name, payload.model, payload.ros_domain_id),
+                (payload.code, payload.name, payload.model, payload.ros_domain_id, payload.ip),
             )
         except psycopg2.errors.UniqueViolation:
             conn.rollback()
@@ -62,8 +90,43 @@ def register_robot(payload: RegisterRobotRequest):
         name=payload.name,
         model=payload.model,
         ros_domain_id=payload.ros_domain_id,
+        ip=payload.ip,
+        map_recipient="-",
         is_online=is_connected(payload.code),
     )
+
+
+@router.put("/{robot_id}/recipient", status_code=204)
+def assign_robot_recipient(robot_id: int, payload: AssignRobotRecipientRequest):
+    """로봇 등록·수정 모달의 "담당 대상자" 선택을 저장한다.
+
+    로봇 한 대엔 대상자 한 명만 배정되므로(RobotDialog 주석 참고), 이 로봇을 담당하던
+    다른 대상자가 있으면 먼저 배정을 해제하고 나서 recipient_id가 가리키는 대상자를
+    이 로봇 담당으로 설정한다. recipient_id가 None이면 배정 해제만 하고 끝낸다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM robot WHERE id = %s AND deregistered_at IS NULL", (robot_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+
+        cur.execute(
+            """
+            UPDATE recipient SET robot_id = NULL
+            WHERE robot_id = %s AND deregistered_at IS NULL AND id != COALESCE(%s, -1)
+            """,
+            (robot_id, payload.recipient_id),
+        )
+
+        if payload.recipient_id is not None:
+            cur.execute(
+                "UPDATE recipient SET robot_id = %s WHERE id = %s AND deregistered_at IS NULL",
+                (robot_id, payload.recipient_id),
+            )
+            if cur.rowcount == 0:
+                conn.rollback()
+                raise HTTPException(status_code=404, detail="대상자를 찾을 수 없습니다")
+
+        conn.commit()
 
 
 THRESHOLD_COLUMNS = (
