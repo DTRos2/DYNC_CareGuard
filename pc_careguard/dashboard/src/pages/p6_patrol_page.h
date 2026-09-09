@@ -156,7 +156,14 @@ private:
     void handleEmergencyStop();
 
     void toggleScheduleForm(bool show);
-    void addScheduleFromForm();
+    void saveScheduleFromForm();
+    // scheduleListLayout_의 편집 아이콘 클릭 — schedules_[index]로 스케줄 폼을 채우고
+    // 연다. 저장 시 saveScheduleFromForm()이 scheduleEditIndex_로 추가/수정을 구분한다.
+    // 경로(route_id)는 PUT /patrol-schedules가 지원하지 않아 편집 중엔 콤보를 잠근다.
+    void startEditSchedule(int index);
+    // 확인 다이얼로그 후 schedules_[index]를 제거하고, 서버에 등록된 행이면(serverId>0)
+    // DELETE /patrol-schedules/{id}도 함께 보낸다(소프트 삭제).
+    void deleteScheduleAt(int index);
 
     void saveCurrentMapData();
     void loadMapData(int index);
@@ -184,7 +191,7 @@ private:
     // "저장 · 로봇에 배포" 버튼 — 현재 맵의 웨이포인트·경로를 서버에 반영한다. 서버에
     // 등록된 맵(serverMapId > 0)에서만 동작한다. 기존에 동기화된 경로·웨이포인트를 모두
     // 지우고 지금 화면 상태로 다시 만드는 방식(delete-then-recreate)이라 서버 쪽 id는
-    // 매번 새로 발급된다 — 스케줄은 route_id를 참조해야 해서 이 흐름과 분리해 addScheduleFromForm/
+    // 매번 새로 발급된다 — 스케줄은 route_id를 참조해야 해서 이 흐름과 분리해 saveScheduleFromForm/
     // 토글 시점에 바로 서버에 반영한다(아래 참고).
     void deployCurrentMap();
     void deployDeleteRoutes(std::shared_ptr<QVector<QString>> routeNames, int index);
@@ -220,6 +227,9 @@ private:
     QComboBox* scheduleRouteCombo_;
     QTimeEdit* scheduleTimeEdit_;
     QVector<QPushButton*> scheduleDayChips_;
+    QPushButton* scheduleSaveBtn_;
+    // schedules_에서 지금 폼으로 편집 중인 인덱스. -1이면 "추가" 모드.
+    int scheduleEditIndex_ = -1;
 
     WaypointCanvas* canvas_;
     WaypointPopover* popover_;

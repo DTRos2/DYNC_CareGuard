@@ -1,12 +1,12 @@
 #include "mapping_status_overlay.h"
 
 #include <QDateTime>
+#include <QEvent>
 #include <QGraphicsDropShadowEffect>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
-#include <QPushButton>
 #include <QResizeEvent>
 #include <QStyle>
 
@@ -59,17 +59,16 @@ void MappingStatusOverlay::buildPanel() {
     grid_->setContentsMargins(0, 0, 0, 0);
     grid_->setSpacing(0);
 
-    const QStringList headers = {QStringLiteral("맵 · 가정"),   QStringLiteral("대상자"),
-                                  QStringLiteral("할당 로봇"),   QStringLiteral("WP"),
-                                  QStringLiteral("경로"),       QStringLiteral("최종 배포"),
-                                  QString()};  // 마지막 열은 미리보기 버튼 — 헤더 텍스트 없음.
+    const QStringList headers = {QStringLiteral("맵 · 가정"), QStringLiteral("대상자"),
+                                  QStringLiteral("할당 로봇"), QStringLiteral("WP"),
+                                  QStringLiteral("경로"),     QStringLiteral("최종 배포")};
     auto* headerRow = new QFrame(panel_);
     headerRow->setObjectName("mappingStatusRowHeader");
     auto* headerLayout = new QHBoxLayout(headerRow);
     headerLayout->setContentsMargins(12, 6, 12, 6);
     headerLayout->setSpacing(6);
-    const QList<int> stretches = {1, 0, 0, 0, 0, 0, 0};
-    const QList<int> widths = {0, 72, 72, 46, 46, 100, 28};
+    const QList<int> stretches = {1, 0, 0, 0, 0, 0};
+    const QList<int> widths = {0, 72, 72, 46, 46, 100};
     for (int i = 0; i < headers.size(); ++i) {
         auto* lbl = new QLabel(headers[i], headerRow);
         lbl->setProperty("role", "label");
@@ -89,6 +88,12 @@ void MappingStatusOverlay::addRow(const QString& robotId, const QString& mapName
     auto* rowFrame = new QFrame(panel_);
     rowFrame->setObjectName("mappingStatusRow");
     rowFrame->setProperty("warn", false);
+    // 미리보기 아이콘을 정확히 눌러야만 열리던 것을 "행 아무 데나 클릭"으로 넓힌
+    // 뒤(2026-09-09), 그 아이콘 자체를 없애고 행 클릭만 남겼다 — 라벨 위 클릭이 이
+    // eventFilter로 올라와 mapPreviewRequested를 emit한다.
+    rowFrame->setCursor(Qt::PointingHandCursor);
+    rowFrame->setProperty("robotId", robotId);
+    rowFrame->installEventFilter(this);
     auto* rowLayout = new QHBoxLayout(rowFrame);
     rowLayout->setContentsMargins(12, 7, 12, 7);
     rowLayout->setSpacing(6);
@@ -109,15 +114,8 @@ void MappingStatusOverlay::addRow(const QString& robotId, const QString& mapName
     QLabel* lastCell = addCell(QDateTime::currentDateTime().toString(QStringLiteral("MM.dd HH:mm")), 100, true);
     lastCell->setStyleSheet(QStringLiteral("color:%1;").arg(Tokens::TEXT_SECONDARY.name()));
 
-    // 미리보기 버튼 — 이 위젯 자신은 맵 이미지를 안 들고 있으므로, robotId만 담아
-    // 시그널로 알리고 실제 조회·모달 표시는 상위(P5MapPage)가 한다.
-    auto* previewBtn = new QPushButton(SimpleIcons::eye(Tokens::TEXT_MUTED, 12), QString(), rowFrame);
-    previewBtn->setProperty("variant", "ghost");
-    previewBtn->setFixedSize(24, 24);
-    previewBtn->setIconSize(QSize(12, 12));
-    previewBtn->setToolTip(QStringLiteral("맵 미리보기"));
-    connect(previewBtn, &QPushButton::clicked, this, [this, robotId] { emit mapPreviewRequested(robotId); });
-    rowLayout->addWidget(previewBtn, 0);
+    // 미리보기는 더 이상 별도 아이콘 버튼이 아니라 행 자체를 누르면 열린다(위
+    // installEventFilter(this) 참고) — 눈 아이콘은 중복이라 제거했다(2026-09-09 요청).
 
     rows_.append(RowWidgets{robotId, rowFrame, nameCell, recipientCell, wpCell, routeCell, lastCell});
     grid_->addWidget(rowFrame, rows_.size(), 0);  // 0행은 헤더, 실제 행은 1부터.
@@ -152,6 +150,17 @@ void MappingStatusOverlay::markMapDeployed(const QString& robotId, const QString
 void MappingStatusOverlay::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) toggle();
     QFrame::mousePressEvent(event);
+}
+
+bool MappingStatusOverlay::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::MouseButtonPress) {
+        const QVariant robotId = watched->property("robotId");
+        if (robotId.isValid()) {
+            emit mapPreviewRequested(robotId.toString());
+            return true;
+        }
+    }
+    return QFrame::eventFilter(watched, event);
 }
 
 void MappingStatusOverlay::toggle() {
