@@ -71,6 +71,7 @@ private:
     struct RecipientRow {
         int id = -1;
         QString code;         // "C-001" — 담당 대상자 입력창에서 타이핑으로 지정하는 값
+        QString name;          // "김순자" — 재배정/비활성화 경고 메시지 조립용
         QString label;         // "김순자 (C-001) · R-01" 형태
         int operatorId = -1;  // 현재 담당 계정 id. 미배정이면 -1
     };

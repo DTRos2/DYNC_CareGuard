@@ -5,18 +5,18 @@
 #include <QCheckBox>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QStyle>
+#include <QTableWidget>
 #include <QVBoxLayout>
 #include <algorithm>
 
 #include "theme/tokens.h"
-#include "widgets/checkable_list_widget.h"
 #include "widgets/icon_line_edit.h"
 #include "widgets/korean_search.h"
 #include "widgets/live_search_line_edit.h"
@@ -38,6 +38,22 @@ QString roleLabel(AccountDialog::Role role) {
         case AccountDialog::Role::Guardian: return QStringLiteral("보호자");
     }
     return QString();
+}
+
+// 체크박스를 셀 배경(rowBg)과 함께 가운데 정렬해 테이블 셀에 심는다 — p7_settings_page.cpp의
+// wrapCellWidget()과 같은 목적이나, 번역 단위가 달라 여기서 별도로 둔다.
+QWidget* wrapCheckboxCell(QCheckBox* checkbox, const QColor& rowBg) {
+    auto* wrap = new QWidget();
+    wrap->setAutoFillBackground(true);
+    QPalette pal = wrap->palette();
+    pal.setColor(QPalette::Window, rowBg);
+    wrap->setPalette(pal);
+
+    auto* layout = new QHBoxLayout(wrap);
+    layout->setContentsMargins(6, 0, 6, 0);
+    layout->setAlignment(Qt::AlignCenter);
+    layout->addWidget(checkbox);
+    return wrap;
 }
 }  // namespace
 
@@ -301,22 +317,104 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
                                         .arg(Tokens::TEXT_PRIMARY.name(), Tokens::BORDER.name()));
         body->addWidget(chargeLabel);
 
+        auto* chargeHint = new QLabel(QStringLiteral("대상자 1명당 담당자 1명 — 다른 담당자에게 배정된 "
+                                                       "대상자를 선택하면 그 담당자에게서 해제됩니다"),
+                                       this);
+        chargeHint->setWordWrap(true);
+        chargeHint->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
+        body->addWidget(chargeHint);
+
         recipientSearchEdit_ = new LiveSearchLineEdit(this);
         recipientSearchEdit_->setPlaceholderText(QStringLiteral("이름 또는 코드로 검색"));
         body->addWidget(recipientSearchEdit_);
 
-        recipientListWidget_ = new CheckableListWidget(this);
-        recipientListWidget_->setFixedHeight(120);
-        recipientListWidget_->setSelectionMode(QAbstractItemView::NoSelection);
-        recipientListWidget_->setFocusPolicy(Qt::NoFocus);
-        for (const RecipientOption& option : recipients) {
-            auto* item = new QListWidgetItem(option.label, recipientListWidget_);
-            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-            item->setCheckState(option.assigned ? Qt::Checked : Qt::Unchecked);
-            item->setData(Qt::UserRole, option.id);
+        // 대상자 / 현재 담당 2열 표 — 로봇·계정 관리 탭의 QTableWidget과 같은 방식(테두리 없는
+        // 헤더, 행별 배경색 지정)을 그대로 따른다. 체크박스는 0열 셀에 위젯으로 심는다.
+        recipientTable_ = new QTableWidget(this);
+        recipientTable_->setObjectName("recipientTable");
+        recipientTable_->setColumnCount(3);
+        recipientTable_->setHorizontalHeaderLabels({QString(), QStringLiteral("대상자"), QStringLiteral("현재 담당")});
+        recipientTable_->verticalHeader()->setVisible(false);
+        recipientTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        recipientTable_->setSelectionMode(QAbstractItemView::NoSelection);
+        recipientTable_->setFocusPolicy(Qt::NoFocus);
+        recipientTable_->setWordWrap(false);
+        recipientTable_->setFixedHeight(140);
+        // 대상자·현재 담당 칸 사이(와 체크박스 칸 사이)를 세로선으로 구분한다. 가로선은
+        // QTableView::item의 기본 border-bottom과 겹쳐 두 줄로 보이므로 그 규칙만 꺼서
+        // 세로 그리드선만 남긴다.
+        recipientTable_->setShowGrid(true);
+        recipientTable_->setStyleSheet(
+            QStringLiteral("QTableWidget#recipientTable { gridline-color: %1; } "
+                            "QTableWidget#recipientTable::item { border: none; }")
+                .arg(Tokens::BORDER.name()));
+        auto* recipientHeader = recipientTable_->horizontalHeader();
+        recipientHeader->setSectionResizeMode(QHeaderView::Interactive);
+        recipientHeader->setSectionResizeMode(1, QHeaderView::Stretch);
+        recipientTable_->setColumnWidth(0, 48);
+        recipientTable_->setColumnWidth(2, 90);
+
+        recipientTable_->setRowCount(recipients.size());
+        for (int r = 0; r < recipients.size(); ++r) {
+            const RecipientOption& option = recipients.at(r);
+
+            // 현재 담당 상태를 "현재 담당" 칸에 보여준다 — 미지정은 주의색, 본인 담당은
+            // 강조(행 배경까지), 다른 계정 담당은 그 계정 이름을 보여줘 재배정 여부를
+            // 판단할 수 있게 한다.
+            QString statusText;
+            QColor statusColor = Tokens::TEXT_SECONDARY;
+            bool highlightSelf = false;
+            if (option.currentOperatorId == -1) {
+                statusText = QStringLiteral("미지정");
+                statusColor = Tokens::ATTENTION.main;
+            } else if (option.currentOperatorId == data_.dbId) {
+                statusText = QStringLiteral("본인");
+                statusColor = Tokens::OK.main;
+                highlightSelf = true;
+            } else {
+                statusText = option.currentOperatorName;
+            }
+            const QColor rowBg = highlightSelf ? Tokens::OK.soft : Tokens::BG_SURFACE;
+
+            auto* nameItem = new QTableWidgetItem(option.label);
+            nameItem->setBackground(rowBg);
+            nameItem->setForeground(Tokens::TEXT_PRIMARY);
+            recipientTable_->setItem(r, 1, nameItem);
+
+            auto* statusItem = new QTableWidgetItem(statusText);
+            statusItem->setBackground(rowBg);
+            statusItem->setForeground(statusColor);
+            if (highlightSelf) {
+                QFont statusFont = statusItem->font();
+                statusFont.setWeight(QFont::DemiBold);
+                statusItem->setFont(statusFont);
+            }
+            recipientTable_->setItem(r, 2, statusItem);
+
+            auto* checkbox = new QCheckBox();
+            checkbox->setChecked(option.assigned);
+            recipientTable_->setCellWidget(r, 0, wrapCheckboxCell(checkbox, rowBg));
+
+            // id는 "대상자" 칸의 아이템에 실어둔다 — 검색 필터·저장 시 이 아이템의 텍스트/데이터로 조회한다.
+            nameItem->setData(Qt::UserRole, option.id);
+
+            // 이미 다른 계정이 담당 중인 대상자를 체크하면 재배정 확인 팝업을 띄운다.
+            const int recipientId = option.id;
+            connect(checkbox, &QCheckBox::toggled, this, [this, checkbox, recipientId](bool checked) {
+                handleRecipientReassignCheck(checkbox, recipientId, checked);
+            });
         }
-        body->addWidget(recipientListWidget_);
-        
+        // "대상자" 칸(1열)은 어디를 클릭해도 그 행 체크박스가 토글되게 한다 — 체크박스
+        // 자체는 좁아서 정확히 맞히기 번거롭다. 체크박스 칸(0열)은 이미 위젯이 클릭을
+        // 직접 받아 처리하므로 여기서는 1열만 다룬다.
+        connect(recipientTable_, &QTableWidget::cellClicked, this, [this](int row, int column) {
+            if (column != 1) return;
+            QWidget* cell = recipientTable_->cellWidget(row, 0);
+            auto* checkbox = cell != nullptr ? cell->findChild<QCheckBox*>() : nullptr;
+            if (checkbox != nullptr) checkbox->toggle();
+        });
+        body->addWidget(recipientTable_);
+
         // LiveSearchLineEdit이 한글 조합 중(커밋 전) preedit 문자열까지 합쳐서 liveTextChanged를 낸다.
         connect(recipientSearchEdit_, &LiveSearchLineEdit::liveTextChanged, this,
                 &AccountDialog::applyRecipientFilter);
@@ -474,9 +572,52 @@ void AccountDialog::togglePasswordConfirmVisibility() {
 }
 
 void AccountDialog::applyRecipientFilter(const QString& query) {
-    for (int i = 0; i < recipientListWidget_->count(); ++i) {
-        auto* item = recipientListWidget_->item(i);
-        item->setHidden(!KoreanSearch::matches(item->text(), query));
+    for (int r = 0; r < recipientTable_->rowCount(); ++r) {
+        const QTableWidgetItem* nameItem = recipientTable_->item(r, 1);
+        recipientTable_->setRowHidden(r, !KoreanSearch::matches(nameItem->text(), query));
+    }
+}
+
+void AccountDialog::handleRecipientReassignCheck(QCheckBox* checkbox, int recipientId, bool checked) {
+    if (recipientReassignGuard_) return;
+    if (!checked) return;  // 해제는 확인 없이 허용
+
+    const RecipientOption* option = nullptr;
+    for (const RecipientOption& opt : recipients_) {
+        if (opt.id == recipientId) {
+            option = &opt;
+            break;
+        }
+    }
+    if (option == nullptr) return;
+    // 미배정이었거나 이미 본인 담당이던 대상자는 재배정이 아니므로 확인이 필요 없다.
+    if (option->currentOperatorId == -1 || option->currentOperatorId == data_.dbId) return;
+
+    int otherCount = 0;
+    for (const RecipientOption& opt : recipients_) {
+        if (opt.currentOperatorId == option->currentOperatorId) ++otherCount;
+    }
+
+    const QString typedName = nameEdit_->text().trimmed();
+    const QString newOwnerName = typedName.isEmpty() ? data_.displayName : typedName;
+
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("담당자 재배정"));
+    box.setIcon(QMessageBox::Question);
+    box.setText(QStringLiteral("%1(%2)는 현재 %3 담당입니다.\n%4에게 재배정할까요?")
+                    .arg(option->name, option->code, option->currentOperatorName, newOwnerName));
+    box.setInformativeText(QStringLiteral("%1의 담당은 %2명 → %3명이 됩니다")
+                                .arg(option->currentOperatorName)
+                                .arg(otherCount)
+                                .arg(otherCount - 1));
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(QStringLiteral("재배정"));
+    box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+    if (box.exec() != QMessageBox::Ok) {
+        recipientReassignGuard_ = true;
+        checkbox->setChecked(false);
+        recipientReassignGuard_ = false;
     }
 }
 
@@ -555,11 +696,14 @@ void AccountDialog::handleSaveClicked() {
     nameEdit_->style()->unpolish(nameEdit_);
     nameEdit_->style()->polish(nameEdit_);
 
-    // 담당 대상자 — 목록에서 체크된 항목만 모은다. 선택식이라 잘못된 값이 있을 수 없다.
+    // 담당 대상자 — 각 행 0열 셀에 심어둔 체크박스 상태를 모은다.
     QVector<int> matchedRecipientIds;
-    for (int i = 0; i < recipientListWidget_->count(); ++i) {
-        const QListWidgetItem* item = recipientListWidget_->item(i);
-        if (item->checkState() == Qt::Checked) matchedRecipientIds.append(item->data(Qt::UserRole).toInt());
+    for (int r = 0; r < recipientTable_->rowCount(); ++r) {
+        const QWidget* cell = recipientTable_->cellWidget(r, 0);
+        const auto* checkbox = (cell != nullptr) ? cell->findChild<QCheckBox*>() : nullptr;
+        if (checkbox != nullptr && checkbox->isChecked()) {
+            matchedRecipientIds.append(recipientTable_->item(r, 1)->data(Qt::UserRole).toInt());
+        }
     }
 
     if (loginId.isEmpty() || name.isEmpty()) return;
@@ -579,6 +723,30 @@ void AccountDialog::handleSaveClicked() {
             QMessageBox::warning(this, QStringLiteral("계정 등록 불가"),
                                   QStringLiteral("비밀번호는 8자 이상이며 영문과 숫자를 모두 포함해야 합니다."));
             return;
+        }
+    }
+
+    // 활성 계정을 비활성화하려는데 본인 담당 대상자가 남아 있으면, 그 대상자들이
+    // 미지정 상태가 된다는 것을 알리고 확인을 받는다(취소하면 저장 자체를 취소).
+    if (isEdit && data_.active && !activeCheck_->isChecked()) {
+        QStringList affected;
+        for (const RecipientOption& opt : recipients_) {
+            if (opt.currentOperatorId == data_.dbId) affected << QStringLiteral("%1 %2").arg(opt.name, opt.code);
+        }
+        if (!affected.isEmpty()) {
+            QMessageBox box(this);
+            box.setWindowTitle(QStringLiteral("계정 비활성화"));
+            box.setIcon(QMessageBox::Warning);
+            box.setText(QStringLiteral("%1 계정을 비활성화하면\n담당 대상자 %2명이 미지정 상태가 됩니다.")
+                            .arg(name)
+                            .arg(affected.size()));
+            box.setInformativeText(affected.join(QStringLiteral(" · ")) +
+                                    QStringLiteral("\n재배정 후 비활성화하는 것을 권합니다"));
+            box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+            box.setDefaultButton(QMessageBox::Cancel);
+            box.button(QMessageBox::Ok)->setText(QStringLiteral("비활성화"));
+            box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+            if (box.exec() != QMessageBox::Ok) return;
         }
     }
 
