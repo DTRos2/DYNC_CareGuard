@@ -344,6 +344,10 @@ QComboBox QAbstractItemView::item:selected, QComboBox QAbstractItemView::item:fo
    지우지 않는다.) */
 QComboBoxPrivateScroller { background: transparent; border: none; }
 
+/* 임계값 탭 로봇 선택 콤보 — 팝업 폭을 박스 폭에 맞추고 항목에 여백을 준다 */
+QComboBox#thresholdRobotCombo { min-width: 220px; }
+QComboBox#thresholdRobotCombo QAbstractItemView::item { padding: 6px 10px; }
+
 QCheckBox { spacing: 6px; color: #16202B; font-size: 13px; }
 QCheckBox::indicator {
     width: 14px; height: 14px; border: 1px solid #CDD5DD;
