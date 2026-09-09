@@ -164,6 +164,15 @@ class MapItem(BaseModel):
     created_at: datetime
     image_file_id: Optional[int] = None  # files.id (entity_type='map_image')
     image_url: Optional[str] = None  # 기존 /media/files/{file_id} 재사용 — 없으면 None
+    # map.raw_yaml(원본 .yaml 전체)에서 뽑아낸 값 — 로봇의 downlink_node._download_map이
+    # Nav2용 .yaml을 다시 만들 때 이 세 값을 map_saver_cli 기본값으로 하드코딩해 왔다
+    # ("파일로 등록" 지도가 다른 값을 쓰던 원본이면 Nav2가 점유/자유 공간을 잘못
+    # 해석하는 원인). raw_yaml에 키가 없는 옛날 행을 위해 map_saver_cli 기본값으로
+    # 폴백한다(list_active_maps의 COALESCE와 값을 맞춰야 한다).
+    mode: str = "trinary"
+    negate: int = 0
+    occupied_thresh: float = 0.65
+    free_thresh: float = 0.196
 
 
 class WaypointItem(BaseModel):
