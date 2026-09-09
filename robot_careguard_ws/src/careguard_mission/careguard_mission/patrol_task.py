@@ -10,6 +10,20 @@ careguard_msgs/action/Patrol 액션 서버. careguard_agent/downlink_node.py가
 (careguard_agent만 서버/WS를 직접 만지도록 하는 "유일한 외부 통신구" 원칙을
 지키기 위해, 이 노드는 서버를 직접 호출하지 않는다).
 
+실제 순찰(return_to_charging=True — P6 "이동" 단일 지점 주행은 여기 해당 안 됨)일
+때만, 시작 직후와 끝(성공/실패/예외 불문) 시점에 /careguard/perception/
+patrol_recording으로 순찰 연속 녹화 시작/종료 신호도 발행한다.
+careguard_perception/video_recorder.py가 그 신호를 구독해 순찰 전체를 이어
+찍는다(이벤트 pre/post 클립과는 별개 — 동시에 진행될 수 있다). 이 토픽명은
+careguard_perception 쪽 config.PATROL_RECORDING_TOPIC과 같은 문자열을 그대로
+중복 정의한 것 — 이 코드베이스가 patrol_status 등에서 이미 쓰는 방식(패키지 간
+공유 없이 토픽명을 각자 하드코딩)을 그대로 따른다.
+
+같은 시점들(시작/웨이포인트 실패/충전소 복귀 실패/완료)에 /careguard/voice/
+announce로 한국어 음성 안내 문장도 함께 발행한다. careguard_hmi/
+audio_player.py가 그 문장을 그대로 TTS(Piper)로 합성해 스피커로 재생한다 —
+"지금 촬영 중"이라는 걸 그 공간에 있는 사람에게 소리로도 알리는 역할을 겸한다.
+
 이 노드는 Nav2가 이미 떠 있다고 가정한다(teleop_launch.py처럼 자동으로
 띄우지 않음) — 순찰 전에 사전에 별도로
 `ros2 launch careguard_bringup navigation_diff_launch.py map:=<등록된 맵 yaml 경로>`
@@ -36,6 +50,11 @@ class PatrolTask(Node):
     def __init__(self):
         super().__init__('patrol_task')
         self._status_pub = self.create_publisher(String, '/careguard/patrol_status', 10)
+        # careguard_perception/config.py의 PATROL_RECORDING_TOPIC과 같은 문자열.
+        self._patrol_recording_pub = self.create_publisher(
+            String, '/careguard/perception/patrol_recording', 10)
+        # careguard_hmi/config.py의 VOICE_TOPIC과 같은 문자열.
+        self._voice_pub = self.create_publisher(String, '/careguard/voice/announce', 10)
         self._waypoint_manager = WaypointManager()
 
         # 순찰 경로 좌표는 매번 goal에 실려 오지만, 복귀 지점(충전 스테이션)은 goal에
@@ -72,10 +91,27 @@ class PatrolTask(Node):
         msg.data = json.dumps(fields)
         self._status_pub.publish(msg)
 
+    def _publish_patrol_recording(self, action, run_id):
+        msg = String()
+        msg.data = json.dumps({'action': action, 'run_id': run_id})
+        self._patrol_recording_pub.publish(msg)
+
+    def _publish_voice(self, text):
+        msg = String()
+        msg.data = json.dumps({'text': text})
+        self._voice_pub.publish(msg)
+
     def _execute(self, goal_handle):
         self._executing = True
+        # P6 "이동"(단일 웨이포인트 주행, run_id=0)은 녹화 대상이 아니다 — 원래
+        # 순찰(여러 지점을 돌고 항상 충전소로 복귀)과 이 필드로 구분한다. 시작/끝
+        # 양쪽에서 같은 값을 써야 하므로 try 진입 전에 한 번만 계산해둔다.
+        is_patrol = goal_handle.request.return_to_charging
+        run_id = goal_handle.request.run_id
+        if is_patrol:
+            self._publish_patrol_recording('start', run_id)
+            self._publish_voice('순찰을 시작합니다. 지금부터 영상을 촬영합니다.')
         try:
-            run_id = goal_handle.request.run_id
             waypoints = goal_handle.request.waypoints
             waypoints_total = len(waypoints)
             self.get_logger().info(f'순찰 시작: run_id={run_id} 지점 {waypoints_total}개')
@@ -93,6 +129,11 @@ class PatrolTask(Node):
                     self.get_logger().error(
                         f'{i}번째 웨이포인트({wp.code}) 이동 실패(result={nav_result}) — 순찰을 중단합니다')
                     self._publish_status(type='patrol_done', run_id=run_id, status='failed')
+                    if is_patrol:
+                        # P6 "이동"(단일 지점, is_patrol=False)까지 매번 안내하면 오히려
+                        # 소음이라 순찰일 때만 안내한다 — 녹화 시작/종료 안내와 같은 게이팅.
+                        self._publish_voice(
+                            f'{i}번째 지점으로 이동 중 문제가 발생해 순찰을 중단합니다. 영상 촬영을 종료합니다.')
                     goal_handle.abort()
                     result = Patrol.Result()
                     result.status = 'failed'
@@ -102,8 +143,9 @@ class PatrolTask(Node):
                 self._publish_status(type='patrol_progress', run_id=run_id, waypoints_done=i)
 
             # P6 "이동"(단일 웨이포인트 주행, run_id=0)은 도착한 자리에 그대로 머물러야
-            # 한다 — 원래 순찰(여러 지점을 돌고 항상 충전소로 복귀)과 이 필드로 구분한다.
-            if goal_handle.request.return_to_charging:
+            # 한다 — 원래 순찰(여러 지점을 돌고 항상 충전소로 복귀)과 이 필드(is_patrol)로
+            # 구분한다.
+            if is_patrol:
                 # 위 웨이포인트 루프와 같은 이유로 결과를 확인한다 — 예전엔 이 반환값을
                 # 그냥 버려서, 복귀 이동이 Nav2에서 조용히 실패(aborted)해도 로그 한 줄
                 # 안 남고 goal_handle.succeed()+'completed'로 끝났다("wp3에서 충전소로
@@ -115,6 +157,9 @@ class PatrolTask(Node):
                 elif charge_result != TaskResult.SUCCEEDED:
                     self.get_logger().error(f'충전 스테이션 복귀 실패(result={charge_result})')
                     self._publish_status(type='patrol_done', run_id=run_id, status='failed')
+                    # 이 분기는 항상 is_patrol=True일 때만 온다(위 if is_patrol: 블록
+                    # 안이라 P6 "이동"은 여기 도달 안 함) — 별도 게이팅 불필요.
+                    self._publish_voice('충전소로 복귀하는 중 문제가 발생했습니다. 영상 촬영을 종료합니다.')
                     goal_handle.abort()
                     result = Patrol.Result()
                     result.status = 'failed'
@@ -123,12 +168,21 @@ class PatrolTask(Node):
 
             goal_handle.succeed()
             self._publish_status(type='patrol_done', run_id=run_id, status='completed')
+            if is_patrol:
+                self._publish_voice('순찰을 모두 마쳤습니다. 영상 촬영을 종료합니다.')
 
             result = Patrol.Result()
             result.status = 'completed'
             result.waypoints_done = waypoints_total
             return result
         finally:
+            # 성공/실패(abort) 두 경로 모두, 그리고 위 로직이 던진 예상 못 한 예외
+            # (Nav2/rclpy 호출 실패 등)까지 전부 여기서 한 번에 받는다 — 실패 경로마다
+            # stop을 따로 넣으면 새 예외 경로가 추가될 때 빠뜨리기 쉽다. video_recorder.py
+            # 쪽은 start 없이 stop만 와도(또는 중복으로 와도) 조용히 무시하도록 방어돼
+            # 있어 여기서 무조건 한 번 더 보내는 게 안전하다.
+            if is_patrol:
+                self._publish_patrol_recording('stop', run_id)
             self._executing = False
 
 
