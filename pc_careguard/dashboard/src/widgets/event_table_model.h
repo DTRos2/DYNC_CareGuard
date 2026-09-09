@@ -72,9 +72,13 @@ public:
     // 미처리 행의 경과 시간을 1초 증가시킨다 (P2EventPage가 QTimer로 호출).
     void tickElapsed();
 
-    // 체크된 행 중 EMERGENCY가 아닌 것만 완료 처리한다. EMERGENCY가 하나라도 체크돼 있었으면
-    // true를 반환해 페이지가 "제외됨" 안내를 띄우도록 한다.
-    bool bulkCompleteChecked();
+    // 체크된 행 중 EMERGENCY가 아니고 아직 미완료인 것의 eventId 목록. 일괄 완료 처리는
+    // 서버에 완료 요청을 먼저 보내야 하므로(P2 이벤트 API 연동) 여기서는 모델을 바꾸지 않고
+    // 대상만 골라준다 — 페이지가 이 목록으로 ApiClient::resolveEvent를 호출하고, 성공 응답이
+    // 온 것만 resolveByEventId()로 반영한다.
+    QVector<QString> checkedResolvableEventIds() const;
+    // 체크된 행 중 EMERGENCY가 하나라도 있으면 true — 페이지가 "제외됨" 안내를 띄우는 데 쓴다.
+    bool hasEmergencyChecked() const;
 
     void clearAllChecks();
 

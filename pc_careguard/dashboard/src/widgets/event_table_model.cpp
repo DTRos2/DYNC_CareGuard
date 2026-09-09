@@ -200,22 +200,19 @@ void EventTableModel::tickElapsed() {
     }
 }
 
-bool EventTableModel::bulkCompleteChecked() {
-    bool excludedEmergency = false;
-    for (int r = 0; r < rows_.size(); ++r) {
-        if (!rows_[r].checked) continue;
-        if (rows_[r].severity == Severity::Emergency) {
-            excludedEmergency = true;
-            continue;
-        }
-        rows_[r].resolved = true;
-        rows_[r].checked = false;
+QVector<QString> EventTableModel::checkedResolvableEventIds() const {
+    QVector<QString> ids;
+    for (const auto& r : rows_) {
+        if (r.checked && !r.resolved && r.severity != Severity::Emergency) ids.append(r.eventId);
     }
-    if (!rows_.isEmpty()) {
-        emit dataChanged(index(0, 0), index(rows_.size() - 1, ColumnCount - 1));
+    return ids;
+}
+
+bool EventTableModel::hasEmergencyChecked() const {
+    for (const auto& r : rows_) {
+        if (r.checked && r.severity == Severity::Emergency) return true;
     }
-    emit countsChanged();
-    return excludedEmergency;
+    return false;
 }
 
 void EventTableModel::resolveByEventId(const QString& eventId) {

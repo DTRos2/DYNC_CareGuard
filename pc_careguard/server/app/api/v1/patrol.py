@@ -130,7 +130,7 @@ def list_patrol_schedules(route_id: int = Query(..., description="대상 경로 
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, route_id, run_time, days_of_week, created_by, created_at,
+            SELECT id, route_id, run_time, days_of_week, medication_schedule_id, created_by, created_at,
                    (deregistered_at IS NULL) AS enabled
             FROM patrol_schedule
             WHERE route_id = %s AND deregistered_at IS NULL
@@ -158,12 +158,13 @@ def create_patrol_schedule(payload: PatrolScheduleCreate):
 
         cur.execute(
             """
-            INSERT INTO patrol_schedule (route_id, run_time, days_of_week, created_by)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id, route_id, run_time, days_of_week, created_by, created_at,
+            INSERT INTO patrol_schedule (route_id, run_time, days_of_week, medication_schedule_id, created_by)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, route_id, run_time, days_of_week, medication_schedule_id, created_by, created_at,
                       (deregistered_at IS NULL) AS enabled
             """,
-            (payload.route_id, payload.run_time, payload.days_of_week, payload.created_by),
+            (payload.route_id, payload.run_time, payload.days_of_week, payload.medication_schedule_id,
+             payload.created_by),
         )
         row = cur.fetchone()
         conn.commit()
@@ -193,7 +194,7 @@ def update_patrol_schedule(schedule_id: int, payload: PatrolScheduleUpdate):
             f"""
             UPDATE patrol_schedule SET {', '.join(sets)}
             WHERE id = %s
-            RETURNING id, route_id, run_time, days_of_week, created_by, created_at,
+            RETURNING id, route_id, run_time, days_of_week, medication_schedule_id, created_by, created_at,
                       (deregistered_at IS NULL) AS enabled
             """,
             params,

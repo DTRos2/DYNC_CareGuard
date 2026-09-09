@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from typing import List, Optional
 
+import anyio
 from fastapi import APIRouter, HTTPException
 
 from ... import db
@@ -11,6 +12,7 @@ from ...schemas import (
     RecipientDetailItem,
     RecipientItem,
 )
+from ...ws import dashboard_ws
 
 router = APIRouter(prefix="/recipients", tags=["recipient"])
 
@@ -351,21 +353,77 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
                 (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled),
             )
 
+        # 슬롯 번호(slot_no) 기준으로 있는 건 그 자리에서 갱신하고, 새 슬롯만 새로 심는다
+        # (예전엔 전부 등록 해제 후 통째로 다시 만들어서, 주소만 고쳐도 상관없던 기존
+        # 슬롯들까지 매번 새 id를 받았다). id를 유지해야 P6 주행 스케줄의
+        # patrol_schedule.medication_schedule_id 참조가 안 끊기고, 아래에서 시각이 바뀌면
+        # 그 참조를 쓰는 주행 스케줄에도 바로 반영된다 — "대상자 복약 스케줄을 바꿔도
+        # 주행 스케줄엔 반영이 안 된다" 리포트의 원인이었다.
         cur.execute(
-            "UPDATE medication_schedule SET deregistered_at = NOW() "
-            "WHERE recipient_id = %s AND deregistered_at IS NULL",
+            "SELECT id, slot_no FROM medication_schedule WHERE recipient_id = %s AND deregistered_at IS NULL",
             (recipient_id,),
         )
+        existing_by_slot = {row["slot_no"]: row["id"] for row in cur.fetchall()}
+        incoming_slots = {s.slot_no for s in payload.schedules}
+        # 갱신·매칭 해제로 영향받은 patrol_route.id들 — 커밋 뒤 이 경로를 열어둔 대시보드에
+        # "다시 조회하라"고 push한다(대시보드를 껐다 켜야만 반영되던 문제).
+        touched_route_ids: set = set()
+
         for s in payload.schedules:
+            existing_id = existing_by_slot.get(s.slot_no)
+            if existing_id is not None:
+                cur.execute(
+                    """
+                    UPDATE medication_schedule
+                    SET drug_name = %s, dose_time = %s, days_of_week = %s
+                    WHERE id = %s
+                    """,
+                    (s.drug_name, s.dose_time, s.days_of_week, existing_id),
+                )
+                cur.execute(
+                    """
+                    UPDATE patrol_schedule
+                    SET run_time = %s, days_of_week = %s
+                    WHERE medication_schedule_id = %s AND deregistered_at IS NULL
+                    RETURNING route_id
+                    """,
+                    (s.dose_time, s.days_of_week, existing_id),
+                )
+                touched_route_ids.update(row["route_id"] for row in cur.fetchall())
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO medication_schedule (recipient_id, slot_no, drug_name, dose_time, days_of_week)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (recipient_id, s.slot_no, s.drug_name, s.dose_time, s.days_of_week),
+                )
+
+        removed_ids = [mid for slot, mid in existing_by_slot.items() if slot not in incoming_slots]
+        if removed_ids:
+            cur.execute(
+                "UPDATE medication_schedule SET deregistered_at = NOW() WHERE id = ANY(%s)",
+                (removed_ids,),
+            )
+            # 이 슬롯을 매칭으로 쓰던 주행 스케줄은 참조만 끊는다("선택 안 함" 상태로
+            # 돌아감) — 스케줄(시각·요일) 자체는 그대로 두고 매칭만 해제한다.
             cur.execute(
                 """
-                INSERT INTO medication_schedule (recipient_id, slot_no, drug_name, dose_time, days_of_week)
-                VALUES (%s, %s, %s, %s, %s)
+                UPDATE patrol_schedule SET medication_schedule_id = NULL
+                WHERE medication_schedule_id = ANY(%s) RETURNING route_id
                 """,
-                (recipient_id, s.slot_no, s.drug_name, s.dose_time, s.days_of_week),
+                (removed_ids,),
             )
+            touched_route_ids.update(row["route_id"] for row in cur.fetchall())
 
         conn.commit()
+
+    # P6 페이지가 이 경로를 이미 불러와 보여주고 있을 수 있다 — 대시보드를 껐다 켜지
+    # 않아도 최신 시각·요일을 GET /patrol-schedules로 다시 받아가도록 push한다(P4의
+    # video_event_created와 같은 이유·같은 패턴). 동기(def) 핸들러라 robot_ws.py처럼
+    # 바로 await 못 하고 anyio.from_thread.run으로 이벤트 루프 스레드에 맡긴다.
+    for route_id in touched_route_ids:
+        anyio.from_thread.run(dashboard_ws.broadcast, {"type": "patrol_schedules_changed", "route_id": route_id})
 
     return get_recipient(recipient_id)
 

@@ -1,13 +1,15 @@
 #include "p6_patrol_page.h"
 
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QAction>
 #include <QImage>
-#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -44,6 +46,10 @@ namespace {
 // 해상도(대개 0.05m/px=20px/m)와 달라 "이동" 목표가 화면에서 클릭한 지점과 실제
 // 로봇이 가는 곳이 어긋나는 원인이었다(2026-09-08 실 로봇 테스트로 확인).
 constexpr qreal kPxPerMeter = 40.0;
+
+// "복약 전달 경로" 체크박스가 켜진 경로의 patrol_route.name 리터럴. "주행 스케줄"
+// 추가 폼이 경로를 이 이름과 비교해 복약 스케줄 콤보를 보일지 판단한다(요청 사양).
+const QString kMedicineRouteName = QStringLiteral("medicine");
 }
 
 P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(0), routeEditMode_(false) {
@@ -199,13 +205,6 @@ QWidget* P6PatrolPage::buildHeaderRow() {
                         "한 번에 끕니다. 순찰/이동 중이면 먼저 안전하게 멈춘 뒤 끕니다."));
     connect(shutdownBtn, &QPushButton::clicked, this, &P6PatrolPage::shutdownCurrentRobot);
     layout->addWidget(shutdownBtn);
-
-    auto* deployBtn = new QPushButton(SimpleIcons::deviceFloppy(Tokens::TEXT_INVERSE, 12),
-                                       QStringLiteral("저장 · 로봇에 배포"), row);
-    deployBtn->setProperty("variant", "primary");
-    deployBtn->setIconSize(QSize(12, 12));
-    connect(deployBtn, &QPushButton::clicked, this, &P6PatrolPage::deployCurrentMap);
-    layout->addWidget(deployBtn);
 
     return row;
 }
@@ -435,6 +434,10 @@ QWidget* P6PatrolPage::buildRouteCard() {
     editLayout->addWidget(nameLabel);
     routeEditNameEdit_ = new QLineEdit(editPage);
     editLayout->addWidget(routeEditNameEdit_);
+
+    routeMedicineCheckbox_ = new QCheckBox(QStringLiteral("복약 전달 경로"), editPage);
+    connect(routeMedicineCheckbox_, &QCheckBox::toggled, this, &P6PatrolPage::onRouteMedicineToggled);
+    editLayout->addWidget(routeMedicineCheckbox_);
     editLayout->addSpacing(5);
 
     auto* orderLabel = new QLabel(QStringLiteral("순서 — 지도에서 순서대로 클릭"), editPage);
@@ -472,7 +475,7 @@ QWidget* P6PatrolPage::buildScheduleCard() {
     outer->setSpacing(6);
 
     auto* titleRow = new QHBoxLayout();
-    auto* title = new QLabel(QStringLiteral("순찰 스케줄"), card);
+    auto* title = new QLabel(QStringLiteral("주행 스케줄"), card);
     title->setProperty("role", "label");
     titleRow->addWidget(title);
     titleRow->addStretch();
@@ -498,8 +501,22 @@ QWidget* P6PatrolPage::buildScheduleCard() {
     routeLabel->setProperty("role", "secondary");
     formLayout->addWidget(routeLabel);
     scheduleRouteCombo_ = new QComboBox(scheduleForm_);
+    connect(scheduleRouteCombo_, &QComboBox::currentTextChanged, this,
+            &P6PatrolPage::onScheduleRouteComboChanged);
     formLayout->addWidget(scheduleRouteCombo_);
     formLayout->addSpacing(5);
+
+    // 경로가 "medicine"(복약 전달 경로)일 때만 나타난다 — onScheduleRouteComboChanged 참고.
+    scheduleMedLabel_ = new QLabel(QStringLiteral("복약 스케줄"), scheduleForm_);
+    scheduleMedLabel_->setProperty("role", "secondary");
+    formLayout->addWidget(scheduleMedLabel_);
+    scheduleMedCombo_ = new QComboBox(scheduleForm_);
+    connect(scheduleMedCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &P6PatrolPage::applyMedicationScheduleSelection);
+    formLayout->addWidget(scheduleMedCombo_);
+    formLayout->addSpacing(5);
+    scheduleMedLabel_->hide();
+    scheduleMedCombo_->hide();
 
     auto* timeLabel = new QLabel(QStringLiteral("시각"), scheduleForm_);
     timeLabel->setProperty("role", "secondary");
@@ -623,6 +640,17 @@ void P6PatrolPage::handleCanvasDeleteRequested(const QString& id) {
     rebuildRouteOrderList();
     if (routeEditMode_) rebuildRouteEditList();
     refreshCanvasPreview();
+
+    // "저장 · 로봇에 배포"가 없어진 뒤로는(요청 사양) 각 동작이 그 자리에서 바로
+    // 서버에 반영된다 — 삭제도 마찬가지. 서버에 아직 없던(생성 응답을 못 받은)
+    // 웨이포인트면 waypointServerIds에 id가 없어 조용히 로컬에서만 지운다.
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    MapData& current = maps_[currentMapIndex_];
+    const int serverId = current.waypointServerIds.value(id, -1);
+    if (serverId > 0) {
+        current.waypointServerIds.remove(id);
+        apiClient_->deleteWaypoint(serverId, [](bool, const QString&) {});
+    }
 }
 
 void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos, qreal headingDeg) {
@@ -643,10 +671,23 @@ void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos, qreal headi
     // 기준으로 도는 requestMetersResync()도 정확한 metersPos를 쓰게 된다.
     canvas_->setWaypoints(waypoints_);
     rebuildWpList();
+
+    // waypointMoved는 드래그가 끝날 때(mouseReleaseEvent) 딱 한 번만 온다 — 드래그
+    // 도중 계속 오는 게 아니라 여기서 바로 서버에 반영해도 요청이 쏟아지지 않는다.
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const int serverId = maps_[currentMapIndex_].waypointServerIds.value(id, -1);
+    if (serverId <= 0) return;  // 아직 서버에 없는 웨이포인트 — 다음 "저장"(popover)에서 생성될 때 반영됨
+    const QPointF meters = canvas_->canvasToMapMeters(pos);
+    apiClient_->updateWaypoint(
+        serverId,
+        QJsonObject{{"pos_x", meters.x()}, {"pos_y", meters.y()},
+                    {"yaw", CanvasGeometry::canvasYawDegToMapYawRad(headingDeg)}},
+        [](bool, const ApiClient::WaypointInfo&, const QString&) {});
 }
 
 void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, bool charging, qreal yaw,
                                       QPointF pos) {
+    QString oldChargingCode;  // 교체되어 'patrol'로 내려야 할 예전 충전 웨이포인트(있으면)
     if (charging) {
         const QString existing = chargingWaypointId();
         if (!existing.isEmpty() && existing != id) {
@@ -660,11 +701,14 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
             for (WaypointCanvas::Waypoint& w : waypoints_) {
                 if (w.id == existing) w.charging = false;
             }
+            oldChargingCode = existing;
         }
     }
 
+    QString code = id;
     if (id.isEmpty()) {
-        WaypointCanvas::Waypoint wp{nextWaypointId(), name, charging, pos, yaw};
+        code = nextWaypointId();
+        WaypointCanvas::Waypoint wp{code, name, charging, pos, yaw};
         // handleCanvasMoved와 같은 이유 — 로컬에서 새로 만든 웨이포인트는 metersPos가
         // 기본값(0,0)인 채로 남아서, 다음 리사이즈(예: "경로 편집" 모드 진입) 때
         // requestMetersResync()가 지도 원점(0,0m)으로 순간이동시켜버리는 버그가 있었다
@@ -674,7 +718,7 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
         waypoints_.append(wp);
     } else {
         for (WaypointCanvas::Waypoint& w : waypoints_) {
-            if (w.id == id) {
+            if (w.id == code) {
                 w.name = name;
                 w.charging = charging;
                 w.yawDeg = yaw;
@@ -686,6 +730,49 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
     canvas_->setWaypoints(waypoints_);
     rebuildWpList();
     refreshCanvasPreview();
+
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    if (maps_[currentMapIndex_].serverMapId <= 0) return;  // 서버 미등록 맵(방어적 — P6에 뜨는 맵은 항상 등록돼 있음)
+
+    // 서버 waypoint.kind='charge' 유니크 제약(맵당 1개, api/v1/map.py 확인) 때문에,
+    // 충전 스테이션을 교체하는 경우 예전 웨이포인트를 먼저 'patrol'로 내려야 한다 —
+    // 순서를 안 지키고 새 걸 먼저 저장하면 409로 거부된다.
+    auto saveThisWaypoint = [this, code, name, charging, pos, yaw]() {
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        MapData& current = maps_[currentMapIndex_];
+        const int existingServerId = current.waypointServerIds.value(code, -1);
+        const QPointF meters = canvas_->canvasToMapMeters(pos);
+        const double yawRad = CanvasGeometry::canvasYawDegToMapYawRad(yaw);
+        const QString kind = charging ? QStringLiteral("charge") : QStringLiteral("patrol");
+        if (existingServerId > 0) {
+            apiClient_->updateWaypoint(existingServerId,
+                                        QJsonObject{{"name", name},
+                                                     {"kind", kind},
+                                                     {"pos_x", meters.x()},
+                                                     {"pos_y", meters.y()},
+                                                     {"yaw", yawRad}},
+                                        [](bool, const ApiClient::WaypointInfo&, const QString&) {});
+        } else {
+            apiClient_->createWaypoint(
+                current.serverMapId, code, name, kind, meters.x(), meters.y(), yawRad,
+                [this, code](bool ok, const ApiClient::WaypointInfo& info, const QString&) {
+                    if (ok && currentMapIndex_ >= 0 && currentMapIndex_ < maps_.size()) {
+                        maps_[currentMapIndex_].waypointServerIds[code] = info.id;
+                    }
+                });
+        }
+    };
+
+    if (!oldChargingCode.isEmpty()) {
+        const int oldServerId = maps_[currentMapIndex_].waypointServerIds.value(oldChargingCode, -1);
+        if (oldServerId > 0) {
+            apiClient_->updateWaypoint(
+                oldServerId, QJsonObject{{"kind", QStringLiteral("patrol")}},
+                [saveThisWaypoint](bool, const ApiClient::WaypointInfo&, const QString&) { saveThisWaypoint(); });
+            return;
+        }
+    }
+    saveThisWaypoint();
 }
 
 void P6PatrolPage::rebuildWpList() {
@@ -1018,6 +1105,14 @@ void P6PatrolPage::enterRouteEditMode(const QString& routeName) {
     routeEditTargetName_ = routeName;
     routeEditSelection_ = routes_.value(routeName);
     routeEditNameEdit_->setText(routeName);
+    // 기존 "medicine" 경로를 다시 열면 체크박스도 그 상태로 맞춰야 하는데,
+    // setChecked가 onRouteMedicineToggled를 그대로 다시 태우면 방금 세팅한
+    // 이름을 자기가 되돌리려 들 수 있어 시그널을 잠깐 막는다.
+    const bool isMedicineRoute = (routeName == kMedicineRouteName);
+    routeMedicineCheckbox_->blockSignals(true);
+    routeMedicineCheckbox_->setChecked(isMedicineRoute);
+    routeMedicineCheckbox_->blockSignals(false);
+    routeEditNameEdit_->setReadOnly(isMedicineRoute);
     canvas_->setRouteEditMode(true);
     canvas_->setRouteEditSelection(routeEditSelection_);
     routeStack_->setCurrentIndex(1);
@@ -1033,11 +1128,49 @@ void P6PatrolPage::exitRouteEditMode(bool save) {
             QMessageBox::warning(this, QStringLiteral("경로 이름 필요"), QStringLiteral("경로 이름을 입력하세요."));
             return;
         }
-        if (!routeEditTargetName_.isEmpty() && routeEditTargetName_ != name) {
-            routes_.remove(routeEditTargetName_);
+        const QString previousName = routeEditTargetName_;
+        if (!previousName.isEmpty() && previousName != name) {
+            routes_.remove(previousName);
         }
         routes_[name] = routeEditSelection_;
         currentRoute_ = name;
+
+        // "저장 · 로봇에 배포"가 없어진 뒤로는(요청 사양) "경로 저장" 버튼 자체가 바로
+        // 서버에 반영한다. steps는 이 경로가 참조하는 웨이포인트들의 *서버* id 배열이라,
+        // 그 웨이포인트들이 이미 각자 저장(handlePopoverSave)돼 있어야 정확히 채워진다 —
+        // 아직 서버에 없는 웨이포인트는(waypointServerIds에 없음) steps에서 조용히 빠진다.
+        if (currentMapIndex_ >= 0 && currentMapIndex_ < maps_.size()) {
+            MapData& current = maps_[currentMapIndex_];
+            if (current.serverMapId > 0) {
+                QVector<int> steps;
+                for (const QString& code : routeEditSelection_) {
+                    const int wpId = current.waypointServerIds.value(code, -1);
+                    if (wpId > 0) steps.append(wpId);
+                }
+                const int existingRouteId = current.routeServerIds.value(previousName, -1);
+                if (existingRouteId > 0) {
+                    QJsonArray stepsArray;
+                    for (int s : steps) stepsArray.append(s);
+                    apiClient_->updatePatrolRoute(
+                        existingRouteId, QJsonObject{{"name", name}, {"steps", stepsArray}},
+                        [this, previousName, name](bool ok, const ApiClient::PatrolRouteInfo& info,
+                                                    const QString&) {
+                            if (!ok || currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+                            MapData& cur = maps_[currentMapIndex_];
+                            if (previousName != name) cur.routeServerIds.remove(previousName);
+                            cur.routeServerIds[name] = info.id;
+                        });
+                } else {
+                    apiClient_->createPatrolRoute(
+                        current.serverMapId, name, steps,
+                        [this, name](bool ok, const ApiClient::PatrolRouteInfo& info, const QString&) {
+                            if (ok && currentMapIndex_ >= 0 && currentMapIndex_ < maps_.size()) {
+                                maps_[currentMapIndex_].routeServerIds[name] = info.id;
+                            }
+                        });
+                }
+            }
+        }
     }
 
     routeEditMode_ = false;
@@ -1051,6 +1184,17 @@ void P6PatrolPage::exitRouteEditMode(bool save) {
     refreshCanvasPreview();
 }
 
+void P6PatrolPage::onRouteMedicineToggled(bool checked) {
+    if (checked) {
+        routeNameBeforeMedicineCheck_ = routeEditNameEdit_->text();
+        routeEditNameEdit_->setText(kMedicineRouteName);
+        routeEditNameEdit_->setReadOnly(true);
+    } else {
+        routeEditNameEdit_->setReadOnly(false);
+        routeEditNameEdit_->setText(routeNameBeforeMedicineCheck_);
+    }
+}
+
 void P6PatrolPage::handleRouteWaypointClicked(const QString& id) {
     if (routeEditSelection_.contains(id)) {
         routeEditSelection_.removeAll(id);
@@ -1062,11 +1206,46 @@ void P6PatrolPage::handleRouteWaypointClicked(const QString& id) {
 }
 
 void P6PatrolPage::startNewRoute() {
-    bool ok = false;
-    const QString name = QInputDialog::getText(this, QStringLiteral("새 경로"), QStringLiteral("경로 이름"),
-                                                 QLineEdit::Normal, QStringLiteral("새 경로"), &ok);
-    if (!ok || name.trimmed().isEmpty()) return;
-    enterRouteEditMode(name.trimmed());
+    // 예전엔 QInputDialog::getText 하나로 이름만 받았는데, "복약 전달 경로" 체크박스를
+    // 이름 칸 바로 밑에 두려면(요청 사양) QInputDialog에는 필드를 추가할 수 없어 직접
+    // QDialog를 만든다 — Ok/Cancel 버튼은 QDialogButtonBox 표준 버튼을 그대로 써서
+    // QInputDialog와 같은 플랫폼 아이콘이 그대로 나오게 한다.
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("새 경로"));
+    auto* layout = new QVBoxLayout(&dialog);
+
+    auto* nameLabel = new QLabel(QStringLiteral("경로 이름"), &dialog);
+    layout->addWidget(nameLabel);
+    auto* nameEdit = new QLineEdit(QStringLiteral("새 경로"), &dialog);
+    layout->addWidget(nameEdit);
+
+    auto* medicineCheckbox = new QCheckBox(QStringLiteral("복약 전달 경로"), &dialog);
+    layout->addWidget(medicineCheckbox);
+
+    auto nameBeforeCheck = std::make_shared<QString>(nameEdit->text());
+    connect(medicineCheckbox, &QCheckBox::toggled, &dialog, [nameEdit, nameBeforeCheck](bool checked) {
+        if (checked) {
+            *nameBeforeCheck = nameEdit->text();
+            nameEdit->setText(kMedicineRouteName);
+            nameEdit->setReadOnly(true);
+        } else {
+            nameEdit->setReadOnly(false);
+            nameEdit->setText(*nameBeforeCheck);
+        }
+    });
+
+    auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttonBox);
+
+    nameEdit->selectAll();
+    nameEdit->setFocus();
+
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString name = nameEdit->text().trimmed();
+    if (name.isEmpty()) return;
+    enterRouteEditMode(name);
 }
 
 void P6PatrolPage::deleteCurrentRoute() {
@@ -1074,17 +1253,29 @@ void P6PatrolPage::deleteCurrentRoute() {
 
     const auto reply = QMessageBox::question(
         this, QStringLiteral("경로 삭제"),
-        QStringLiteral("'%1' 경로를 삭제할까요? 이 경로를 쓰는 순찰 스케줄도 함께 삭제됩니다.")
+        QStringLiteral("'%1' 경로를 삭제할까요? 이 경로를 쓰는 주행 스케줄도 함께 삭제됩니다.")
             .arg(currentRoute_),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (reply != QMessageBox::Yes) return;
 
-    routes_.remove(currentRoute_);
+    const QString routeName = currentRoute_;
+    routes_.remove(routeName);
     for (int i = schedules_.size() - 1; i >= 0; --i) {
-        if (schedules_[i].routeName == currentRoute_) schedules_.remove(i);
+        if (schedules_[i].routeName == routeName) schedules_.remove(i);
     }
 
     currentRoute_ = routes_.isEmpty() ? QString() : routes_.keys().first();
+
+    // 서버에 이미 저장된 경로였으면 같이 지운다 — patrol.py::delete_patrol_route가
+    // 이 경로를 쓰던 patrol_schedule도 함께 소프트 삭제해준다.
+    if (currentMapIndex_ >= 0 && currentMapIndex_ < maps_.size()) {
+        MapData& current = maps_[currentMapIndex_];
+        const int serverId = current.routeServerIds.value(routeName, -1);
+        if (serverId > 0) {
+            current.routeServerIds.remove(routeName);
+            apiClient_->deletePatrolRoute(serverId, [](bool, const QString&) {});
+        }
+    }
 
     rebuildRouteChips();
     rebuildRouteOrderList();
@@ -1108,14 +1299,15 @@ void P6PatrolPage::runTestRun() {
     // 제거 — 현재위치 마커는 이제 로봇이 실제로 보내는 robot_position WS 메시지로만
     // 움직인다.
 
-    // 서버에 배포된 맵·경로일 때만 실제 POST /patrol-runs로 로봇에 순찰 시작을 지시한다
-    // (로컬 데모 맵이거나 아직 "저장·배포"를 누르지 않은 경로면 서버에 route_id가 없다).
+    // 서버에 등록된 맵·경로일 때만 실제 POST /patrol-runs로 로봇에 순찰 시작을 지시한다
+    // ("경로 저장" 시점에 바로 서버에 반영되므로(exitRouteEditMode 참고) 정상적으로는
+    // 항상 있어야 하지만, 로컬 데모 맵이거나 그 저장이 실패했을 경우를 대비한 방어).
     const MapData& current = maps_[currentMapIndex_];
     if (current.serverRobotId <= 0 || !current.routeServerIds.contains(currentRoute_)) {
         QMessageBox::information(
             this, QStringLiteral("순찰 시작"),
-            QStringLiteral("이 경로가 아직 서버에 저장·배포되지 않아 로봇에 순찰 명령을 보낼 수 없습니다. "
-                            "먼저 경로를 저장·배포해주세요."));
+            QStringLiteral("이 경로가 아직 서버에 저장되지 않아 로봇에 순찰 명령을 보낼 수 없습니다. "
+                            "경로를 다시 저장해 주세요."));
         return;
     }
 
@@ -1270,7 +1462,11 @@ void P6PatrolPage::toggleScheduleForm(bool show) {
         for (int i = 0; i < scheduleDayChips_.size(); ++i) scheduleDayChips_[i]->setChecked(i < 5);
         scheduleSaveBtn_->setText(QStringLiteral("저장"));
     }
-    if (!show) scheduleEditIndex_ = -1;
+    if (!show) {
+        scheduleEditIndex_ = -1;
+        scheduleMedLabel_->hide();
+        scheduleMedCombo_->hide();
+    }
     scheduleForm_->setVisible(show);
 }
 
@@ -1280,16 +1476,105 @@ void P6PatrolPage::startEditSchedule(int index) {
     toggleScheduleForm(true);  // scheduleEditIndex_가 이미 설정돼 있어 위 기본값 리셋은 건너뛴다
 
     const Schedule& sched = schedules_[index];
+    // addItems()가 첫 항목에서 한 번, 아래 setCurrentIndex가 실제 목표 경로로 또 한 번
+    // currentTextChanged를 태운다 — 그대로 두면 onScheduleRouteComboChanged가 엉뚱한
+    // 경로 이름으로 한 번 먼저(불필요한 네트워크 조회) 불렸다가 곧바로 다시 불린다.
+    // 시그널을 막아뒀다가 목표 경로로 정확히 세팅된 뒤 한 번만 직접 호출한다.
+    scheduleRouteCombo_->blockSignals(true);
     scheduleRouteCombo_->clear();
     scheduleRouteCombo_->addItems(routes_.keys());
     const int routeIdx = scheduleRouteCombo_->findText(sched.routeName);
     if (routeIdx >= 0) scheduleRouteCombo_->setCurrentIndex(routeIdx);
+    scheduleRouteCombo_->blockSignals(false);
     // PUT /patrol-schedules는 route_id 변경을 지원하지 않아 편집 중엔 경로를 고정한다.
     scheduleRouteCombo_->setEnabled(false);
     const QTime t = QTime::fromString(sched.timeText, QStringLiteral("HH:mm"));
     scheduleTimeEdit_->setTime(t.isValid() ? t : QTime(10, 0));
     for (int i = 0; i < scheduleDayChips_.size(); ++i) scheduleDayChips_[i]->setChecked(sched.days.contains(i));
     scheduleSaveBtn_->setText(QStringLiteral("수정 저장"));
+    onScheduleRouteComboChanged(scheduleRouteCombo_->currentText());
+}
+
+void P6PatrolPage::onScheduleRouteComboChanged(const QString& routeName) {
+    const bool isMedicineRoute = (routeName == kMedicineRouteName);
+    scheduleMedLabel_->setVisible(isMedicineRoute);
+    scheduleMedCombo_->setVisible(isMedicineRoute);
+    if (!isMedicineRoute) {
+        currentRobotMedSchedules_.clear();
+        return;
+    }
+
+    if (scheduleEditIndex_ >= 0 && scheduleEditIndex_ < schedules_.size()) {
+        loadMedicationSchedulesForCurrentRobot(schedules_[scheduleEditIndex_].medicationScheduleId);
+    } else {
+        loadMedicationSchedulesForCurrentRobot();
+    }
+}
+
+void P6PatrolPage::loadMedicationSchedulesForCurrentRobot(int matchMedicationScheduleId) {
+    scheduleMedCombo_->clear();
+    currentRobotMedSchedules_.clear();
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const QString robotCode = maps_[currentMapIndex_].robotId;
+
+    scheduleMedCombo_->addItem(QStringLiteral("불러오는 중…"));
+    scheduleMedCombo_->setEnabled(false);
+
+    apiClient_->fetchRecipients([this, robotCode, matchMedicationScheduleId](
+                                     bool ok, const QVector<ApiClient::RecipientInfo>& recipients) {
+        int recipientId = 0;
+        for (const auto& r : recipients) {
+            if (r.robotCode == robotCode) {
+                recipientId = r.id;
+                break;
+            }
+        }
+        if (!ok || recipientId == 0) {
+            scheduleMedCombo_->clear();
+            scheduleMedCombo_->addItem(QStringLiteral("배정된 대상자 없음"));
+            scheduleMedCombo_->setEnabled(false);
+            return;
+        }
+
+        apiClient_->fetchRecipientDetail(
+            recipientId,
+            [this, matchMedicationScheduleId](bool detailOk, const ApiClient::RecipientDetailInfo& detail,
+                                               const QString&) {
+                currentRobotMedSchedules_ =
+                    detailOk ? detail.schedules : QVector<ApiClient::MedicationScheduleInfo>();
+                scheduleMedCombo_->clear();
+                if (currentRobotMedSchedules_.isEmpty()) {
+                    scheduleMedCombo_->addItem(QStringLiteral("등록된 복약 스케줄 없음"));
+                    scheduleMedCombo_->setEnabled(false);
+                    return;
+                }
+                scheduleMedCombo_->setEnabled(true);
+                // 0번 = "선택 안 함" — currentRobotMedSchedules_[i]는 콤보의 i+1번에 대응.
+                scheduleMedCombo_->addItem(QStringLiteral("선택 안 함"));
+                int matchIndex = -1;
+                for (int i = 0; i < currentRobotMedSchedules_.size(); ++i) {
+                    const auto& sched = currentRobotMedSchedules_[i];
+                    scheduleMedCombo_->addItem(QStringLiteral("%1번 칸 · %2 · %3")
+                                                    .arg(sched.slotNo)
+                                                    .arg(sched.drugName, sched.doseTime));
+                    if (matchMedicationScheduleId > 0 && sched.id == matchMedicationScheduleId) {
+                        matchIndex = i;
+                    }
+                }
+                if (matchIndex >= 0) scheduleMedCombo_->setCurrentIndex(matchIndex + 1);
+            });
+    });
+}
+
+void P6PatrolPage::applyMedicationScheduleSelection(int comboIndex) {
+    const int schedIndex = comboIndex - 1;  // 0번 = "선택 안 함"
+    if (schedIndex < 0 || schedIndex >= currentRobotMedSchedules_.size()) return;
+    const ApiClient::MedicationScheduleInfo& sched = currentRobotMedSchedules_[schedIndex];
+    const QTime t = QTime::fromString(sched.doseTime, QStringLiteral("HH:mm"));
+    if (t.isValid()) scheduleTimeEdit_->setTime(t);
+    for (int i = 0; i < scheduleDayChips_.size(); ++i) {
+        scheduleDayChips_[i]->setChecked((sched.daysOfWeek & (1 << i)) != 0);
+    }
 }
 
 void P6PatrolPage::deleteScheduleAt(int index) {
@@ -1322,20 +1607,36 @@ void P6PatrolPage::saveScheduleFromForm() {
     int daysBitmask = 0;
     for (int d : days) daysBitmask |= (1 << d);
 
+    // 경로가 "medicine"이면 지금 콤보 선택 상태가 그대로 매칭 결과다 — "선택 안 함"이면
+    // 매칭 해제(0/null), 실제 항목이면 그 medication_schedule.id. 추가·수정 둘 다 이 값
+    // 그대로를 저장한다(요청 사양 — patrol_schedule.medication_schedule_id, 경로가 아니라
+    // 이 회차 자체의 속성).
+    int medicationScheduleId = 0;
+    if (routeName == kMedicineRouteName) {
+        const int medIndex = scheduleMedCombo_->currentIndex() - 1;  // 0번 = "선택 안 함"
+        if (medIndex >= 0 && medIndex < currentRobotMedSchedules_.size()) {
+            medicationScheduleId = currentRobotMedSchedules_[medIndex].id;
+        }
+    }
+
     if (scheduleEditIndex_ >= 0 && scheduleEditIndex_ < schedules_.size()) {
         const int editIndex = scheduleEditIndex_;
         Schedule& sched = schedules_[editIndex];
         sched.timeText = timeText;
         sched.days = days;
+        sched.medicationScheduleId = medicationScheduleId;
         const int serverId = sched.serverId;
         rebuildScheduleList();
         toggleScheduleForm(false);
 
         if (serverId > 0) {
-            apiClient_->updatePatrolSchedule(
-                serverId,
-                QJsonObject{{"run_time", timeText + QStringLiteral(":00")}, {"days_of_week", daysBitmask}},
-                [](bool, const ApiClient::PatrolScheduleInfo&, const QString&) {});
+            QJsonObject fields{{"run_time", timeText + QStringLiteral(":00")}, {"days_of_week", daysBitmask}};
+            if (routeName == kMedicineRouteName) {
+                fields["medication_schedule_id"] =
+                    medicationScheduleId > 0 ? QJsonValue(medicationScheduleId) : QJsonValue();
+            }
+            apiClient_->updatePatrolSchedule(serverId, fields,
+                                              [](bool, const ApiClient::PatrolScheduleInfo&, const QString&) {});
         }
         return;
     }
@@ -1345,15 +1646,16 @@ void P6PatrolPage::saveScheduleFromForm() {
     sched.timeText = timeText;
     sched.days = days;
     sched.enabled = true;
+    sched.medicationScheduleId = medicationScheduleId;
     schedules_.append(sched);
     const int newIndex = schedules_.size() - 1;
     rebuildScheduleList();
     toggleScheduleForm(false);
 
-    // 이 경로가 이미 서버에 배포되어 있으면(routeServerIds에 id가 있으면) 바로 서버에도
-    // 등록한다. 아직 배포 전이면 "저장·배포"에서 경로가 만들어진 뒤에도 이 스케줄은
-    // 서버에 올라가지 않는다 — 사용자가 "저장·배포"를 먼저 한 뒤 스케줄을 추가하도록
-    // buildScheduleCard 쪽 안내에 맡긴다(알려진 제약, 체크리스트 ⑦ 최소 구현 범위).
+    // 이 경로가 이미 서버에 저장되어 있으면(routeServerIds에 id가 있으면) 바로 서버에도
+    // 등록한다. "경로 저장"이 이제 즉시 서버에 반영되므로(exitRouteEditMode 참고)
+    // 정상적으로는 항상 있어야 하지만, 아직 경로를 한 번도 저장 안 한 채 스케줄부터
+    // 추가하려는 경우를 대비한 방어 — 이때는 스케줄이 로컬에만 남는다.
     const MapData& current = maps_[currentMapIndex_];
     if (!current.routeServerIds.contains(sched.routeName)) return;
 
@@ -1361,7 +1663,8 @@ void P6PatrolPage::saveScheduleFromForm() {
         current.routeServerIds.value(sched.routeName), sched.timeText, daysBitmask,
         [this, newIndex](bool ok, const ApiClient::PatrolScheduleInfo& info, const QString&) {
             if (ok && newIndex < schedules_.size()) schedules_[newIndex].serverId = info.id;
-        });
+        },
+        medicationScheduleId);
 }
 
 void P6PatrolPage::saveCurrentMapData() {
@@ -1650,119 +1953,12 @@ void P6PatrolPage::loadServerRouteSchedules(std::shared_ptr<QVector<MapData>> ma
                     for (int i = 0; i < 7; ++i) {
                         if (s.daysOfWeek & (1 << i)) days.append(i);
                     }
-                    md.schedules.append(Schedule{route.name, s.runTime, days, s.enabled, s.id});
+                    md.schedules.append(
+                        Schedule{route.name, s.runTime, days, s.enabled, s.id, s.medicationScheduleId});
                 }
             }
             loadServerRouteSchedules(maps, mapIndex, routes, routeIndex + 1);
         });
-}
-
-void P6PatrolPage::deployCurrentMap() {
-    MapData& current = maps_[currentMapIndex_];
-    if (current.serverMapId <= 0) {
-        QMessageBox::warning(
-            this, QStringLiteral("배포 불가"),
-            QStringLiteral("이 맵은 아직 서버에 등록되지 않았습니다. 맵·로봇 매핑 화면에서 맵을 "
-                            "등록하거나 매핑을 완료한 뒤 다시 시도해 주세요."));
-        return;
-    }
-
-    auto routeNamesToDelete = std::make_shared<QVector<QString>>(current.routeServerIds.keys().toVector());
-    deployDeleteRoutes(routeNamesToDelete, 0);
-}
-
-void P6PatrolPage::deployDeleteRoutes(std::shared_ptr<QVector<QString>> routeNames, int index) {
-    MapData& current = maps_[currentMapIndex_];
-    if (index >= routeNames->size()) {
-        current.routeServerIds.clear();
-        auto wpCodesToDelete = std::make_shared<QVector<QString>>(current.waypointServerIds.keys().toVector());
-        deployDeleteWaypoints(wpCodesToDelete, 0);
-        return;
-    }
-    const int routeId = current.routeServerIds.value((*routeNames)[index], -1);
-    if (routeId <= 0) {
-        deployDeleteRoutes(routeNames, index + 1);
-        return;
-    }
-    apiClient_->deletePatrolRoute(
-        routeId, [this, routeNames, index](bool, const QString&) { deployDeleteRoutes(routeNames, index + 1); });
-}
-
-void P6PatrolPage::deployDeleteWaypoints(std::shared_ptr<QVector<QString>> codes, int index) {
-    MapData& current = maps_[currentMapIndex_];
-    if (index >= codes->size()) {
-        current.waypointServerIds.clear();
-        auto hadError = std::make_shared<bool>(false);
-        auto toCreate = std::make_shared<QVector<WaypointCanvas::Waypoint>>(waypoints_);
-        deployCreateWaypoints(toCreate, 0, hadError);
-        return;
-    }
-    const int wpId = current.waypointServerIds.value((*codes)[index], -1);
-    if (wpId <= 0) {
-        deployDeleteWaypoints(codes, index + 1);
-        return;
-    }
-    apiClient_->deleteWaypoint(
-        wpId, [this, codes, index](bool, const QString&) { deployDeleteWaypoints(codes, index + 1); });
-}
-
-void P6PatrolPage::deployCreateWaypoints(std::shared_ptr<QVector<WaypointCanvas::Waypoint>> list, int index,
-                                          std::shared_ptr<bool> hadError) {
-    if (index >= list->size()) {
-        auto routeNames = std::make_shared<QVector<QString>>(routes_.keys().toVector());
-        deployCreateRoutes(routeNames, 0, hadError);
-        return;
-    }
-    MapData& current = maps_[currentMapIndex_];
-    const WaypointCanvas::Waypoint w = (*list)[index];
-    const QPointF meters = canvas_->canvasToMapMeters(w.pos);
-    apiClient_->createWaypoint(
-        current.serverMapId, w.id, w.name, w.charging ? QStringLiteral("charge") : QStringLiteral("patrol"),
-        meters.x(), meters.y(), CanvasGeometry::canvasYawDegToMapYawRad(w.yawDeg),
-        [this, list, index, hadError](bool ok, const ApiClient::WaypointInfo& info, const QString&) {
-            if (ok) {
-                maps_[currentMapIndex_].waypointServerIds[info.code] = info.id;
-            } else {
-                *hadError = true;
-            }
-            deployCreateWaypoints(list, index + 1, hadError);
-        });
-}
-
-void P6PatrolPage::deployCreateRoutes(std::shared_ptr<QVector<QString>> routeNames, int index,
-                                       std::shared_ptr<bool> hadError) {
-    if (index >= routeNames->size()) {
-        finishDeploy(*hadError);
-        return;
-    }
-    MapData& current = maps_[currentMapIndex_];
-    const QString name = (*routeNames)[index];
-    QVector<int> steps;
-    for (const QString& code : routes_.value(name)) {
-        const int wpId = current.waypointServerIds.value(code, -1);
-        if (wpId > 0) steps.append(wpId);
-    }
-    apiClient_->createPatrolRoute(
-        current.serverMapId, name, steps,
-        [this, routeNames, index, hadError](bool ok, const ApiClient::PatrolRouteInfo& info, const QString&) {
-            if (ok) {
-                maps_[currentMapIndex_].routeServerIds[info.name] = info.id;
-            } else {
-                *hadError = true;
-            }
-            deployCreateRoutes(routeNames, index + 1, hadError);
-        });
-}
-
-void P6PatrolPage::finishDeploy(bool hadError) {
-    if (hadError) {
-        QMessageBox::warning(this, QStringLiteral("배포 중 오류"),
-                              QStringLiteral("웨이포인트·경로 저장 중 일부 항목이 실패했습니다. 다시 시도해 주세요."));
-        return;
-    }
-    QMessageBox::information(
-        this, QStringLiteral("배포 완료"),
-        QStringLiteral("웨이포인트·경로가 저장되어 %1에 배포되었습니다.").arg(maps_[currentMapIndex_].robotId));
 }
 
 void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
@@ -1773,6 +1969,16 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         // — 그래서 P5에서 SLAM 맵을 새로 저장해도 P6의 맵 드롭다운은 앱을 껐다 켤 때까지
         // (loadMapsFromServer()가 생성자에서 딱 한 번만 불림) 절대 안 바뀌었다.
         refreshMapForRobot(message.value(QStringLiteral("robot_code")).toString());
+        return;
+    }
+
+    if (type == QStringLiteral("patrol_schedules_changed")) {
+        // P3 대상자 페이지에서 매칭된 복약 스케줄의 시각·요일을 바꾸면 서버가 이걸
+        // 보낸다(recipient.py::update_recipient) — 대시보드를 껐다 켜지 않아도 바로
+        // 반영되게 한다("대상자에서 복약 스케줄을 바꿔도 주행 스케줄엔 반영이 안 된다"
+        // 리포트).
+        const int routeId = message.value(QStringLiteral("route_id")).toInt();
+        if (routeId > 0) refreshSchedulesForRoute(routeId);
         return;
     }
 
@@ -1825,4 +2031,55 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
     const qreal yawRad = message.value(QStringLiteral("yaw")).toDouble();
     canvas_->setCurrentRobotPosition(canvas_->mapMetersToCanvas(QPointF(xMeters, yMeters)),
                                       CanvasGeometry::mapYawRadToCanvasYawDeg(yawRad));
+}
+
+void P6PatrolPage::refreshSchedulesForRoute(int routeId) {
+    // 지금 스케줄 폼을 편집 중이면(scheduleEditIndex_>=0) 건드리지 않는다 — 목록을
+    // 통째로 교체하면 폼이 가리키던 인덱스가 어긋날 수 있다. 폼을 닫은 뒤 다음
+    // 새로고침에서 자연히 최신 값으로 맞춰진다.
+    if (scheduleEditIndex_ >= 0) return;
+
+    // routeId가 어느 맵의 어느 경로 이름인지 먼저 찾는다 — routeServerIds가 맵마다
+    // 독립이라 이 route_id를 들고 있는 맵은 최대 하나뿐이다.
+    for (int mi = 0; mi < maps_.size(); ++mi) {
+        QString routeName;
+        const QMap<QString, int>& ids = maps_[mi].routeServerIds;
+        for (auto it = ids.begin(); it != ids.end(); ++it) {
+            if (it.value() == routeId) {
+                routeName = it.key();
+                break;
+            }
+        }
+        if (routeName.isEmpty()) continue;
+
+        apiClient_->fetchPatrolSchedules(
+            routeId, [this, mi, routeName](bool ok, const QVector<ApiClient::PatrolScheduleInfo>& list) {
+                if (!ok || mi < 0 || mi >= maps_.size()) return;
+                QVector<Schedule> fresh;
+                fresh.reserve(list.size());
+                for (const ApiClient::PatrolScheduleInfo& s : list) {
+                    QVector<int> days;
+                    for (int i = 0; i < 7; ++i) {
+                        if (s.daysOfWeek & (1 << i)) days.append(i);
+                    }
+                    fresh.append(Schedule{routeName, s.runTime, days, s.enabled, s.id, s.medicationScheduleId});
+                }
+
+                if (mi == currentMapIndex_) {
+                    if (scheduleEditIndex_ >= 0) return;  // 그 사이 편집을 시작했으면 여기서도 건너뛴다
+                    for (int i = schedules_.size() - 1; i >= 0; --i) {
+                        if (schedules_[i].routeName == routeName) schedules_.remove(i);
+                    }
+                    schedules_ += fresh;
+                    rebuildScheduleList();
+                } else {
+                    MapData& md = maps_[mi];
+                    for (int i = md.schedules.size() - 1; i >= 0; --i) {
+                        if (md.schedules[i].routeName == routeName) md.schedules.remove(i);
+                    }
+                    md.schedules += fresh;
+                }
+            });
+        return;
+    }
 }
