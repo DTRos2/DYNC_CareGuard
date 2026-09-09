@@ -1151,7 +1151,7 @@ void P7SettingsPage::updateAccount(int rowIndex, const AccountDialog::AccountDat
     };
     QNetworkReply* reply = netManager_->sendCustomRequest(request, "PATCH", QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, dbId, assignedRecipientIds = data.assignedRecipientIds] {
+            [this, reply, dbId, isActive = data.active, assignedRecipientIds = data.assignedRecipientIds] {
                 const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 if (statusCode != 200) {
                     const QJsonObject err = QJsonDocument::fromJson(reply->readAll()).object();
@@ -1162,6 +1162,13 @@ void P7SettingsPage::updateAccount(int rowIndex, const AccountDialog::AccountDat
                     return;
                 }
                 reply->deleteLater();
+                if (!isActive) {
+                    // 비활성화하면 서버가 이 계정의 담당 배정을 전부 해제한다(update_account 참고).
+                    // 여기서 다시 PUT을 보내면 방금 해제된 배정을 비활성 계정에 되살리게 되므로 생략한다.
+                    fetchAccounts();
+                    fetchRecipients();
+                    return;
+                }
                 // assignRecipients()가 성공 시 fetchAccounts()까지 다시 불러와 반영한다.
                 assignRecipients(dbId, assignedRecipientIds);
             });
@@ -1290,6 +1297,7 @@ void P7SettingsPage::handleRecipientsReply(QNetworkReply* reply) {
         RecipientRow row;
         row.id = obj.value("id").toInt();
         row.code = obj.value("code").toString();
+        row.name = obj.value("name").toString();
         const QString robotCode = obj.value("robot_code").toString();
         row.label = robotCode.isEmpty()
                         ? QStringLiteral("%1 (%2)").arg(obj.value("name").toString(), obj.value("code").toString())
@@ -1329,6 +1337,14 @@ void P7SettingsPage::openAccountDialog(int rowIndex) {
     QStringList existingIds;
     for (const auto& acc : accounts_) existingIds << acc.id;
 
+    // 담당 계정 id로 표시 이름을 찾는다 — "현재 담당" 표기·재배정 확인 메시지 조립용.
+    auto operatorName = [this](int operatorId) -> QString {
+        for (const auto& acc : accounts_) {
+            if (acc.dbId == operatorId) return acc.name;
+        }
+        return QString();
+    };
+
     // 신규 등록은 아직 dbId가 없으니 전부 미체크로 보여준다 — 등록과 동시에 담당을
     // 고를 수 있게 하되(공백으로 두면 미배정), 기존 배정 여부는 수정 모드에서만 따진다.
     QVector<AccountDialog::RecipientOption> recipientOptions;
@@ -1336,13 +1352,17 @@ void P7SettingsPage::openAccountDialog(int rowIndex) {
         AccountDialog::RecipientOption option;
         option.id = rc.id;
         option.code = rc.code;
+        option.name = rc.name;
         option.label = rc.label;
         option.assigned = !isNew && rc.operatorId == accounts_[static_cast<size_t>(rowIndex)].dbId;
+        option.currentOperatorId = rc.operatorId;
+        option.currentOperatorName = rc.operatorId == -1 ? QString() : operatorName(rc.operatorId);
         recipientOptions.push_back(option);
     }
 
     if (!isNew) {
         const AccountRow& acc = accounts_[static_cast<size_t>(rowIndex)];
+        data.dbId = acc.dbId;
         data.loginId = acc.id;
         data.displayName = acc.name;
         data.role = koreanRoleToEnum(acc.role);
