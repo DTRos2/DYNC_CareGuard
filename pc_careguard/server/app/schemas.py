@@ -122,17 +122,6 @@ class VideoEventItem(BaseModel):
     view_history: List[ViewHistoryEntry] = []
 
 
-class RobotItem(BaseModel):
-    # GET /maps/active와 달리 아직 맵이 없는(SLAM 전) 로봇도 포함한다 — 매핑 페이지의
-    # 로봇 선택처럼 "맵 없는 로봇"을 골라야 하는 화면이 이 스키마를 쓴다.
-    id: int
-    code: str  # 예: "R-01"
-    name: str
-    model: str
-    ip: Optional[str] = None
-    created_at: datetime
-
-
 class MapCreate(BaseModel):
     # "파일로 등록" 모달이 쓴다 — SLAM 저장(POST /slam-jobs/{id}/save)과 달리 slam_job이
     # 없으므로 메타데이터(해상도·원점·크기)를 .yaml에서 직접 읽어 그대로 실어 보낸다.

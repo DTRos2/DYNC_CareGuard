@@ -14,6 +14,10 @@ from .schemas import (
 
 router = APIRouter(prefix="/robots", tags=["robots"])
 
+# map/recipient은 서브쿼리로만 곁들이고 FROM/JOIN 대상은 robot 하나뿐이다 — 아직 맵이
+# 없는(SLAM 전) 로봇도 반드시 여기 나와야 한다. P5 매핑 페이지의 로봇 선택 드롭다운이
+# "맵 없는 로봇"을 고를 수 있어야 하는 게 바로 이 목록이라(GET /maps/active는 맵 있는
+# 로봇만 내려줘서 그 용도로 못 쓴다), map을 JOIN/필터링에 쓰지 않도록 주의할 것.
 LIST_QUERY = """
     SELECT r.id, r.code, r.name, r.model, r.ros_domain_id, r.ip,
         (SELECT rec.name FROM recipient rec

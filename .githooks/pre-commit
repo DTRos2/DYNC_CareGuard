@@ -2,6 +2,18 @@
 # Enforces COMMIT_RULES.md §1: never commit directly on main.
 # Work must happen on feature/*, fix/*, docs/*, or chore/* branches
 # and reach main only through develop via PR.
+#
+# Also runs flake8 --select=F (pyflakes: undefined names, unused imports,
+# redefined-before-use, etc.) on staged pc_careguard/server/*.py files —
+# added 2026-09-09 after a duplicate `class RobotItem` in schemas.py (two
+# branches each added their own, merge silently kept only the last one and
+# GET /robots crashed at runtime) went undetected because nothing in this
+# repo runs even basic Python static checks. See COMMIT_RULES.md §5.
+#
+# This is best-effort: if flake8 isn't installed locally it warns and lets
+# the commit through — the same check runs for real (hard-blocking) in CI
+# on push/PR, see .github/workflows/server-lint.yml. Install locally with:
+#   pip install -r pc_careguard/server/requirements-dev.txt
 
 set -euo pipefail
 
@@ -25,6 +37,33 @@ if [[ "$branch" != "develop" ]] && [[ ! "$branch" =~ ^(feature|fix|docs|chore)/[
   echo "pre-commit 훅 경고: 브랜치명 '$branch'가 규칙과 다릅니다." >&2
   echo "  feature/<기능명>, fix/<내용>, docs/<문서명>, chore/<내용> 형식(소문자+하이픈)을 쓰세요." >&2
   echo "  (COMMIT_RULES.md 참고. 이 경고는 커밋을 막지 않습니다.)" >&2
+fi
+
+mapfile -t staged_py_files < <(git diff --cached --name-only --diff-filter=ACM -- 'pc_careguard/server/*.py')
+
+if [[ ${#staged_py_files[@]} -gt 0 ]]; then
+  # 대부분의 팀원은 pc_careguard/server/.venv를 activate하지 않은 채로 커밋하므로
+  # bare `flake8`은 PATH에 없는 게 정상이다 — 서버 venv에 먼저 설치돼 있는지도 본다.
+  repo_root="$(git rev-parse --show-toplevel)"
+  flake8_bin=""
+  if command -v flake8 >/dev/null 2>&1; then
+    flake8_bin="flake8"
+  elif [[ -x "$repo_root/pc_careguard/server/.venv/bin/flake8" ]]; then
+    flake8_bin="$repo_root/pc_careguard/server/.venv/bin/flake8"
+  fi
+
+  if [[ -z "$flake8_bin" ]]; then
+    echo "pre-commit 훅 경고: flake8이 설치되어 있지 않아 정적 검사를 건너뜁니다." >&2
+    echo "  설치하려면: pc_careguard/server/.venv/bin/pip install -r pc_careguard/server/requirements-dev.txt" >&2
+    echo "  (커밋은 통과하지만, GitHub Actions(server-lint)는 그대로 검사합니다.)" >&2
+  else
+    if ! "$flake8_bin" --select=F "${staged_py_files[@]}"; then
+      echo "" >&2
+      echo "pre-commit 훅: flake8(F계열: 미정의 이름·미사용 import·이름 재정의 등)에 걸렸습니다." >&2
+      echo "  위 내용을 고친 뒤 다시 커밋하세요." >&2
+      exit 1
+    fi
+  fi
 fi
 
 exit 0

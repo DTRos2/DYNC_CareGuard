@@ -97,9 +97,11 @@ git config core.hooksPath .githooks
 활성화하면:
 
 - **`commit-msg`**: 커밋 메시지가 `<type>(<scope>): <subject>` 형식과 위 규칙(type 목록, scope 목록, subject 한글·마침표 금지)을 지키지 않으면 커밋을 거부한다.
-- **`pre-commit`**: 현재 브랜치가 `main`이면 커밋을 거부하고, `feature/fix/docs/chore` 브랜치를 만들라는 안내를 출력한다. 브랜치명이 `feature/`, `fix/`, `docs/`, `chore/` 접두어 형식(소문자+하이픈)을 벗어나면 경고한다.
+- **`pre-commit`**: 현재 브랜치가 `main`이면 커밋을 거부하고, `feature/fix/docs/chore` 브랜치를 만들라는 안내를 출력한다. 브랜치명이 `feature/`, `fix/`, `docs/`, `chore/` 접두어 형식(소문자+하이픈)을 벗어나면 경고한다. 또한 `pc_careguard/server/*.py` 파일이 스테이징돼 있으면 `flake8 --select=F`(미정의 이름·미사용 import·이름 재정의 등)를 돌려 걸리면 커밋을 거부한다 — flake8이 로컬에 없으면 경고만 하고 통과시킨다(`pip install -r pc_careguard/server/requirements-dev.txt`로 설치).
 
-훅 스크립트를 수정해야 하면 `.githooks/commit-msg`, `.githooks/pre-commit`을 고치고, 변경 사유를 6절 변경 절차에 따라 기록한다.
+이 로컬 검사는 "한 커밋 안에서 같은 파일을 스스로 중복 정의하는" 실수만 잡는다. 서로 다른 브랜치가 각자는 문제없는 코드를 만들었다가 **병합 시점에** 이름이 충돌하는 경우(2026-09-09 `schemas.py`의 `RobotItem` 중복 — 두 브랜치 모두 자기 커밋만 보면 정상이라 로컬 훅으로는 못 잡음, `GET /robots`가 런타임에만 500으로 발견됨)는 GitHub Actions `server-lint`(`.github/workflows/server-lint.yml`)가 잡는다 — `pull_request` 트리거는 PR 브랜치와 대상 브랜치(`develop`/`main`)를 합친 상태를 검사하므로 병합 전에 걸린다.
+
+훅 스크립트를 수정해야 하면 `.githooks/commit-msg`, `.githooks/pre-commit`, `.github/workflows/server-lint.yml`을 고치고, 변경 사유를 6절 변경 절차에 따라 기록한다.
 
 ## 6. 규칙 변경 절차
 

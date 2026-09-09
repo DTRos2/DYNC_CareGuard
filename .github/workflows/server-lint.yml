@@ -1,0 +1,33 @@
+name: server-lint
+
+# pc_careguard/server(FastAPI)에 flake8 --select=F(pyflakes: 미정의 이름·미사용
+# import·이름 재정의 등)를 돌린다. 2026-09-09 develop 병합에서 서로 다른 브랜치가
+# 각자 만든 `class RobotItem`이 schemas.py에 중복 정의되어(파이썬은 나중 정의가
+# 앞 정의를 조용히 덮어써 문법 에러가 안 남) GET /robots가 런타임에만 500으로
+# 터졌던 사고 이후 추가됨 — 이런 종류의 문제는 개별 브랜치의 diff만 봐서는 안
+# 잡히고, 두 브랜치를 합친 상태를 실제로 검사해야 잡힌다. pull_request 트리거는
+# 기본적으로 PR 브랜치와 대상 브랜치(develop/main)를 합친 커밋을 체크아웃하므로
+# 정확히 이 시나리오를 병합 전에 잡아낸다. 로컬에서 같은 검사가
+# .githooks/pre-commit(best-effort)로도 돌지만, 여기서는 flake8 미설치 여부와
+# 무관하게 항상 강제된다. 훅 변경 이력은 COMMIT_RULES.md §5 참고.
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  flake8:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false  # 린트만 하는 잡이라 지도 이미지 등 LFS 객체는 안 받아도 된다.
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - run: pip install flake8
+
+      - run: flake8 --select=F --exclude=.venv,__pycache__ pc_careguard/server
