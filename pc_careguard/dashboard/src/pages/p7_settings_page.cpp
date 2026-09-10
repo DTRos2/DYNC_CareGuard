@@ -1022,7 +1022,7 @@ void P7SettingsPage::setPatrolRunDateEditsReadOnly(bool readOnly) {
 void P7SettingsPage::fetchPatrolRunLog() {
     if (patrolRunStartDateEdit_ == nullptr || netManager_ == nullptr) return;
 
-    QUrl url(serverUrl_ + QStringLiteral("/patrol-runs"));
+    QUrl url(serverUrl_ + QStringLiteral("/patrol-runs/log"));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("start"), patrolRunStartDateEdit_->date().toString(Qt::ISODate));
     query.addQueryItem(QStringLiteral("end"), patrolRunEndDateEdit_->date().toString(Qt::ISODate));

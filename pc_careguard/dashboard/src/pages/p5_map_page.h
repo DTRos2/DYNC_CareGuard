@@ -10,7 +10,7 @@ class QLabel;
 class QPushButton;
 class QLineEdit;
 class QComboBox;
-class QMenu;
+class CareGuardComboBox;
 class SlamMappingCard;
 class TeleopPanel;
 class MappingStatusOverlay;
@@ -64,7 +64,6 @@ private:
     QFrame* buildRobotOfflineBanner();
     void openFileRegisterDialog();
     void openMapPreviewDialog(const QString& robotId);
-    void handleEmergencyStop();
     // 서버에 이미 배포된 활성 맵 목록을 조회해 매핑 현황 오버레이에 반영한다
     // (GET /maps/active). 새로 파일로 등록/SLAM 저장한 맵은 이 경로를 타지 않고
     // openFileRegisterDialog()에서 바로 markMapDeployed()를 부른다.
@@ -73,24 +72,38 @@ private:
     // 드롭다운을 채운다(예전엔 "R-04" 고정 표시였다 — 2026-09-09 요청). 아직 맵이
     // 없는 로봇도 여기 나와야 매핑을 시작할 수 있어 GET /maps/active로는 못 만든다.
     void loadRobotsFromServer();
+    // robots_ 기준으로 robotCombo_의 항목 목록을 다시 채운다 — GET /robots 응답이 올
+    // 때만 부른다(로봇 목록 자체가 바뀔 때). 이름은 그대로 두지만 이제 QMenu가 아니라
+    // CareGuardComboBox 항목을 채운다(대상자 페이지 모달의 로봇/맵 배정 콤보와 같은
+    // 위젯 — 디자인 통일).
     void rebuildRobotMenu();
-    // robotChipBtn_ 텍스트를 "코드 · 온라인/오프라인" 형태로 다시 그린다 —
-    // switchToRobot()과 robot_status WS 처리(handleWsMessage) 둘 다에서 부른다.
+    // robotCombo_에서 지금 선택된 로봇 항목의 텍스트를 "코드 (이름) · 온라인/오프라인"
+    // 형태로 다시 그린다 — switchToRobot()과 robot_status WS 처리(handleWsMessage) 둘
+    // 다에서 부른다. 다른 로봇 항목의 상태는(예전 QMenu 버전과 마찬가지로) 갱신하지
+    // 않는다 — 실시간 상태를 아는 건 지금 선택된 로봇뿐이다.
     void updateRobotChipText();
     // 로봇 드롭다운에서 다른 로봇을 고르면 페이지 전체(SLAM 캔버스·온라인 배너·저장
-    // 정보 카드·텔레옵/비상정지 대상)가 그 로봇 기준으로 바뀐다. P6PatrolPage::
+    // 정보 카드·텔레옵 대상)가 그 로봇 기준으로 바뀐다. P6PatrolPage::
     // switchToMap과 같은 패턴 — 다만 P5는 로봇당 편집 가능한 상태(웨이포인트 등)가
     // 없어서 저장·복원 없이 바로 로봇 코드만 바꾸고 캔버스를 새로 채운다.
     void switchToRobot(int index);
-    // "매핑 시작" 버튼 — POST /slam-jobs로 현재 로봇의 SLAM 매핑을 시작시킨다
-    // (체크리스트 ⑧). 화면상 텔레옵·SlamMapView 시뮬레이션은 서버 연동 여부와 무관하게
-    // 그대로 동작한다 — 이 호출은 실제 로봇에게 명령을 전달하는 별도 경로다.
+    // 상단바의 "매핑 시작"/"초기화" 토글 버튼 클릭 — 진행 중인 slam_job이 없으면
+    // startMappingOnServer(), 있으면 cancelMappingOnServer()로 라우팅한다. 1차
+    // 프로젝트(MediRun) SlamMappingPage::m_startButton과 같은 토글 방식 — 별도의
+    // "매핑 재시작"/"매핑 취소"/"비상정지" 버튼을 두지 않는다.
+    void handleMappingToggleClicked();
+    // "매핑 시작" — POST /slam-jobs로 현재 로봇의 SLAM 매핑을 시작시킨다(체크리스트 ⑧).
+    // 화면상 텔레옵·SlamMapView 시뮬레이션은 서버 연동 여부와 무관하게 그대로 동작한다
+    // — 이 호출은 실제 로봇에게 명령을 전달하는 별도 경로다.
     void startMappingOnServer();
-    // "매핑 취소" — 진행 중인 slam_job을 서버에 취소 요청한다(로봇의 cartographer
-    // 프로세스도 같이 종료됨). "매핑 재시작"도 내부적으로 이걸 먼저 부른 뒤
-    // startMappingOnServer()로 새 job을 다시 시작한다.
+    // "초기화"(handleMappingToggleClicked가 진행 중일 때 호출) — 진행 중인 slam_job을
+    // 서버에 취소 요청한다(로봇의 cartographer 프로세스도 같이 종료됨). 화면(view_)도
+    // 바로 지워 새 매핑을 시작할 준비 상태로 되돌린다.
     void cancelMappingOnServer();
-    void restartMappingOnServer();
+    // startMappingBtn_ 텍스트("매핑 시작"/"초기화")와 saveMapBtn_ 활성화 여부를
+    // currentSlamJobId_ 기준으로 다시 맞춘다 — 시작/취소/저장 완료(slam_done)/로봇
+    // 전환(switchToRobot) 등 currentSlamJobId_가 바뀌는 모든 지점에서 부른다.
+    void updateMappingButtonState();
     // /ws/dashboard 메시지 — slam_progress/slam_done을 현재 로봇 기준으로 반영한다
     // (체크리스트 ⑨).
     void handleWsMessage(const QJsonObject& message);
@@ -103,8 +116,16 @@ private:
     MappingStatusOverlay* statusOverlay_;
     SlamMappingCard* slamCard_;
     TeleopPanel* teleopPanel_;
-    QPushButton* robotChipBtn_;
-    QMenu* robotMenu_;
+    // 로봇 선택 — 대상자 페이지 모달(P3RecipientCreateDialog)의 로봇/맵 배정 콤보와
+    // 같은 CareGuardComboBox를 쓴다(디자인 통일). 예전엔 QPushButton+QMenu로 흉내 낸
+    // "칩" 버튼이었다.
+    CareGuardComboBox* robotCombo_;
+    // 상단바의 "매핑 시작"/"초기화" 토글 버튼 — updateMappingButtonState()가
+    // currentSlamJobId_ 기준으로 텍스트를 바꾼다.
+    QPushButton* startMappingBtn_;
+    // "SLAM 맵 저장 · 배포" — updateMappingButtonState()가 currentSlamJobId_ != 0일
+    // 때만 활성화한다(매핑 중이 아니면 저장할 대상 자체가 없다).
+    QPushButton* saveMapBtn_;
     QVector<ApiClient::RobotInfo> robots_;
     int currentRobotIndex_ = -1;
     // "맵 저장 정보" 카드의 맵 이름 입력칸 — "SLAM 맵 저장·배포" 클릭 시 이 값을 실제
@@ -115,9 +136,9 @@ private:
     QMap<QString, RegisteredMapInfo> registeredMaps_;
     ApiClient* apiClient_;
     WsClient* wsClient_;
-    // 진행 중인 slam_job id. 0이면 진행 중인 매핑이 없다는 뜻(취소/재시작 버튼이
-    // 서버에 뭘 취소해야 할지 알아야 해서 필요) — startMappingOnServer 성공 시 채우고,
-    // cancelMappingOnServer 성공 시 0으로 되돌린다.
+    // 진행 중인 slam_job id. 0이면 진행 중인 매핑이 없다는 뜻(토글 버튼이 "초기화"를
+    // 눌렀을 때 서버에 뭘 취소해야 할지 알아야 해서 필요) — startMappingOnServer 성공
+    // 시 채우고, cancelMappingOnServer/slam_done 수신 시 0으로 되돌린다.
     int currentSlamJobId_ = 0;
     // 헤더 로봇 드롭다운에서 선택된 로봇 — GET /robots 응답이 오기 전 기본값은 "R-04"
     // (기존 하드코딩 값과 동일하게 유지). 매핑 시작·WS 필터링·텔레옵 전송 대상이

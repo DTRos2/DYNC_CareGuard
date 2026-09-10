@@ -106,6 +106,8 @@ ApiClient::RobotInfo ApiClient::parseRobot(const QJsonObject& o) {
     r.name = o.value(QStringLiteral("name")).toString();
     r.model = o.value(QStringLiteral("model")).toString();
     r.ip = o.value(QStringLiteral("ip")).toString();
+    r.isOnline = o.value(QStringLiteral("is_online")).toBool();
+    r.isNavRunning = o.value(QStringLiteral("is_nav_running")).toBool();
     return r;
 }
 
@@ -320,6 +322,14 @@ void ApiClient::deletePatrolSchedule(int scheduleId, SimpleCallback callback) {
     sendDelete(QStringLiteral("/patrol-schedules/%1").arg(scheduleId), callback);
 }
 
+ApiClient::SlamJobInfo ApiClient::parseSlamJob(const QJsonObject& o) {
+    SlamJobInfo job;
+    job.id = o.value(QStringLiteral("id")).toInt();
+    job.status = o.value(QStringLiteral("status")).toString();
+    job.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
+    return job;
+}
+
 void ApiClient::startSlamJob(const QString& robotCode, const QString& mapName,
                               ItemCallback<SlamJobInfo> callback) {
     QJsonObject body{{"robot_code", robotCode}, {"map_name", mapName}};
@@ -329,12 +339,7 @@ void ApiClient::startSlamJob(const QString& robotCode, const QString& mapName,
                      callback(false, SlamJobInfo{}, err);
                      return;
                  }
-                 const QJsonObject o = QJsonDocument::fromJson(respBody).object();
-                 SlamJobInfo job;
-                 job.id = o.value(QStringLiteral("id")).toInt();
-                 job.status = o.value(QStringLiteral("status")).toString();
-                 job.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
-                 callback(true, job, err);
+                 callback(true, parseSlamJob(QJsonDocument::fromJson(respBody).object()), err);
              });
 }
 
@@ -345,12 +350,7 @@ void ApiClient::cancelSlamJob(int jobId, ItemCallback<SlamJobInfo> callback) {
                      callback(false, SlamJobInfo{}, err);
                      return;
                  }
-                 const QJsonObject o = QJsonDocument::fromJson(respBody).object();
-                 SlamJobInfo job;
-                 job.id = o.value(QStringLiteral("id")).toInt();
-                 job.status = o.value(QStringLiteral("status")).toString();
-                 job.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
-                 callback(true, job, err);
+                 callback(true, parseSlamJob(QJsonDocument::fromJson(respBody).object()), err);
              });
 }
 
@@ -365,13 +365,27 @@ void ApiClient::saveSlamJob(int jobId, const QString& mapName, ItemCallback<Slam
                      callback(false, SlamJobInfo{}, err);
                      return;
                  }
-                 const QJsonObject o = QJsonDocument::fromJson(respBody).object();
-                 SlamJobInfo job;
-                 job.id = o.value(QStringLiteral("id")).toInt();
-                 job.status = o.value(QStringLiteral("status")).toString();
-                 job.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
-                 callback(true, job, err);
+                 callback(true, parseSlamJob(QJsonDocument::fromJson(respBody).object()), err);
              });
+}
+
+void ApiClient::fetchSlamJobs(int robotId, const QString& status, ListCallback<SlamJobInfo> callback) {
+    QUrlQuery query;
+    if (robotId > 0) query.addQueryItem(QStringLiteral("robot_id"), QString::number(robotId));
+    if (!status.isEmpty()) query.addQueryItem(QStringLiteral("status"), status);
+    QString path = QStringLiteral("/slam-jobs");
+    if (!query.isEmpty()) path += QStringLiteral("?") + query.toString(QUrl::FullyEncoded);
+    getJsonArray(path, [callback](bool ok, const QByteArray& body) {
+        QVector<SlamJobInfo> jobs;
+        if (!ok) {
+            callback(false, jobs);
+            return;
+        }
+        for (const QJsonValue& v : QJsonDocument::fromJson(body).array()) {
+            jobs.append(parseSlamJob(v.toObject()));
+        }
+        callback(true, jobs);
+    });
 }
 
 void ApiClient::uploadMapFile(const QString& robotCode, const QString& pgmFilePath, ItemCallback<int> callback) {
@@ -441,6 +455,17 @@ void ApiClient::createMap(const MapCreateParams& params, ItemCallback<MapInfo> c
     });
 }
 
+ApiClient::PatrolRunInfo ApiClient::parsePatrolRun(const QJsonObject& o) {
+    PatrolRunInfo run;
+    run.id = o.value(QStringLiteral("id")).toInt();
+    run.status = o.value(QStringLiteral("status")).toString();
+    run.trigger = o.value(QStringLiteral("trigger")).toString();
+    run.waypointsTotal = o.value(QStringLiteral("waypoints_total")).toInt();
+    run.waypointsDone = o.value(QStringLiteral("waypoints_done")).toInt();
+    run.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
+    return run;
+}
+
 void ApiClient::startPatrolRun(int robotId, int routeId, const QString& trigger,
                                 ItemCallback<PatrolRunInfo> callback) {
     QJsonObject body{{"robot_id", robotId}, {"route_id", routeId}, {"trigger", trigger}};
@@ -450,15 +475,27 @@ void ApiClient::startPatrolRun(int robotId, int routeId, const QString& trigger,
                      callback(false, PatrolRunInfo{}, err);
                      return;
                  }
-                 const QJsonObject o = QJsonDocument::fromJson(respBody).object();
-                 PatrolRunInfo run;
-                 run.id = o.value(QStringLiteral("id")).toInt();
-                 run.status = o.value(QStringLiteral("status")).toString();
-                 run.waypointsTotal = o.value(QStringLiteral("waypoints_total")).toInt();
-                 run.waypointsDone = o.value(QStringLiteral("waypoints_done")).toInt();
-                 run.robotConnected = o.value(QStringLiteral("robot_connected")).toBool();
-                 callback(true, run, err);
+                 callback(true, parsePatrolRun(QJsonDocument::fromJson(respBody).object()), err);
              });
+}
+
+void ApiClient::fetchPatrolRuns(int robotId, const QString& status, ListCallback<PatrolRunInfo> callback) {
+    QUrlQuery query;
+    if (robotId > 0) query.addQueryItem(QStringLiteral("robot_id"), QString::number(robotId));
+    if (!status.isEmpty()) query.addQueryItem(QStringLiteral("status"), status);
+    QString path = QStringLiteral("/patrol-runs");
+    if (!query.isEmpty()) path += QStringLiteral("?") + query.toString(QUrl::FullyEncoded);
+    getJsonArray(path, [callback](bool ok, const QByteArray& body) {
+        QVector<PatrolRunInfo> runs;
+        if (!ok) {
+            callback(false, runs);
+            return;
+        }
+        for (const QJsonValue& v : QJsonDocument::fromJson(body).array()) {
+            runs.append(parsePatrolRun(v.toObject()));
+        }
+        callback(true, runs);
+    });
 }
 
 void ApiClient::startMedicationMission(const QString& robotCode, ItemCallback<MissionInfo> callback) {
@@ -652,6 +689,12 @@ void ApiClient::driveToPoint(const QString& robotCode, int mapId, const QString&
     QJsonObject body{{"robot_code", robotCode}, {"map_id", mapId},   {"code", code},
                       {"x", xMeters},           {"y", yMeters},     {"yaw", yawRad}};
     postJson(QStringLiteral("/patrol-runs/drive-to-point"), body,
+             [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
+}
+
+void ApiClient::cancelPatrolRun(const QString& robotCode, SimpleCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}};
+    postJson(QStringLiteral("/patrol-runs/cancel"), body,
              [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
 }
 

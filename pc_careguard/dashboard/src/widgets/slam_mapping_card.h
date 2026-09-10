@@ -96,14 +96,6 @@ public:
 
     SlamMapView* view() const { return view_; }
 
-signals:
-    void emergencyStopRequested();
-    // "매핑 재시작"/"매핑 취소" 클릭 — 화면(view_) 초기화는 이 카드가 바로 처리하지만,
-    // 로봇에게 실제로 SLAM 프로세스를 멈추고(취소)/다시 시작하라고(재시작) 알리는 건
-    // 서버 API 호출이 필요해 P5MapPage가 담당한다.
-    void mappingRestartRequested();
-    void mappingCancelRequested();
-
 public slots:
     void setVelocity(qreal linearMps, qreal angularRadps);
     // 파일로 등록된 맵을 반영: 배지·라벨을 "맵 등록됨"으로 바꾸고 배경 이미지를 표시한다.
@@ -112,6 +104,11 @@ public slots:
     // 초기 상태로 배지·라벨·경과시간을 되돌린다. 전환 직후 registeredMaps_에 이미지가
     // 있으면 이어서 applyRegisteredMap()이 다시 채운다.
     void resetForRobot(const QString& robotId);
+    // "매핑 시작"이 서버에 실제로 접수돼 slam_job이 생긴 시점에만 P5MapPage가
+    // 호출한다 — 배지를 "SLAM 매핑 중"으로 바꾼다. 예전엔 이 문구가 생성자
+    // 기본값이라 실제로 매핑 중이 아닐 때도(페이지에 막 들어왔을 때 등) 항상
+    // 떠 있었다.
+    void markMappingStarted();
     // 서버가 릴레이한 실제 slam_progress(로봇의 slam_progress_publisher가 발행한
     // 경과시간·occupancy grid 탐색면적)를 반영한다. elapsedTimer_는 다음 서버 갱신
     // 전까지 화면을 매끄럽게 이어 보여주는 로컬 보간용이고, 값 자체의 기준(진실)은

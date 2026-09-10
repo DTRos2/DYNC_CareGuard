@@ -14,8 +14,9 @@
 세부가 조금씩 다르니 실 로봇에서 한 번 맞춰봐야 한다.
 """
 import math
+import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 import requests
 from geometry_msgs.msg import PoseStamped
@@ -70,20 +71,22 @@ class WaypointManager:
         pose.pose.orientation.w = math.cos(yaw / 2.0)
         return pose
 
-    def navigate_sequence(self, codes: Sequence[str]):
+    def navigate_sequence(self, codes: Sequence[str], cancel_check: Optional[Callable[[], bool]] = None):
         """캐시(fetch)에 있는 code 순서대로 이동한다."""
         poses = [self._to_pose_xyz(w.pos_x, w.pos_y, w.yaw) for w in (self._waypoints.get(c) for c in codes) if w]
-        return self._go_through(poses)
+        return self._go_through(poses, cancel_check)
 
-    def navigate_poses(self, waypoints: Sequence) -> None:
+    def navigate_poses(self, waypoints: Sequence, cancel_check: Optional[Callable[[], bool]] = None):
         """이미 좌표를 알고 있는 웨이포인트 목록을 캐시와 무관하게 그대로 이동한다.
 
         waypoints의 각 원소는 x/y/yaw 속성을 갖는 객체(예: careguard_msgs/msg/Waypoint)면 된다.
+        cancel_check: 주기적으로 불러 True면 즉시 Nav2 목표를 취소하고 반환한다 —
+        patrol_task.py가 ActionServer의 goal_handle.is_cancel_requested를 그대로 넘긴다.
         """
         poses = [self._to_pose_xyz(w.x, w.y, w.yaw) for w in waypoints]
-        return self._go_through(poses)
+        return self._go_through(poses, cancel_check)
 
-    def _go_through(self, poses: List[PoseStamped]):
+    def _go_through(self, poses: List[PoseStamped], cancel_check: Optional[Callable[[], bool]] = None):
         if not poses:
             return None
         if len(poses) == 1:
@@ -98,6 +101,16 @@ class WaypointManager:
             self._navigator.goToPose(poses[0])
         else:
             self._navigator.goThroughPoses(poses)
+        # 예전엔 while not isTaskComplete(): pass — 취소를 확인할 지점 자체가 없어서
+        # "순찰/이동을 취소한다"는 개념이 구조적으로 불가능했다(ActionServer에
+        # cancel_callback을 달아도 여기서 끝까지 안 멈추면 의미가 없다). 매 주기
+        # cancel_check()를 확인해, 취소가 요청되면 cancelTask()로 실제 Nav2 목표를
+        # 내리고 즉시 반환한다 — 호출부(patrol_task._execute)가 이 반환을 보고
+        # goal_handle.canceled()를 부른다. sleep(0.1)은 busy-wait로 CPU를 100%
+        # 태우던 것도 같이 고친다(부수 효과, 기능 변경 아님).
         while not self._navigator.isTaskComplete():
-            pass
+            if cancel_check is not None and cancel_check():
+                self._navigator.cancelTask()
+                return None
+            time.sleep(0.1)
         return self._navigator.getResult()

@@ -12,6 +12,7 @@ class QLabel;
 class QPushButton;
 class QLineEdit;
 class QComboBox;
+class CareGuardComboBox;
 class QCheckBox;
 class QListWidget;
 class QTimeEdit;
@@ -117,11 +118,24 @@ private:
     QWidget* buildScheduleCard();
 
     void rebuildWpList();
-    void rebuildRouteChips();
+    // routeSelectCombo_의 항목을 routes_ 키 목록으로 다시 채운다 — 예전엔 체크 가능한
+    // "칩" 버튼 행이었다(콤보박스로 통일, 2026-09-10).
+    void rebuildRouteSelector();
     void rebuildRouteOrderList();
     void rebuildRouteEditList();
     void rebuildScheduleList();
     void refreshCanvasPreview();
+    // routeOrderEditToggleBtn_("편집"/"저장") 클릭 — 편집으로 켜면 routeOrderList_의
+    // 드래그 재정렬을 허용하고, 저장으로 끄면 드래그를 다시 막고 지금 순서를
+    // PUT /patrol-routes/{id}로 서버에 반영한다. 예전엔 드래그가 항상 가능했지만
+    // 순서가 바뀌어도 화면(routes_)에만 반영되고 서버(patrol_route.steps)에는 전혀
+    // 안 실렸다 — "경로 순서를 바꿔도 DB에 안 들어간다" 리포트(2026-09-10).
+    void toggleRouteOrderEditMode(bool editing);
+    // 버튼·드래그 잠금 상태만 "편집 꺼짐"으로 되돌린다(서버 저장 없음) — 경로를
+    // 바꾸거나(routeSelectCombo_) 목록을 다시 그릴 때(rebuildRouteOrderList) 쓴다.
+    // toggleRouteOrderEditMode(false)를 그대로 쓰면 지금 막 전환된 새 경로 기준으로
+    // "저장"이 실행돼버린다 — 그건 사용자가 요청한 적 없는 동작이라 반드시 이걸 쓴다.
+    void resetRouteOrderEditUi();
 
     QString nextWaypointId() const;
     QString chargingWaypointId() const;
@@ -148,16 +162,14 @@ private:
     void deleteCurrentRoute();
     void runTestRun();
     void driveToSingleWaypoint(const QString& id);
+    // 팝오버의 "주행 취소"(토글된 "경로 이동") — POST /patrol-runs/cancel로 지금 이
+    // 로봇이 하고 있는 주행(순찰/이동 공통)을 멈춘다. id는 신호 시그니처를 맞추기 위한
+    // 것일 뿐 실제로는 drivingWaypointId_ 기준으로 동작한다(cancelCurrentDrive 정의부 참고).
+    void cancelCurrentDrive(const QString& id);
     // "위치 보정" — 캔버스에서 클릭+드래그로 잡은 위치·방향을 서버에 보내 AMCL 초기
     // 위치를 즉석에서 다시 잡는다(자동 세팅이 충전 스테이션 좌표를 가정하는 것과 달리,
     // 로봇이 실제로 있는 임의의 위치를 사용자가 직접 지정할 때 쓴다).
     void handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg);
-    // "로봇 종료" 버튼 — 확인 후 apiClient_->shutdownRobot()으로 이 로봇에서 켜진
-    // 모든 것(베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크)을 한 번에 끈다.
-    void shutdownCurrentRobot();
-    // "비상정지" 버튼/Space — P5MapPage::handleEmergencyStop과 같은 이유·패턴.
-    void handleEmergencyStop();
-
     void toggleScheduleForm(bool show);
     void saveScheduleFromForm();
     // scheduleListLayout_의 편집 아이콘 클릭 — schedules_[index]로 스케줄 폼을 채우고
@@ -225,16 +237,63 @@ private:
     // 반영되게 하는 게 목적 — 로컬 편집 중(scheduleEditIndex_>=0)인 그 폼 자체는 안 건드린다.
     void refreshSchedulesForRoute(int routeId);
 
+    // robotOfflineBanner_의 아이콘·문구·색을 (robotOnline_, isPatrolling_) 기준으로
+    // 다시 그린다 — 오프라인(빨강) / 주행 중(청록, 온라인이지만 새 명령 불가) /
+    // 온라인+대기(숨김) 세 상태. robot_status·patrol_progress·patrol_done 수신,
+    // 맵 전환(loadMapData) 등 두 값이 바뀌는 모든 지점에서 부른다.
+    void updateRobotStatusBanner();
+    // robotOnline_/isPatrolling_/slamActive_/navRunning_ 네 값을 한 곳에서만 조합한다 —
+    // updateDrivingButtonsEnabled()와 refreshPopoverDriveButton()이 예전엔 이 조건을
+    // 각자 따로 들고 있어서, 조건을 하나 더 추가하는 변경이 한쪽에만 반영되면 툴바
+    // 버튼과 팝오버 버튼이 서로 다른 판단을 내릴 수 있었다.
+    bool canDrive() const;
+    // testBtn_("경로 주행")·팝오버의 "경로 이동" 버튼처럼 로봇에 새 주행 명령을 보내는
+    // 버튼들의 활성화 여부를 canDrive() 기준으로 맞춘다. 팝오버는 열려 있는 동안
+    // 상태가 바뀌어도 실시간으로 안 따라가고, 다음에 열 때(handleCanvasEditRequested)
+    // 그 시점 값으로 다시 맞춘다.
+    void updateDrivingButtonsEnabled();
+    // updateDrivingButtonsEnabled()가 매번 같이 부른다 — 팝오버가 떠 있고 지금
+    // 편집 중인 웨이포인트가 drivingWaypointId_와 같으면 "주행 취소"로, 아니면
+    // "경로 이동"(활성화 여부는 canDrive() 기준)으로 토글을 맞춘다.
+    void refreshPopoverDriveButton();
+    // "지금 이 로봇이 실제로 어떤 상태인지"를 서버에 다시 물어 robotOnline_(GET
+    // /robots의 is_online)·isPatrolling_(GET /patrol-runs?status=running 결과 유무)을
+    // 맞추고 배너·버튼을 갱신한다. patrol_progress/patrol_done WS만 기다리면 페이지를
+    // 새로 열었을 때나(맵 전환 포함) WS 메시지를 놓쳤을 때 실제 상태를 알 길이 없어서
+    // 생겼다 — loadMapData()와 헤더의 새로고침 버튼(refreshRobotStateBtn_) 둘 다 이걸
+    // 그대로 쓴다. 두 조회는 독립적으로 비동기라 응답이 각자 도착하는 대로 반영된다.
+    void refreshRobotState();
+
     QPushButton* mapChipBtn_;
     QMenu* mapMenu_;
+    // 헤더에 항상 보이는 새로고침 — 클릭하면 refreshRobotState()를 그대로 호출한다.
+    // 오프라인/주행 중 표시가 실제 상태와 어긋난 채로 안 바뀌는 경우(WS 메시지를
+    // 놓쳤거나 patrol_done을 영영 못 받은 경우 등) 사용자가 직접 다시 맞출 수 있게 한다.
+    QPushButton* refreshRobotStateBtn_;
     QVector<MapData> maps_;
     int currentMapIndex_;
 
     QWidget* wpListCard_;
+    // "웨이포인트 N" — rebuildWpList()가 개수만 바꿔 다시 그린다(경로 카드의 정적인
+    // "경로 · Trajectory" 타이틀과 달리 이 라벨은 개수가 바뀔 때마다 갱신돼야 한다).
+    QLabel* wpListTitleLabel_;
+    // "+ 추가" — 경로 카드의 "+ 새 경로"와 같은 자리·스타일. 체크 상태가
+    // canvas_->addWaypointMode()와 그대로 연결되므로, rebuildWpList()가 매번 다시
+    // 만들면(다른 위젯들처럼) 체크 상태가 사라져 캔버스 쪽과 어긋난다 — 그래서 이
+    // 버튼만은 buildWpListCard()에서 한 번만 만들고 절대 다시 만들지 않는다.
+    QPushButton* addWpBtn_;
     QVBoxLayout* wpListLayout_;
+    // "유형: 순찰 지점 · 충전" — 경로 카드의 routeStatsLabel_처럼 목록 밑에 둔다
+    // (예전엔 헤더 행에 있었다).
+    QLabel* wpTypeHintLabel_;
 
     QStackedLayout* routeStack_;
-    QHBoxLayout* routeChipsLayout_;
+    // 저장된 경로 선택 — 예전엔 체크 가능한 "칩" 버튼 행(routeChipsLayout_)이었다.
+    // 대상자 페이지 모달·P5 로봇 선택과 같은 CareGuardComboBox로 통일했다.
+    CareGuardComboBox* routeSelectCombo_;
+    // "편집"/"저장" 토글 — routeOrderList_의 드래그 재정렬 가능 여부와 서버 반영
+    // 시점을 가른다(toggleRouteOrderEditMode 주석 참고).
+    QPushButton* routeOrderEditToggleBtn_;
     QListWidget* routeOrderList_;
     QLabel* routeStatsLabel_;
     QLineEdit* routeEditNameEdit_;
@@ -267,10 +326,50 @@ private:
     TeleopPanel* teleopPanel_;
     QFrame* routeEditBanner_;
     QFrame* connectionBanner_;
+    // "로봇 상태 바" — 예전엔 오프라인 여부만 표시했지만, 이제 updateRobotStatusBanner()가
+    // 오프라인/주행 중/정상(숨김) 세 상태에 맞춰 아이콘·문구·색(level 프로퍼티)까지
+    // 다시 그린다. 이름은 예전 그대로 두되(호출부가 많아 리네임 범위가 커짐) 실질적으로는
+    // 범용 로봇 상태 바다.
     QFrame* robotOfflineBanner_;
+    QLabel* robotStatusIcon_;
+    QLabel* robotStatusText_;
     // 서버로부터 이 로봇의 robot_status를 아직 못 받았으면 안전하게 오프라인으로
     // 간주한다 — 그래서 기본값이 false다.
     bool robotOnline_ = false;
+    // patrol_progress/patrol_done(WS)과 startPatrolRun/driveToPoint의 HTTP 응답으로
+    // 갱신한다 — true인 동안은 이 로봇에게 새 주행 명령(순찰 시작/경로 이동)을 보내면
+    // patrol_task.py의 액션 서버가 REJECT하므로, 그 전에 버튼을 잠가 사용자에게
+    // "왜 안 되는지" 미리 알린다. DB(patrol_run.status)에는 이미 기록되고 있었지만
+    // 대시보드가 그 진행 상태 메시지를 아예 수신하지 않아서(patrol_progress/patrol_done
+    // 둘 다 handleWsMessage가 무시했음) 화면엔 전혀 안 드러났었다.
+    bool isPatrolling_ = false;
+    // isPatrolling_이 true인 동안 그 주행이 "manual"(대시보드 버튼)인지 "schedule"
+    // (services/scheduler.py 자동 트리거)인지 — updateRobotStatusBanner()가 "로봇
+    // 주행 중"/"스케줄 주행 중" 문구를 가르는 데만 쓴다(차단 자체는 트리거 종류와
+    // 무관하게 이미 동일하게 적용된다). isPatrolling_이 false면 빈 문자열.
+    QString activePatrolTrigger_;
+    // GET /slam-jobs?robot_id=&status=queued(refreshRobotState) + slam_progress/
+    // slam_done(WS)으로 갱신한다 — 이 로봇이 P5에서 SLAM 매핑 중이면 true. SLAM 중엔
+    // downlink_node._ensure_navigation_running이 Nav2를 안 띄우고 조용히 거부하므로
+    // (로그만 남기고 PC엔 전혀 안 알림), 그 실패를 사전에 막기 위해 이동·순찰 버튼을
+    // 여기서 먼저 잠근다(서버도 별도로 409 거부한다 — 이건 UI 안내용).
+    bool slamActive_ = false;
+    // nav_status(WS, downlink_node._send_nav_status) + refreshRobotState()의
+    // GET /robots(robot_ws.py::nav_running 캐시)로 갱신한다 — 예전엔 WS뿐이라 그
+    // 메시지 하나만 유실/지연돼도 "새로고침"이 전혀 안 먹혔다(2026-09-10에 재동기화
+    // 경로 추가). 기본값 false — "로봇 온라인=Nav2도 당연히 떠있다"고 가정하면 안
+    // 된다(막 온라인 됐거나, Nav2가 맵 다운로드/AMCL 기동 중이거나, 이전에 기동
+    // 실패한 채로 남아있을 수 있음). slamActive_가 아닌데 이것도 false면 "SLAM
+    // 중도 아니고 Nav2도 안 뜬" 제3의 상태로 배너에 안내한다.
+    bool navRunning_ = false;
+    // 지금 수동으로("경로 이동" 팝오버 버튼) 주행 중인 웨이포인트 id — 빈 문자열이면
+    // 없음. rebuildWpList()가 이 id의 행을 하이라이트하고, refreshPopoverDriveButton()이
+    // 팝오버가 지금 보고 있는 웨이포인트와 비교해 "경로 이동"/"주행 취소" 토글을
+    // 정한다. runTestRun()(경로 전체 주행)은 특정 한 지점이 아니라 이 값을 안 건드린다 —
+    // isPatrolling_/activePatrolTrigger_만으로 그쪽 배너·버튼 잠금은 충분하다.
+    QString drivingWaypointId_;
+    // "순찰 시작" — updateDrivingButtonsEnabled()가 활성화 여부를 갱신한다.
+    QPushButton* testBtn_;
 
     QVector<WaypointCanvas::Waypoint> waypoints_;
     QMap<QString, QVector<QString>> routes_;

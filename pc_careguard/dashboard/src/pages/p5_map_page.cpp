@@ -1,6 +1,5 @@
 #include "p5_map_page.h"
 
-#include <QAction>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -8,10 +7,10 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMenu>
 #include <QMessageBox>
+#include <QSignalBlocker>
 #include <QPushButton>
-#include <QTimer>
+#include <QStyle>
 #include <QVBoxLayout>
 
 #include <QJsonArray>
@@ -22,6 +21,7 @@
 #include "net/api_client.h"
 #include "net/ws_client.h"
 #include "theme/tokens.h"
+#include "widgets/careguard_combo_box.h"
 #include "widgets/mapping_status_overlay.h"
 #include "widgets/pgm_image_loader.h"
 #include "widgets/simple_icons.h"
@@ -53,9 +53,6 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
     content->setSpacing(Tokens::Layout::CARD_GAP);
 
     slamCard_ = new SlamMappingCard(this);
-    connect(slamCard_, &SlamMappingCard::emergencyStopRequested, this, &P5MapPage::handleEmergencyStop);
-    connect(slamCard_, &SlamMappingCard::mappingCancelRequested, this, &P5MapPage::cancelMappingOnServer);
-    connect(slamCard_, &SlamMappingCard::mappingRestartRequested, this, &P5MapPage::restartMappingOnServer);
     content->addWidget(slamCard_, /*stretch=*/16);
 
     auto* rightCol = new QVBoxLayout();
@@ -147,14 +144,20 @@ QWidget* P5MapPage::buildHeaderRow() {
     layout->addWidget(title);
     layout->addStretch();
 
-    robotChipBtn_ = new QPushButton(SimpleIcons::robot(Tokens::TEXT_SECONDARY, 13), QString(), row);
-    robotChipBtn_->setObjectName("robotChip");
-    robotChipBtn_->setIconSize(QSize(13, 13));
-    robotMenu_ = new QMenu(robotChipBtn_);
-    robotChipBtn_->setMenu(robotMenu_);
-    connect(robotMenu_, &QMenu::aboutToShow, this, [this] { robotMenu_->move(robotMenu_->pos() + QPoint(0, 6)); });
-    updateRobotChipText();
-    layout->addWidget(robotChipBtn_);
+    // 대상자 페이지 모달(P3RecipientCreateDialog)의 로봇/맵 배정 콤보와 같은
+    // CareGuardComboBox — 예전엔 QPushButton+QMenu로 흉내 낸 "칩" 버튼이었다(디자인
+    // 통일 요청, 2026-09-10). QSS의 QComboBox#robotChip 규칙이 이전 칩 버튼과 같은
+    // 박스 크기·정렬을 유지한다.
+    robotCombo_ = new CareGuardComboBox(row);
+    robotCombo_->setObjectName("robotChip");
+    // 기본값(AdjustToContentsOnFirstShow)은 폭을 "처음 표시될 때" 딱 한 번만 항목
+    // 길이에 맞춰 계산하고 그 뒤로 안 바꾼다 — updateRobotChipText()가 나중에 현재
+    // 항목 텍스트에 "· 온라인/오프라인"을 덧붙이면 이미 고정된(짧은) 폭보다 길어져
+    // 말줄임표도 없이 그냥 잘려 보였다("R-04 (4호기) · 오프라인"이 "R-04"로만 보임).
+    // 매번 현재 내용 기준으로 폭을 다시 맞추게 한다.
+    robotCombo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    connect(robotCombo_, &QComboBox::currentIndexChanged, this, &P5MapPage::switchToRobot);
+    layout->addWidget(robotCombo_);
 
     auto* registerBtn = new QPushButton(SimpleIcons::upload(Tokens::TEXT_SECONDARY, 12), QStringLiteral("파일로 등록"), row);
     registerBtn->setProperty("variant", "secondary");
@@ -162,12 +165,12 @@ QWidget* P5MapPage::buildHeaderRow() {
     connect(registerBtn, &QPushButton::clicked, this, &P5MapPage::openFileRegisterDialog);
     layout->addWidget(registerBtn);
 
-    auto* startMappingBtn = new QPushButton(SimpleIcons::radar(Tokens::TEXT_INVERSE, 12),
-                                             QStringLiteral("매핑 시작"), row);
-    startMappingBtn->setProperty("variant", "primary");
-    startMappingBtn->setIconSize(QSize(12, 12));
-    connect(startMappingBtn, &QPushButton::clicked, this, &P5MapPage::startMappingOnServer);
-    layout->addWidget(startMappingBtn);
+    startMappingBtn_ = new QPushButton(SimpleIcons::radar(Tokens::TEXT_INVERSE, 12),
+                                        QStringLiteral("매핑 시작"), row);
+    startMappingBtn_->setProperty("variant", "primary");
+    startMappingBtn_->setIconSize(QSize(12, 12));
+    connect(startMappingBtn_, &QPushButton::clicked, this, &P5MapPage::handleMappingToggleClicked);
+    layout->addWidget(startMappingBtn_);
 
     return row;
 }
@@ -200,13 +203,23 @@ QWidget* P5MapPage::buildSaveInfoCard() {
     layout->addWidget(recipientCombo);
     layout->addSpacing(8);
 
-    auto* saveBtn = new QPushButton(SimpleIcons::deviceFloppy(Tokens::TEXT_INVERSE, 12),
-                                     QStringLiteral("SLAM 맵 저장 · 배포"), card);
-    saveBtn->setProperty("variant", "primary");
-    saveBtn->setIconSize(QSize(12, 12));
+    // primary 버튼 배경(청록)과 대비되도록 아이콘을 흰색(TEXT_INVERSE)으로 그렸는데,
+    // Normal 모드 픽스맵만 있으면 QStyle이 비활성 상태에서 이 흰 아이콘을 그대로
+    // 흐리게(저채도) 렌더링한다 — 비활성 배경(#EDF1F4, 거의 흰색)과 대비가 없어
+    // 아이콘이 안 보이는 원인이었다. QPushButton:disabled의 글자색(TEXT_MUTED)과
+    // 같은 색으로 Disabled 모드 픽스맵을 따로 채워준다.
+    QIcon saveMapIcon = SimpleIcons::deviceFloppy(Tokens::TEXT_INVERSE, 12);
+    saveMapIcon.addPixmap(SimpleIcons::deviceFloppy(Tokens::TEXT_MUTED, 12).pixmap(12, 12), QIcon::Disabled);
+    saveMapBtn_ = new QPushButton(saveMapIcon, QStringLiteral("SLAM 맵 저장 · 배포"), card);
+    saveMapBtn_->setProperty("variant", "primary");
+    saveMapBtn_->setIconSize(QSize(12, 12));
     // 좁은 우측 패널(196px) 폭에 기본 13px 글자로는 문구가 버튼 밖으로 잘려 보인다.
-    saveBtn->setStyleSheet(QStringLiteral("font-size:11px;"));
-    connect(saveBtn, &QPushButton::clicked, this, [this] {
+    saveMapBtn_->setStyleSheet(QStringLiteral("font-size:11px;"));
+    // 매핑 중(currentSlamJobId_ != 0)이 아니면 저장할 대상 자체가 없다 — 1차
+    // 프로젝트(MediRun) SlamMappingPage::m_saveButton과 같은 활성화 조건.
+    // updateMappingButtonState()가 이후 상태 변화에 맞춰 이 값을 계속 갱신한다.
+    saveMapBtn_->setEnabled(false);
+    connect(saveMapBtn_, &QPushButton::clicked, this, [this] {
         // 예전엔 이 버튼이 실제로는 아무 것도 안 하고 "저장됐다"는 메시지만 띄웠다 —
         // 이제 진짜로 로봇에 저장 명령을 보낸다. 로봇이 map_saver_cli 실행+업로드를
         // 끝내는 데 시간이 걸리므로, 여기서는 "요청을 보냈다"까지만 알리고 실제 완료
@@ -231,7 +244,7 @@ QWidget* P5MapPage::buildSaveInfoCard() {
                                          QStringLiteral("로봇에 저장 명령을 보냈습니다. 완료되면 매핑 현황에 반영됩니다."));
                                  });
     });
-    layout->addWidget(saveBtn);
+    layout->addWidget(saveMapBtn_);
     layout->addSpacing(4);
 
     auto* caption = new QLabel(QStringLiteral("초기 위치는 순찰·경로 설정에서 충전 스테이션 웨이포인트로 지정됩니다."),
@@ -337,9 +350,27 @@ void P5MapPage::loadActiveMapsFromServer() {
             const QString mapName = m.name;
             const QString recipientName = m.recipientName;
 
-            // "미리보기" 모달(openMapPreviewDialog)이 쓰는 registeredMaps_는 파일로 직접
-            // 등록한 맵만 채워지던 로컬 캐시였다 — 서버에서 받아온 맵도 미리보기가 되도록
-            // 이미지를 받아 같은 캐시에 채운다.
+            // "이 로봇엔 등록된 맵이 있다"는 사실과 이름은 이미지 로딩(비동기, 아래)을
+            // 기다리지 않고 여기서 바로 캐시에 채운다 — 예전엔 fetchBytes가 성공해야만
+            // registeredMaps_에 들어가서, 이미지 로딩이 느리거나(전환 직후) 실패하면
+            // (imageUrl이 비어있는 등) 실제로 맵이 있는 로봇도 "맵 없음"으로 계속 보이고
+            // 상단 버튼도 "초기화" 대신 "매핑 시작"으로 잘못 나오는 원인이었다. 이미지는
+            // 로딩되는 대로 같은 항목을 덮어써 채운다(비어있어도 이름·"초기화" 판정은
+            // 이미 맞다).
+            if (!registeredMaps_.contains(robotCode)) {
+                registeredMaps_[robotCode] = RegisteredMapInfo{QImage(), mapName, recipientName};
+            } else {
+                registeredMaps_[robotCode].mapName = mapName;
+                registeredMaps_[robotCode].recipientName = recipientName;
+            }
+            if (robotCode == currentRobotCode_) {
+                slamCard_->applyRegisteredMap(registeredMaps_[robotCode].image, mapName, robotCode);
+                mapNameEdit_->setText(mapName);
+                updateMappingButtonState();
+            }
+
+            // "미리보기" 모달(openMapPreviewDialog)이 쓰는 registeredMaps_의 실제 이미지를
+            // 채운다 — 위에서 이미 이름·존재 여부는 반영했으니, 여기선 이미지만 마저 채운다.
             if (!m.imageUrl.isEmpty()) {
                 apiClient_->fetchBytes(
                     m.imageUrl, [this, robotCode, mapName, recipientName](bool imgOk, const QByteArray& data) {
@@ -395,28 +426,45 @@ void P5MapPage::loadRobotsFromServer() {
 }
 
 void P5MapPage::rebuildRobotMenu() {
-    robotMenu_->clear();
-    for (int i = 0; i < robots_.size(); ++i) {
-        const ApiClient::RobotInfo& r = robots_[i];
-        auto* action = robotMenu_->addAction(QStringLiteral("%1 (%2)").arg(r.code, r.name));
-        connect(action, &QAction::triggered, this, [this, i] { switchToRobot(i); });
+    // addItem 하나하나가 currentIndexChanged를 튀길 수 있어(특히 첫 addItem이
+    // index -1 -> 0로 넘어갈 때) 재구성 중엔 신호를 막는다 — switchToRobot()이
+    // 엉뚱한 인덱스로 먼저 불리는 걸 막는다. 실제 전환은 이 함수 호출부
+    // (loadRobotsFromServer)가 끝난 뒤 명시적으로 switchToRobot()을 부른다.
+    const QSignalBlocker blocker(robotCombo_);
+    robotCombo_->clear();
+    const QIcon robotIcon = SimpleIcons::robot(Tokens::TEXT_SECONDARY, 13);
+    for (const ApiClient::RobotInfo& r : robots_) {
+        robotCombo_->addItem(robotIcon, QStringLiteral("%1 (%2)").arg(r.code, r.name));
     }
 }
 
 void P5MapPage::updateRobotChipText() {
+    if (currentRobotIndex_ < 0 || currentRobotIndex_ >= robots_.size()) return;
+    const ApiClient::RobotInfo& r = robots_[currentRobotIndex_];
     const QString status = robotOnline_ ? QStringLiteral("● 온라인") : QStringLiteral("○ 오프라인");
-    robotChipBtn_->setText(QStringLiteral("  %1  %2  ▾").arg(currentRobotCode_, status));
+    // 텍스트만 바꾼다 — currentIndex는 그대로라 currentIndexChanged는 안 튄다.
+    robotCombo_->setItemText(currentRobotIndex_, QStringLiteral("%1 (%2) · %3").arg(r.code, r.name, status));
 }
 
 void P5MapPage::switchToRobot(int index) {
     if (index < 0 || index >= robots_.size() || index == currentRobotIndex_) return;
     currentRobotIndex_ = index;
     currentRobotCode_ = robots_[index].code;
+    // 사용자가 콤보에서 직접 골랐다면 이미 이 인덱스가 선택돼 있어 no-op이지만,
+    // loadRobotsFromServer()의 초기 전환처럼 프로그램이 직접 부른 경우엔 콤보 쪽
+    // 표시도 맞춰줘야 한다. setCurrentIndex 자체가 다시 currentIndexChanged를 튀길
+    // 수 있어 블로킹한다(위 얼리리턴으로 재귀는 막히지만, 신호가 또 나가는 것 자체는
+    // 막는 게 깔끔하다).
+    {
+        const QSignalBlocker blocker(robotCombo_);
+        robotCombo_->setCurrentIndex(index);
+    }
 
     // 이전 로봇의 SLAM 작업/온라인 상태를 새 로봇에 이어서 들고 있으면 안 된다 —
     // P6PatrolPage::loadMapData와 같은 이유(로봇을 바꿨는데 이전 로봇 기준 상태가
     // 남아있으면 안전 문제로 이어질 수 있다).
     currentSlamJobId_ = 0;
+    updateMappingButtonState();
     robotOnline_ = false;
     robotOfflineBanner_->setVisible(true);
     updateRobotChipText();
@@ -431,6 +479,55 @@ void P5MapPage::switchToRobot(int index) {
     }
 }
 
+void P5MapPage::handleMappingToggleClicked() {
+    // 1차 프로젝트(MediRun) SlamMappingPage::m_startButton과 같은 토글 —
+    // "지울 기존 맵"이 없으면(진행 중인 slam_job도, 이 로봇에 이미 등록된 맵도
+    // 없으면) 시작, 있으면 초기화. registeredMaps_에 이 로봇 항목이 있다는 것은
+    // switchToRobot이 이미 지도를 그린 상태라는 뜻이라, 매핑을 새로 시작하기 전에
+    // "초기화"로 한 번 더 확인시켜야 한다.
+    const bool hasExistingMap = currentSlamJobId_ != 0 || registeredMaps_.contains(currentRobotCode_);
+    if (!hasExistingMap) {
+        // downlink_node._start_slam이 Nav2가 떠 있으면(이 로봇이 순찰 중이었어도)
+        // 자동으로 먼저 종료시킨다(SLAM<->Nav2는 동시에 못 돎) — 사용자가 모르고
+        // 눌렀다가 "순찰이 갑자기 끊겼다"로 보이지 않도록 먼저 알린다.
+        const auto reply = QMessageBox::warning(
+            this, QStringLiteral("SLAM 매핑 시작"),
+            QStringLiteral("%1에서 진행 중인 주행(Nav2)이 있다면 SLAM 매핑을 시작하는 즉시 "
+                            "자동으로 종료됩니다. 계속할까요?")
+                .arg(currentRobotCode_),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply != QMessageBox::Yes) return;
+        startMappingOnServer();
+        return;
+    }
+
+    // 초기화는 되돌릴 수 없는 동작(화면의 지도·궤적·스캔점이 즉시 지워지고, 진행
+    // 중이던 매핑도 서버에 취소 요청이 나간다)이라 반드시 먼저 확인받는다.
+    const auto reply = QMessageBox::warning(
+        this, QStringLiteral("매핑 초기화"),
+        QStringLiteral("%1의 현재 지도가 지워지고 새로 그릴 준비 상태로 돌아갑니다. 계속할까요?")
+            .arg(currentRobotCode_),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+
+    if (currentSlamJobId_ != 0) {
+        cancelMappingOnServer();
+    }
+    // 로컬 캐시에서도 지워야 한다 — 안 지우면 registeredMaps_에 이 로봇 항목이 계속
+    // 남아있어 hasExistingMap이 다음에도 계속 true로 판정돼(진짜 등록된 맵이 없어도)
+    // "매핑 시작"으로 못 돌아간다. 서버 쪽 map 행 자체는 지우지 않는다 — 다음 저장
+    // (SLAM 맵 저장 · 배포)이 같은 이름으로 덮어쓰거나 새로 활성화하면서 정리된다.
+    registeredMaps_.remove(currentRobotCode_);
+    // 화면에 그려진 지도·궤적·스캔점을 지우고 "이 로봇엔 아직 맵이 없다" 상태로
+    // 되돌린다 — 1차 프로젝트의 handleResetMapping()이 stopMappingProcess() 직후
+    // 화면을 즉시 비우는 것과 같은 동작. 서버 취소 응답을 기다리지 않고 바로
+    // 처리한다(cancelMappingOnServer가 currentSlamJobId_를 이미 동기적으로
+    // 0으로 되돌려두므로 updateMappingButtonState()도 바로 반영된다).
+    slamCard_->resetForRobot(currentRobotCode_);
+    mapNameEdit_->setText(QStringLiteral("새 맵"));
+    updateMappingButtonState();
+}
+
 void P5MapPage::startMappingOnServer() {
     apiClient_->startSlamJob(
         currentRobotCode_, QStringLiteral("새 맵"),
@@ -441,6 +538,8 @@ void P5MapPage::startMappingOnServer() {
                 return;
             }
             currentSlamJobId_ = job.id;
+            updateMappingButtonState();
+            slamCard_->markMappingStarted();
             if (!job.robotConnected) {
                 QMessageBox::information(
                     this, QStringLiteral("매핑 시작"),
@@ -461,24 +560,19 @@ void P5MapPage::cancelMappingOnServer() {
     });
 }
 
-void P5MapPage::restartMappingOnServer() {
-    if (currentSlamJobId_ == 0) {
-        // 진행 중이던 job이 없으면(예: 매핑 시작 전에 눌렀거나 이미 취소됨) 바로 새로 시작한다.
-        startMappingOnServer();
-        return;
-    }
-    const int jobId = currentSlamJobId_;
-    currentSlamJobId_ = 0;
-    apiClient_->cancelSlamJob(jobId, [this](bool ok, const ApiClient::SlamJobInfo&, const QString& err) {
-        if (!ok) {
-            QMessageBox::warning(this, QStringLiteral("매핑 재시작 실패"),
-                                  err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
-            return;
-        }
-        // 로봇이 이전 cartographer 프로세스를 완전히 끝낼 시간을 살짝 두고 다시 시작한다
-        // (바로 다시 보내면 downlink_node가 아직 종료 중인 프로세스를 보고 거부할 수 있음).
-        QTimer::singleShot(500, this, &P5MapPage::startMappingOnServer);
-    });
+void P5MapPage::updateMappingButtonState() {
+    // handleMappingToggleClicked()와 같은 기준 — 진행 중인 slam_job이 있거나, 이
+    // 로봇에 이미 등록된 맵이 있으면(registeredMaps_) 버튼은 "초기화"여야 한다.
+    // 저장 버튼은 그중에서도 "지금 당장 저장할 진행 중인 job"이 있을 때만 켠다
+    // (이미 등록된 맵을 다시 저장할 순 없다 — 새로 매핑해야 저장 가능).
+    const bool hasExistingMap = currentSlamJobId_ != 0 || registeredMaps_.contains(currentRobotCode_);
+    startMappingBtn_->setText(hasExistingMap ? QStringLiteral("초기화") : QStringLiteral("매핑 시작"));
+    // "초기화"는 지금 그려진 지도를 지우는 되돌릴 수 없는 동작이라, "매핑 시작"과
+    // 같은 primary(청록) 톤이면 위험성이 눈에 안 띈다 — danger(빨강)로 구분한다.
+    startMappingBtn_->setProperty("variant", hasExistingMap ? "danger" : "primary");
+    startMappingBtn_->style()->unpolish(startMappingBtn_);
+    startMappingBtn_->style()->polish(startMappingBtn_);
+    saveMapBtn_->setEnabled(currentSlamJobId_ != 0);
 }
 
 void P5MapPage::handleWsMessage(const QJsonObject& message) {
@@ -565,6 +659,7 @@ void P5MapPage::handleWsMessage(const QJsonObject& message) {
         const bool hasMapId = !message.value(QStringLiteral("map_id")).isNull();
         if (message.value(QStringLiteral("job_id")).toInt() == currentSlamJobId_) {
             currentSlamJobId_ = 0;
+            updateMappingButtonState();
         }
         loadActiveMapsFromServer();
         if (hasMapId) {
@@ -578,19 +673,6 @@ void P5MapPage::handleWsMessage(const QJsonObject& message) {
         // 그대로 반영한다.
         slamCard_->applyProgress(message.value(QStringLiteral("elapsed_sec")).toInt(),
                                   message.value(QStringLiteral("area_m2")).toDouble());
-    }
-}
-
-void P5MapPage::handleEmergencyStop() {
-    // Space와 같은 경로(velocityChanged(0,0))라 확인 대화상자를 띄우기 전에 이미
-    // 실제 로봇에도 정지 명령이 나간다 — 안전이 우선이라 사용자 확인을 기다리지 않는다.
-    teleopPanel_->handleKeyPress(Qt::Key_Space);
-    const auto reply = QMessageBox::warning(
-        this, QStringLiteral("비상정지"),
-        QStringLiteral("%1를 비상정지합니다. 진행 중인 매핑 주행이 중단됩니다.").arg(currentRobotCode_),
-        QMessageBox::Cancel | QMessageBox::Ok, QMessageBox::Ok);
-    if (reply == QMessageBox::Ok) {
-        slamCard_->setVelocity(0.0, 0.0);
     }
 }
 

@@ -72,6 +72,18 @@ class DownlinkNode(Node):
     def __init__(self):
         super().__init__('downlink_node')
         self._patrol_client = ActionClient(self, Patrol, 'patrol')
+        # 지금 진행 중인 Patrol goal의 핸들 — patrol_stop이 취소할 대상을 찾는 데 쓴다.
+        # send_goal_async()의 반환값(Future)을 예전엔 아무 데도 안 담아둬서, "취소"라는
+        # 개념 자체가 구조적으로 불가능했다(patrol_task.py의 cancel_callback 부재와
+        # 같은 근본 원인의 반쪽 — 서버가 취소를 받아줘도 클라이언트가 어느 goal을
+        # 취소할지 모르면 의미가 없다). goal이 끝나면(성공/실패/취소 불문) None으로
+        # 되돌린다(_on_patrol_result).
+        self._patrol_goal_handle = None
+        # _on_patrol_goal_response가 만든 result Future 그 자체 — get_result_async()는
+        # 호출할 때마다 새 Future를 만들어 GetResult 요청을 새로 보내므로,
+        # _on_patrol_result에서 "이 콜백이 지금 추적 중인 goal의 것인지" 확인하려면
+        # get_result_async()를 다시 부르지 말고 이걸 저장해뒀다가 비교해야 한다.
+        self._patrol_result_future = None
         self._slam_process = None
         self._nav_process = None
         self._nav_map_id = 0
@@ -143,6 +155,16 @@ class DownlinkNode(Node):
             return
         asyncio.run_coroutine_threadsafe(self._ws.send(json.dumps(payload)), self._loop)
 
+    def _send_nav_status(self, running: bool):
+        """P6 상단 상태 바가 "SLAM 중도 아니고 Nav2도 안 뜬 상태"를 구분해서 안내할 수
+        있게 알린다 — 예전엔 _ensure_navigation_running이 성공/실패해도 그 결과를
+        서버/PC 어디에도 알리지 않아서(로그만 남김), 대시보드는 이 로봇의 Nav2가 실제로
+        떠 있는지 전혀 모른 채 순찰/이동 버튼을 계속 활성 상태로 뒀다. _ensure_navigation_
+        running의 모든 반환 지점과, SLAM 시작이 Nav2를 강제로 내리는 지점(_start_slam)에서
+        부른다.
+        """
+        self._send({'type': 'nav_status', 'running': running})
+
     def _handle_command(self, raw: str):
         try:
             message = json.loads(raw)
@@ -153,6 +175,8 @@ class DownlinkNode(Node):
         msg_type = message.get('type')
         if msg_type == 'patrol_start':
             self._start_patrol(message)
+        elif msg_type == 'patrol_stop':
+            self._stop_patrol(message)
         elif msg_type == 'slam_start':
             self._start_slam(message)
         elif msg_type == 'slam_stop':
@@ -279,7 +303,50 @@ class DownlinkNode(Node):
         # 서버가 안 보내면(기존 patrol_start 호출부들) True가 기본 — 원래 순찰처럼 다
         # 돌고 충전소로 복귀한다. P6 "이동"만 명시적으로 False를 실어 보낸다.
         goal.return_to_charging = bool(message.get('return_to_charging', True))
-        self._patrol_client.send_goal_async(goal)
+        send_future = self._patrol_client.send_goal_async(goal)
+        send_future.add_done_callback(self._on_patrol_goal_response)
+
+    def _on_patrol_goal_response(self, future):
+        """patrol_task의 액션 서버가 goal을 accept/reject한 직후 온다 — accept면 그
+        goal_handle을 들고 있어야 나중에 patrol_stop이 취소를 요청할 수 있다.
+        """
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            # patrol_task._handle_goal_request가 이미 실행 중이라 거절한 경우 등 —
+            # 취소할 대상 자체가 없다.
+            self.get_logger().warn('patrol goal이 거부됐습니다(이미 다른 주행이 진행 중일 수 있음)')
+            return
+        self._patrol_goal_handle = goal_handle
+        result_future = goal_handle.get_result_async()
+        self._patrol_result_future = result_future
+        result_future.add_done_callback(self._on_patrol_result)
+
+    def _on_patrol_result(self, future):
+        # 성공/실패/취소 무엇으로 끝났든(patrol_task.py가 patrol_done을 이미 별도
+        # 토픽으로 쏘고 있어 여기서 결과 자체를 또 처리할 필요는 없다) 이 goal은
+        # 더 이상 취소 대상이 아니다 — 다음 patrol_stop이 엉뚱한(이미 끝난) goal을
+        # 취소 시도하지 않도록 비워둔다. 그 사이 새 goal이 이미 시작돼 다른 handle로
+        # 덮어써져 있을 수 있으니, 지금 이 future가 그 handle의 것일 때만 지운다.
+        # get_result_async()는 호출할 때마다 새 Future를 만들어 서버에 새
+        # GetResult 요청을 보내므로, 여기서 다시 불러 비교하면 항상 다른 객체라
+        # 절대 True가 안 된다 — _on_patrol_goal_response에서 저장해둔 그 Future와
+        # 비교해야 한다.
+        if self._patrol_result_future is future:
+            self._patrol_goal_handle = None
+            self._patrol_result_future = None
+
+    def _stop_patrol(self, message: dict):
+        """"주행 취소" — P6 웨이포인트 팝오버의 "주행 취소" 버튼 → 서버
+        POST /patrol-runs/cancel → 여기로 온다. 취소할 goal_handle이 없으면(이미
+        끝났거나 애초에 시작 응답을 못 받은 경우) 조용히 로그만 남긴다 — patrol_task.py
+        쪽 cancel_callback이 ACCEPT해도, 여기서 어느 goal을 취소할지 몰라 요청 자체를
+        못 보내면 똑같이 무의미하다(TS-NAV-08과 같은 "취소할 handle이 없어 무시됨"
+        패턴 — _patrol_goal_handle 추적으로 이 경우를 없앴다).
+        """
+        if self._patrol_goal_handle is None:
+            self.get_logger().warn('취소할 진행 중인 주행이 없습니다')
+            return
+        self._patrol_goal_handle.cancel_goal_async()
 
     def _start_slam(self, message: dict):
         # SLAM 백엔드: Cartographer. 원래 실사용 검증된 명령은 `ros2 launch wego
@@ -303,6 +370,9 @@ class DownlinkNode(Node):
             self._terminate_process_group(self._nav_process, 'Nav2')
             self._nav_process = None
             self._nav_map_id = 0
+            # _ensure_navigation_running 바깥에서 Nav2를 내리는 유일한 지점이라, 여기서
+            # 직접 알려야 한다 — 안 그러면 P6이 이 로봇의 Nav2가 여전히 떠 있는 줄 안다.
+            self._send_nav_status(False)
         # _ensure_navigation_running과 같은 이유 — 이 노드가 재시작된 적이 있다면
         # 이전 생애에 띄운 SLAM/Nav2가 고아로 남아있을 수 있다. 새로 띄우기 전에
         # 항상 먼저 정리한다(_kill_external_process_group 문서 참고).
@@ -314,9 +384,17 @@ class DownlinkNode(Node):
             ['ros2', 'launch', 'careguard_bringup', 'cartographer_launch.py'], start_new_session=True)
 
     def _stop_slam(self, message: dict):
-        # "매핑 취소"/"매핑 재시작"(재시작은 서버가 취소 API 먼저 부른 뒤 slam_start를
-        # 다시 보낸다) — 지금 떠 있는 cartographer_launch.py를 실제로 끈다. 이걸 안 하면
-        # _start_slam이 "이미 SLAM 작업이 진행 중입니다"로 다음 시작을 계속 거부한다.
+        # P5 "초기화"(매핑 취소) — 지금 떠 있는 cartographer_launch.py를 실제로 끈다.
+        # 이걸 안 하면 _start_slam이 "이미 SLAM 작업이 진행 중입니다"로 다음 시작을
+        # 계속 거부한다. 예전엔 PC가 취소 응답을 받자마자 500ms 뒤 자동으로 slam_start를
+        # 다시 보내는 "재시작" 경로가 있었는데(그러면 이 함수의 종료 대기가 실제로
+        # 끝났는지가 레이스 컨디션이 됐다 — TS-SLAM-01/02류), 지금은 "초기화"가 취소
+        # 하나로 끝나고 "매핑 시작"은 사용자가 나중에 별도로 눌러야 한다 — 자동 체인이
+        # 없어졌다. 설령 사용자가 그 두 클릭을 순식간에 연달아 해도, _handle_command가
+        # asyncio 이벤트루프에서 완전히 직렬로 돌고(_connect_forever의 `async for raw
+        # in ws: self._handle_command(raw)`) 아래 _terminate_process_group이 프로세스
+        # 종료를 동기적으로 기다리므로(끝나야 이 함수가 리턴 -> 다음 큐에 든
+        # slam_start를 그제서야 처리), 레이스 자체가 구조적으로 발생하지 않는다.
         if self._slam_process is not None and self._slam_process.poll() is None:
             self._terminate_process_group(self._slam_process, 'SLAM')
             self._slam_process = None
@@ -343,6 +421,18 @@ class DownlinkNode(Node):
         신호를 보내기 때문에 잘 죽는 것이지, ros2 launch 자체가 자식들에게
         신호를 잘 전달해줘서가 아니었다. 그래서 os.killpg로 그룹 전체에 SIGINT를
         보내 Ctrl+C와 같은 효과를 낸다.
+
+        블로킹 트레이드오프: process.wait()가 진짜로 스레드를 막는(비-asyncio)
+        호출이라, 이 함수가 리턴할 때까지(최악 SIGINT 5초 + SIGKILL 5초 = 최대
+        ~10초) _handle_command를 부른 WS 수신 루프(_connect_forever의 `async for
+        raw in ws`) 전체가 멈춘다 — 이 로봇에 오는 다른 어떤 다운링크 명령(cmd_vel,
+        다음 slam_start, patrol_stop 등)도 그동안 처리되지 않고 큐에서 기다린다.
+        의도한 트레이드오프다: 이 블로킹이 있어서 "취소 명령을 보내놓고 실제
+        종료를 확인 안 한 채 다음 명령을 처리하는" 레이스(TS-SLAM-01/02류)가
+        구조적으로 없다(_stop_slam 주석 참고) — 만약 나중에 반응성이 문제가 되어
+        asyncio executor 등으로 비동기화한다면, 그 대가로 사라지는 이 직렬화
+        보장을 다른 방식(예: PC가 "취소 처리 중" 상태를 서버 통해 조회)으로
+        대체해야 같은 레이스가 재발하지 않는다.
         """
         pgid = os.getpgid(process.pid)
         try:
@@ -495,6 +585,7 @@ class DownlinkNode(Node):
             # 사용자가 명시적으로 매핑을 취소하게 한다(반대 방향은 _start_slam이
             # 자동으로 처리한다 — 순찰 중 매핑을 시작하는 쪽은 안전).
             self.get_logger().error('SLAM 매핑 중에는 순찰을 시작할 수 없습니다 — 먼저 매핑을 취소하세요')
+            self._send_nav_status(False)
             return False
 
         try:
@@ -504,10 +595,12 @@ class DownlinkNode(Node):
             yaml_path, changed = self._download_map(map_id)
         except Exception as exc:  # noqa: BLE001 - 다운로드 실패 원인이 다양해 전부 여기서 로그만 남긴다
             self.get_logger().error(f'맵 다운로드 실패: {exc}')
+            self._send_nav_status(False)
             return False
 
         if self._nav_process is not None and self._nav_process.poll() is None:
             if self._nav_map_id == map_id and not changed:
+                self._send_nav_status(True)
                 return True  # 이미 이 맵으로, 내용도 그대로 떠있다 — 재사용
             reason = (f'map_id={map_id}는 그대로지만 내용이 바뀐 지도' if self._nav_map_id == map_id
                       else f'다른 맵(map_id={map_id})')
@@ -546,6 +639,7 @@ class DownlinkNode(Node):
             time.sleep(0.5)
         if not ready:
             self.get_logger().error(f'{NAV2_READY_TIMEOUT_SEC:.0f}초 안에 Nav2(amcl)가 안 떴습니다')
+            self._send_nav_status(False)
             return False
 
         # 초기 위치 설정 — careguard_nav 패키지의 기존 노드를 그대로 재사용한다
@@ -570,6 +664,7 @@ class DownlinkNode(Node):
         except subprocess.TimeoutExpired:
             self.get_logger().warn('초기 위치 설정이 20초를 넘어 중단했습니다')
 
+        self._send_nav_status(True)
         return True
 
     def _ensure_patrol_task_running(self, map_id: int) -> bool:
@@ -600,6 +695,11 @@ class DownlinkNode(Node):
             self._terminate_process_group(self._patrol_task_process, 'patrol_task')
             self._patrol_task_process = None
             self._patrol_task_map_id = 0
+        # 이전 patrol_task 프로세스를 죽이면 그 액션 서버에 대해 들고 있던 goal_handle도
+        # 더 이상 유효하지 않다 — 방어적으로 비워둔다(문서화된 대로 정상 흐름에서는
+        # 순찰 진행 중엔 이 함수가 안 불리지만, 혹시 모를 경합에 대비).
+        self._patrol_goal_handle = None
+        self._patrol_result_future = None
 
         # _nav_process와 같은 이유 — 이 다운링크가 재시작된 적이 있으면 이전 생애에
         # 띄운 patrol_task가 고아로 남아 잘못된(또는 비어있는) 캐시를 계속 들고 있을

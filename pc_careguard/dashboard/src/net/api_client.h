@@ -22,6 +22,14 @@ public:
         QString name;   // 예: "1호기"
         QString model;  // 예: "limo"
         QString ip;     // 비어있으면 없음
+        // 서버가 매 호출마다 실시간으로 계산해 내려준다(robots.py::is_connected) —
+        // 예전엔 이 필드를 파싱 안 하고 버렸다(P6PatrolPage::refreshRobotState가
+        // 새로고침 시점의 실제 온라인 여부를 알아야 해서 추가, 2026-09-10).
+        bool isOnline = false;
+        // robot_ws.py::nav_running 캐시(마지막으로 받은 nav_status WS 메시지) — P6의
+        // navRunning_이 WS 메시지 하나만 놓쳐도 새로고침으로 복구가 안 되던 문제를
+        // 고치려고 추가(2026-09-10). 로봇이 한 번도 nav_status를 안 보냈으면 false.
+        bool isNavRunning = false;
     };
 
     // server/app/schemas.py::MapItem 대응.
@@ -88,6 +96,11 @@ public:
         int waypointsTotal = 0;
         int waypointsDone = 0;
         bool robotConnected = false;
+        // "manual"(대시보드 버튼) / "schedule"(services/scheduler.py 자동 트리거) —
+        // P6PatrolPage가 상태 바에 "스케줄 주행 중"을 구분해 보여주는 데 쓴다
+        // (수동 주행 버튼은 트리거 종류와 무관하게 이미 막혀 있었지만, 왜 막혔는지
+        // 문구로는 구분이 안 됐다).
+        QString trigger;
     };
 
     // server/app/schemas.py::MissionItem 대응.
@@ -226,8 +239,14 @@ public:
 
     // POST /slam-jobs — 매핑 시작. robots.py가 이번 스코프 밖이라 robot.code로 보낸다.
     void startSlamJob(const QString& robotCode, const QString& mapName, ItemCallback<SlamJobInfo> callback);
-    // POST /slam-jobs/{id}/cancel — 매핑 취소("매핑 재시작"은 이걸로 취소 후 startSlamJob을 다시 부른다).
+    // POST /slam-jobs/{id}/cancel — P5 "초기화"(매핑 취소). "매핑 시작"은 이후 사용자가
+    // 별도로 다시 눌러야 하는 독립된 동작이다(자동 재시작 체인 없음).
     void cancelSlamJob(int jobId, ItemCallback<SlamJobInfo> callback);
+    // GET /slam-jobs?robot_id=&status= — P6PatrolPage::refreshRobotState()가 "이 로봇이
+    // 지금 SLAM 매핑 중인지"를 DB 기준으로 맞추는 데 쓴다(status="queued"로 걸면
+    // 결과 유무만 보면 됨 — slam_job.status는 시작 시 'queued'로 들어간 뒤 취소/저장
+    // 으로만 바뀌므로 'queued'가 곧 "진행 중"이다). GET /patrol-runs와 같은 패턴.
+    void fetchSlamJobs(int robotId, const QString& status, ListCallback<SlamJobInfo> callback);
     // POST /slam-jobs/{id}/save — "SLAM 맵 저장·배포". mapName은 "매핑 시작" 때 넣은
     // 임시 이름을 실제 저장할 이름으로 덮어쓴다(비워두면 기존 이름 유지). 이 응답은
     // "로봇에 명령을 보냈다"는 뜻이지 저장이 끝났다는 뜻이 아니다 — 실제 완료는 나중에
@@ -256,6 +275,10 @@ public:
 
     // POST /patrol-runs — 순찰 시작.
     void startPatrolRun(int robotId, int routeId, const QString& trigger, ItemCallback<PatrolRunInfo> callback);
+    // GET /patrol-runs?robot_id=&status= — P6PatrolPage::refreshRobotState()가 페이지
+    // 로드·맵 전환·새로고침 버튼 시점에 "이 로봇이 지금 실제로 주행 중인지"를 DB
+    // 기준으로 다시 맞추는 데 쓴다(status="running"으로 걸면 결과 유무만 보면 됨).
+    void fetchPatrolRuns(int robotId, const QString& status, ListCallback<PatrolRunInfo> callback);
 
     // POST /missions — P3 "복약 재안내" 버튼. medication_scheduler가 없어 스케줄을 안 거치고
     // 즉시 mission을 만들어 로봇에 다운링크를 보낸다(robots.py 스코프 밖이라 robot.code로 보냄).
@@ -321,6 +344,12 @@ public:
     void driveToPoint(const QString& robotCode, int mapId, const QString& code, double xMeters,
                        double yMeters, double yawRad, SimpleCallback callback);
 
+    // POST /patrol-runs/cancel — P6 웨이포인트 팝오버 "주행 취소". robot_code만 보내면
+    // 서버가 로봇에 patrol_stop을 시도하고, 그 성공 여부와 무관하게 해당 로봇의
+    // status='running' patrol_run 기록을 정리한다(robot_connected:false로 와도 "그냥
+    // 실패"가 아니라 "로봇엔 못 갔지만 DB는 정리됨" — 정상 결과 중 하나).
+    void cancelPatrolRun(const QString& robotCode, SimpleCallback callback);
+
     // POST /patrol-runs/prepare-navigation — 실제 순찰/이동 목표 없이 Nav2만 미리
     // 준비시킨다(P6 페이지를 열거나 다른 로봇의 맵으로 전환할 때 호출). 로봇이 아직
     // 안 켜져 있어도 에러가 아니라 그냥 robot_connected:false로 조용히 알려줄
@@ -353,6 +382,8 @@ private:
     static WaypointInfo parseWaypoint(const QJsonObject& o);
     static MapInfo parseMap(const QJsonObject& o);
     static PatrolRouteInfo parsePatrolRoute(const QJsonObject& o);
+    static PatrolRunInfo parsePatrolRun(const QJsonObject& o);
+    static SlamJobInfo parseSlamJob(const QJsonObject& o);
     static PatrolScheduleInfo parsePatrolSchedule(const QJsonObject& o);
     static RecipientInfo parseRecipient(const QJsonObject& o);
     static RecipientDetailInfo parseRecipientDetail(const QJsonObject& o);

@@ -24,6 +24,12 @@ router = APIRouter()
 # _connections는 downlink 전용, 아래 _telemetry_connections는 uplink 전용.
 _connections: Dict[str, WebSocket] = {}
 
+# robot.code -> 마지막으로 알린 Nav2 준비 상태(nav_status의 running). GET /robots가
+# 같이 내려줘서, P6PatrolPage::refreshRobotState()가 nav_status WS 메시지 유실/지연
+# 시에도 이 값으로 navRunning_을 다시 맞출 수 있게 한다(그 전엔 재동기화 경로가 아예
+# 없어 메시지 하나만 놓쳐도 이동·순찰 버튼이 새로고침으로도 안 풀렸다, 2026-09-10).
+_nav_running: Dict[str, bool] = {}
+
 # robot.code -> 마지막으로 알린 배터리 상태("normal"/"attention"/"return_needed").
 # 매 battery_state 메시지마다 시스템 로그를 남기면 스팸이 되므로, 상태가 바뀌는
 # 순간(경계를 넘는 순간)에만 한 번 남긴다.
@@ -63,6 +69,10 @@ def connected_robot_codes() -> list:
 
 def latest_positions() -> Dict[str, dict]:
     return dict(_latest_positions)
+
+
+def nav_running(robot_code: str) -> bool:
+    return _nav_running.get(robot_code, False)
 
 
 def _robot_exists(robot_code: str) -> bool:
@@ -162,6 +172,16 @@ async def _handle_message(robot_code: str, message: dict) -> None:
                 "robot_code": robot_code,
                 "points": message.get("points"),
             }
+        )
+
+    elif msg_type == "nav_status":
+        # downlink_node._ensure_navigation_running의 성공/실패, 그리고 SLAM 시작이
+        # Nav2를 강제로 내리는 지점에서 보낸다 — DB에 남기지 않는 순수 중계(다른 실시간
+        # 상태 메시지들과 같은 이유). P6PatrolPage가 "SLAM 중도 아니고 Nav2도 안 뜬
+        # 상태"를 구분해서 배너/버튼에 반영하는 데 쓴다.
+        _nav_running[robot_code] = bool(message.get("running"))
+        await dashboard_ws.broadcast(
+            {"type": "nav_status", "robot_code": robot_code, "running": message.get("running")}
         )
 
     elif msg_type == "patrol_path_update":

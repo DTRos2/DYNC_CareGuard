@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, timedelta
 from typing import List, Optional
 
@@ -6,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ...core import db
 from ...schemas import (
+    CancelPatrolRunRequest,
     DriveToPointRequest,
     DriveToPointResponse,
     PatrolRouteCreate,
@@ -222,6 +224,22 @@ def delete_patrol_schedule(schedule_id: int):
         conn.commit()
 
 
+def _reject_if_slam_active(cur, robot_id: int) -> None:
+    """이 로봇에 진행 중인(status='queued') slam_job이 있으면 409를 던진다.
+
+    downlink_node._ensure_navigation_running이 로봇 쪽에서도 SLAM 중엔 Nav2를 안
+    띄우고 조용히 로그만 남기고 거부하지만(로봇→서버→PC로 그 실패가 전혀 전달되지
+    않는다), 그 상태로 서버가 200을 돌려주면 patrol_run이 status='running'으로 DB에
+    남은 채 patrol_done을 영원히 못 받는 고아 기록이 된다(2026-09-10 발견한
+    "robot_id=4에 8건 stuck" 레코드와 같은 패턴). 여기서 먼저 걸러 로봇에 명령 자체를
+    안 보내면, 대시보드 수동 클릭과 services/scheduler.py 자동 트리거(둘 다
+    start_patrol_run을 그대로 호출) 양쪽 다 한 번에 막힌다.
+    """
+    cur.execute("SELECT 1 FROM slam_job WHERE robot_id = %s AND status = 'queued'", (robot_id,))
+    if cur.fetchone() is not None:
+        raise HTTPException(status_code=409, detail="이 로봇은 SLAM 매핑 중이라 순찰/이동을 시작할 수 없습니다")
+
+
 async def start_patrol_run(
     robot_id: int, route_id: int, trigger: str, schedule_id: Optional[int] = None
 ) -> PatrolRunItem:
@@ -235,6 +253,7 @@ async def start_patrol_run(
         robot = cur.fetchone()
         if robot is None:
             raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+        _reject_if_slam_active(cur, robot_id)
 
         cur.execute(
             "SELECT map_id, steps FROM patrol_route WHERE id = %s AND deregistered_at IS NULL",
@@ -284,6 +303,38 @@ async def start_patrol_run(
     return PatrolRunItem(**row, robot_connected=connected)
 
 
+@runs_router.get("", response_model=List[PatrolRunItem])
+def list_patrol_runs(
+    robot_id: Optional[int] = Query(None, description="로봇으로 필터링"),
+    status: Optional[str] = Query(None, description="patrol_run.status로 필터링(예: running)"),
+):
+    """순찰/이동 실행 기록 목록. P6PatrolPage가 페이지를 열거나(맵 전환 포함) 새로고침
+    버튼을 눌렀을 때, robot_id + status=running으로 걸어 "지금 이 로봇이 실제로
+    주행 중인지"를 DB 기준으로 다시 맞추는 용도로 쓴다(patrol_task.py가 goal 하나만
+    허용하므로 정상적으로는 0건 또는 1건만 나온다).
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT pr.id, pr.robot_id, pr.recipient_id, pr.route_id, pr.schedule_id, pr.trigger,
+                   pr.status, pr.waypoints_total, pr.waypoints_done, pr.started_at, pr.ended_at,
+                   r.code AS robot_code
+            FROM patrol_run pr JOIN robot r ON r.id = pr.robot_id
+            WHERE (%(robot_id)s IS NULL OR pr.robot_id = %(robot_id)s)
+                AND (%(status)s IS NULL OR pr.status = %(status)s)
+            ORDER BY pr.started_at DESC
+            """,
+            {"robot_id": robot_id, "status": status},
+        )
+        rows = cur.fetchall()
+
+    return [
+        PatrolRunItem(**{k: v for k, v in row.items() if k != "robot_code"},
+                      robot_connected=robot_ws.is_connected(row["robot_code"]))
+        for row in rows
+    ]
+
+
 @runs_router.post("", response_model=PatrolRunItem, status_code=201)
 async def create_patrol_run(payload: PatrolRunCreate):
     return await start_patrol_run(payload.robot_id, payload.route_id, payload.trigger)
@@ -296,6 +347,15 @@ async def drive_to_point(payload: DriveToPointRequest):
     명령이라 run_id=0으로 보낸다 — ws/robot_ws.py::_update_patrol_run은 존재하지
     않는 run_id의 UPDATE를 0행 영향으로 조용히 무시하므로 안전하다.
     """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (payload.robot_code,))
+        robot = cur.fetchone()
+        if robot is None:
+            raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+        # start_patrol_run과 같은 이유(_reject_if_slam_active 문서 참고) — "이동"도
+        # patrol_start를 그대로 쓰므로 SLAM 중엔 로봇이 조용히 거부한다.
+        _reject_if_slam_active(cur, robot["id"])
+
     connected = await robot_ws.send_command(
         payload.robot_code,
         {
@@ -308,6 +368,43 @@ async def drive_to_point(payload: DriveToPointRequest):
     )
     if not connected:
         raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
+    return DriveToPointResponse(robot_connected=connected)
+
+
+async def _clear_running_patrol_run(robot_code: str) -> None:
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
+        robot = cur.fetchone()
+        if robot is not None:
+            cur.execute(
+                "UPDATE patrol_run SET status = 'cancelled', ended_at = NOW() "
+                "WHERE robot_id = %s AND status = 'running'",
+                (robot["id"],),
+            )
+            conn.commit()
+
+
+@runs_router.post("/cancel", response_model=DriveToPointResponse)
+async def cancel_patrol_run(payload: CancelPatrolRunRequest):
+    """P6 웨이포인트 팝오버 "주행 취소" — patrol_run.id를 몰라도(P6 "이동"은 run_id=0이라
+    애초에 행이 없다) robot_code만으로 "지금 하고 있는 걸 멈춰라"를 표현한다. 로봇에
+    실제로 취소 명령을 시도하는 것과, DB의 running 기록을 정리하는 것을 서로 무관하게
+    둘 다 한다 — 로봇이 이미 꺼졌거나 오프라인이라 1번이 실패해도(patrol_done을
+    영원히 못 받을 상황), 2번은 항상 실행돼서 그 기록이 "running"으로 영영 stuck되는
+    일을 막는다(2026-09-10 실사용 중 발견: robot_id=4에 정확히 이런 고아 기록이 8건
+    쌓여 있었다). asyncio.gather로 둘을 동시에 실행해야 한다 — 순차 await면 1번이
+    응답 없이 지연될 때(예: 연결은 살아있는데 로봇이 멎은 경우) 2번까지 덩달아
+    늦어져서 이 docstring이 약속한 "무관하게 즉시 실행"이 깨진다.
+    """
+    connected, _ = await asyncio.gather(
+        robot_ws.send_command(payload.robot_code, {"type": "patrol_stop"}),
+        _clear_running_patrol_run(payload.robot_code),
+    )
+
+    # drive-to-point(run_id=0)와 달리 여기서는 로봇 미연결을 에러로 만들지 않는다 —
+    # "이미 오프라인이라 실제로 멈추진 못했지만, 화면/DB의 stuck 상태는 정리됐다"가
+    # 이 엔드포인트의 정상 결과 중 하나다(위 docstring 참고). 호출부(PC)가
+    # robot_connected로 그 차이를 사용자에게 알려주면 된다.
     return DriveToPointResponse(robot_connected=connected)
 
 
@@ -383,8 +480,8 @@ _RUN_LOG_QUERY = """
 _RUN_LOG_MAX_ENTRIES = 300
 
 
-@runs_router.get("", response_model=List[PatrolRunLogItem])
-def list_patrol_runs(
+@runs_router.get("/log", response_model=List[PatrolRunLogItem])
+def list_patrol_run_logs(
     start: Optional[date] = Query(None, description="조회 시작일. 생략하면 오늘부터 7일 전"),
     end: Optional[date] = Query(None, description="조회 종료일. 생략하면 오늘"),
     q: Optional[str] = Query(None, description="로봇·대상자·경로·상태 텍스트 검색어"),

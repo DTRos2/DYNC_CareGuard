@@ -1,6 +1,5 @@
 #include "p6_patrol_page.h"
 
-#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
@@ -19,6 +18,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QStackedLayout>
 #include <QStyle>
 #include <QTimeEdit>
@@ -32,6 +32,7 @@
 #include "net/ws_client.h"
 #include "theme/tokens.h"
 #include "widgets/canvas_geometry.h"
+#include "widgets/careguard_combo_box.h"
 #include "widgets/pgm_image_loader.h"
 #include "widgets/simple_icons.h"
 #include "widgets/teleop_panel.h"
@@ -50,6 +51,12 @@ constexpr qreal kPxPerMeter = 40.0;
 // "복약 전달 경로" 체크박스가 켜진 경로의 patrol_route.name 리터럴. "주행 스케줄"
 // 추가 폼이 경로를 이 이름과 비교해 복약 스케줄 콤보를 보일지 판단한다(요청 사양).
 const QString kMedicineRouteName = QStringLiteral("medicine");
+
+// 웨이포인트 목록 카드 — 5줄까지만 보이고 그 이상은 스크롤(요청 사양, 2026-09-10).
+// 한 행의 실제 렌더링 높이 — 실 데이터(웨이포인트 6개)로 스크린샷을 찍어 정확히
+// 맞춘 값(24px). routeOrderList_->setFixedHeight(120)도 같은 24px 기준의 5줄.
+constexpr int kWpListRowHeightPx = 24;
+constexpr int kWpListVisibleRows = 5;
 }
 
 P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(0), routeEditMode_(false) {
@@ -85,12 +92,16 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     popover_ = new WaypointPopover(this);
     connect(popover_, &WaypointPopover::saveRequested, this, &P6PatrolPage::handlePopoverSave);
     connect(popover_, &WaypointPopover::deleteRequested, this, &P6PatrolPage::handleCanvasDeleteRequested);
+    // "경로 이동" — 웨이포인트 편집 팝오버 안으로 옮겨왔다(예전엔 캔버스 툴바의
+    // "로봇 이동" 모드에서 마커를 직접 클릭해야 했다). driveToSingleWaypoint는 그때와
+    // 동일한 함수를 그대로 재사용한다.
+    connect(popover_, &WaypointPopover::driveRequested, this, &P6PatrolPage::driveToSingleWaypoint);
+    connect(popover_, &WaypointPopover::cancelDriveRequested, this, &P6PatrolPage::cancelCurrentDrive);
 
     connect(canvas_, &WaypointCanvas::waypointAddRequested, this, &P6PatrolPage::handleCanvasAddRequested);
     connect(canvas_, &WaypointCanvas::waypointEditRequested, this, &P6PatrolPage::handleCanvasEditRequested);
     connect(canvas_, &WaypointCanvas::waypointDeleteRequested, this, &P6PatrolPage::handleCanvasDeleteRequested);
     connect(canvas_, &WaypointCanvas::waypointMoved, this, &P6PatrolPage::handleCanvasMoved);
-    connect(canvas_, &WaypointCanvas::waypointDriveRequested, this, &P6PatrolPage::driveToSingleWaypoint);
     connect(canvas_, &WaypointCanvas::initialPoseCaptureFinished, this, &P6PatrolPage::handleInitialPoseCaptured);
     connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
             [this] { poseCaptureBtn_->setChecked(false); });
@@ -114,10 +125,36 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
         }
         saveCurrentMapData();
         rebuildWpList();
-        popover_->hide();
+        // 편집 중인 웨이포인트가 있으면 닫지 않고 새 스케일의 위치로 다시 채운다 —
+        // 예전엔 무조건 hide()했는데, "경로 이동"->"주행 취소" 토글을 팝오버 안에서
+        // 유지하는 지금 설계에선 driveToSingleWaypoint 성공 직후 뜨는 "수동 주행 중"
+        // 배너가 캔버스 카드 높이를 줄여 곧바로 이 rescale을 유발한다 — 그때마다
+        // hide()되면 방금 누른 "경로 이동"이 "주행 취소"로 바뀌는 걸 사용자가 볼 수
+        // 없다. 또한 setForEditWaypoint로 canvasPos_를 새 좌표로 갱신하지 않으면
+        // 이후 "저장"이 스케일 변경 전(낡은) 좌표로 나가는 문제도 이 김에 같이 막는다.
+        const QString editingId = popover_->editingWaypointId();
+        if (popover_->isVisible() && !editingId.isEmpty()) {
+            if (const WaypointCanvas::Waypoint* wp = canvas_->findWaypoint(editingId)) {
+                popover_->setForEditWaypoint(*wp);
+                refreshPopoverDriveButton();
+                movePopoverNear(canvas_->mapTo(this, canvas_->worldToScreen(wp->pos).toPoint()));
+            } else {
+                popover_->hide();
+            }
+        } else {
+            popover_->hide();
+        }
     });
 
     loadMapData(0);
+    // loadMapData(0)은 maps_가 아직 비어 있으면(서버 응답 전) 맨 위 가드에서 바로
+    // 되돌아가 아무 것도 안 한다 — robotOnline_/isPatrolling_ 멤버 기본값(둘 다 false)
+    // 자체는 이미 "오프라인·대기"로 안전하지만, 그 값을 실제 위젯(배너·버튼)에
+    // 반영하는 건 이 두 함수라서 명시적으로 한 번 불러야 한다. 안 부르면 서버가
+    // 아직 응답하기 전까지 "순찰 시작" 버튼이 (기본 활성화 상태 그대로) 눌리는
+    // 잠깐의 창이 생긴다.
+    updateRobotStatusBanner();
+    updateDrivingButtonsEnabled();
 
     apiClient_ = new ApiClient(this);
     loadMapsFromServer();
@@ -150,25 +187,158 @@ QFrame* P6PatrolPage::buildConnectionBanner() {
 }
 
 QFrame* P6PatrolPage::buildRobotOfflineBanner() {
-    // P5MapPage::buildRobotOfflineBanner()와 같은 이유·같은 패턴 — "이동" 명령이 실제로
-    // 로봇에 안 먹히는데 사용자가 그걸 모른 채 계속 시도하는 걸 막는다. 아직 아무
-    // robot_status도 못 받은 시작 시점엔 안전하게 오프라인으로 간주해 보이는 채로 둔다
-    // (hide() 안 함) — handleWsMessage가 online:true를 받으면 숨긴다.
+    // P5MapPage::buildRobotOfflineBanner()와 같은 이유·같은 패턴으로 시작했지만, 이제
+    // 오프라인 여부 하나만이 아니라 "로봇 상태 바" 역할도 겸한다(updateRobotStatusBanner()
+    // 참고) — 아이콘·문구를 매번 다시 만들지 않고 멤버로 들고 있다가 상태가 바뀔 때마다
+    // 내용만 바꿔 그린다. 아직 아무 robot_status도 못 받은 시작 시점엔 안전하게
+    // 오프라인으로 간주해 보이는 채로 둔다(hide() 안 함).
     auto* banner = new QFrame(this);
     banner->setObjectName("banner");
     banner->setProperty("level", "emergency");
     auto* bannerLayout = new QHBoxLayout(banner);
     bannerLayout->setContentsMargins(10, 7, 10, 7);
     bannerLayout->setSpacing(6);
-    auto* icon = new QLabel(banner);
-    icon->setPixmap(SimpleIcons::alertCircle(Tokens::EMERGENCY.main, 12).pixmap(12, 12));
-    bannerLayout->addWidget(icon);
-    auto* text =
+    robotStatusIcon_ = new QLabel(banner);
+    robotStatusIcon_->setPixmap(SimpleIcons::alertCircle(Tokens::EMERGENCY.main, 12).pixmap(12, 12));
+    bannerLayout->addWidget(robotStatusIcon_);
+    robotStatusText_ =
         new QLabel(QStringLiteral("로봇 오프라인 · 이동·순찰 명령이 전달되지 않습니다"), banner);
-    text->setStyleSheet(QStringLiteral("font-weight:500;"));
-    bannerLayout->addWidget(text);
+    robotStatusText_->setStyleSheet(QStringLiteral("font-weight:500;"));
+    bannerLayout->addWidget(robotStatusText_);
     bannerLayout->addStretch();
     return banner;
+}
+
+void P6PatrolPage::updateRobotStatusBanner() {
+    // 우선순위: 오프라인 > SLAM 매핑 중 > 주행 중(수동/스케줄) > Nav2 미준비 > 정상(숨김).
+    // isPatrolling_을 slamActive_ 다음, navRunning_ 앞에 두는 이유 — 순찰이 실제로
+    // 진행 중이면 Nav2는 당연히 떠 있는 것이지만, navRunning_이 아직 그 확인을 못
+    // 받은 상태일 수 있다(refreshRobotState의 조회들이 서로 독립적으로 비동기라
+    // 도착 순서가 다를 수 있음) — 이미 더 구체적으로 아는 사실(주행 중)을 그보다
+    // 약한 신호로 덮어쓰면 안 된다.
+    if (!robotOnline_) {
+        robotOfflineBanner_->setProperty("level", "emergency");
+        robotStatusIcon_->setPixmap(SimpleIcons::alertCircle(Tokens::EMERGENCY.main, 12).pixmap(12, 12));
+        robotStatusText_->setText(QStringLiteral("로봇 오프라인 · 이동·순찰 명령이 전달되지 않습니다"));
+        robotOfflineBanner_->setVisible(true);
+    } else if (slamActive_) {
+        robotOfflineBanner_->setProperty("level", "attention");
+        robotStatusIcon_->setPixmap(SimpleIcons::alertCircle(Tokens::ATTENTION.main, 12).pixmap(12, 12));
+        robotStatusText_->setText(
+            QStringLiteral("SLAM 매핑 중 · 완료 전까지 이동·순찰 명령을 보낼 수 없습니다"));
+        robotOfflineBanner_->setVisible(true);
+    } else if (isPatrolling_) {
+        robotOfflineBanner_->setProperty("level", "info");
+        robotStatusIcon_->setPixmap(SimpleIcons::route(Tokens::INFO.main, 12).pixmap(12, 12));
+        // 스케줄 주행 중엔 수동 이동·순찰 버튼이 막히는 이유가 "누군가 방금 순찰
+        // 시작을 눌러서"가 아니라 "예약된 스케줄이 돌고 있어서"다 — 운영자가 왜
+        // 막혀 있는지 바로 알 수 있게 문구로 구분한다.
+        robotStatusText_->setText(activePatrolTrigger_ == QStringLiteral("schedule")
+                                       ? QStringLiteral("스케줄 주행 중 · 완료 전까지 새 이동·순찰 명령을 보낼 수 없습니다")
+                                       : QStringLiteral("수동 주행 중 · 완료 전까지 새 이동·순찰 명령을 보낼 수 없습니다"));
+        robotOfflineBanner_->setVisible(true);
+    } else if (!navRunning_) {
+        robotOfflineBanner_->setProperty("level", "attention");
+        robotStatusIcon_->setPixmap(SimpleIcons::alertCircle(Tokens::ATTENTION.main, 12).pixmap(12, 12));
+        robotStatusText_->setText(
+            QStringLiteral("Nav2 준비 중이거나 연결할 수 없습니다 · 잠시 후 새로고침해보세요"));
+        robotOfflineBanner_->setVisible(true);
+    } else {
+        robotOfflineBanner_->setVisible(false);
+        return;
+    }
+    // QSS의 [level=...] 선택자가 다시 매칭되도록 스타일을 강제로 다시 계산시킨다 —
+    // level 프로퍼티만 바꾸고 이걸 안 하면 이미 폴리시된 위젯이라 색이 안 바뀐다
+    // (SlamMappingCard::applyRegisteredMap의 badge_ 처리와 같은 패턴).
+    robotOfflineBanner_->style()->unpolish(robotOfflineBanner_);
+    robotOfflineBanner_->style()->polish(robotOfflineBanner_);
+}
+
+bool P6PatrolPage::canDrive() const {
+    return robotOnline_ && !isPatrolling_ && !slamActive_ && navRunning_;
+}
+
+void P6PatrolPage::updateDrivingButtonsEnabled() {
+    const bool drivable = canDrive();
+    testBtn_->setEnabled(drivable);
+    testBtn_->setToolTip(drivable ? QString() : QStringLiteral("로봇 ws 연결을 확인해주세요"));
+    refreshPopoverDriveButton();
+}
+
+void P6PatrolPage::refreshPopoverDriveButton() {
+    // 팝오버가 지금 화면에 떠 있고, 그게 보고 있는 웨이포인트가 마침
+    // drivingWaypointId_(지금 수동 주행 중인 그 지점)이면 "주행 취소"로, 아니면
+    // (로봇 온라인·유휴·SLAM 아님·Nav2 준비됨 여부에 따라) "경로 이동"으로 토글
+    // 버튼을 맞춘다 — updateDrivingButtonsEnabled()와 같은 canDrive() 기준을 쓴다.
+    if (!popover_->isVisible()) return;
+    const QString editingId = popover_->editingWaypointId();
+    if (editingId.isEmpty()) return;  // 신규 웨이포인트 팝오버 — 버튼 자체가 숨어 있음.
+    const bool isDrivingThis = !drivingWaypointId_.isEmpty() && editingId == drivingWaypointId_;
+    popover_->setDriveButtonState(canDrive(), isDrivingThis);
+}
+
+void P6PatrolPage::refreshRobotState() {
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const MapData& current = maps_[currentMapIndex_];
+    const QString robotCode = current.robotId;
+    const int serverRobotId = current.serverRobotId;
+    if (robotCode.isEmpty()) return;
+
+    // 실시간 온라인 여부 — GET /robots가 호출마다 다시 계산해서 내려준다
+    // (robots.py::is_connected). 응답이 오는 사이 다른 로봇으로 전환됐을 수 있어,
+    // 반영 직전 지금도 여전히 같은 로봇을 보고 있는지 다시 확인한다.
+    apiClient_->fetchRobots([this, robotCode](bool ok, const QVector<ApiClient::RobotInfo>& robots) {
+        if (!ok) return;
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].robotId != robotCode) return;
+        for (const ApiClient::RobotInfo& r : robots) {
+            if (r.code == robotCode) {
+                robotOnline_ = r.isOnline;
+                navRunning_ = r.isNavRunning;
+                break;
+            }
+        }
+        updateRobotStatusBanner();
+        updateDrivingButtonsEnabled();
+    });
+
+    if (serverRobotId <= 0) return;  // 서버 미등록(로컬 데모) 맵 — 순찰 기록 조회 대상 자체가 없다.
+    // "지금 running 상태인 patrol_run이 있는지" — 결과가 하나라도 있으면 주행 중으로
+    // 본다(patrol_task.py가 goal을 하나만 허용해 정상적으로는 0건 또는 1건).
+    apiClient_->fetchPatrolRuns(
+        serverRobotId, QStringLiteral("running"),
+        [this, robotCode](bool ok, const QVector<ApiClient::PatrolRunInfo>& runs) {
+            if (!ok) return;
+            if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+            if (maps_[currentMapIndex_].robotId != robotCode) return;
+            isPatrolling_ = !runs.isEmpty();
+            // "정상적으로는 0건 또는 1건"이지만(위 주석), 혹시 고아 레코드가 여러 건
+            // 남아있는 경우엔 가장 최근 것(서버가 started_at DESC로 내려줌) 기준으로
+            // 문구를 정한다.
+            activePatrolTrigger_ = runs.isEmpty() ? QString() : runs.first().trigger;
+            // drive-to-point(run_id=0)는 patrol_run 행 자체가 없어 DB 재조회로는 "어느
+            // 웨이포인트로 가고 있었는지" 되살릴 수 없다 — 주행 중이 아니게 됐을 때만
+            // 확실하게 지운다(주행 중인 채로 새로고침한 경우엔 기존 값을 그대로 둔다:
+            // 대부분 이 페이지 안에서 직접 시작한 것이라 이미 맞는 값일 가능성이 높다).
+            if (!isPatrolling_) drivingWaypointId_.clear();
+            updateRobotStatusBanner();
+            updateDrivingButtonsEnabled();
+            rebuildWpList();
+        });
+
+    // "지금 이 로봇이 SLAM 매핑 중인지" — status='queued'인 slam_job이 하나라도 있으면
+    // 매핑 중으로 본다(slam_job.status는 시작 시 'queued'로 들어간 뒤 취소/저장으로만
+    // 바뀌므로 'queued'가 곧 "진행 중" — GET /slam-jobs 문서 참고).
+    apiClient_->fetchSlamJobs(
+        serverRobotId, QStringLiteral("queued"),
+        [this, robotCode](bool ok, const QVector<ApiClient::SlamJobInfo>& jobs) {
+            if (!ok) return;
+            if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+            if (maps_[currentMapIndex_].robotId != robotCode) return;
+            slamActive_ = !jobs.isEmpty();
+            updateRobotStatusBanner();
+            updateDrivingButtonsEnabled();
+        });
 }
 
 QWidget* P6PatrolPage::buildHeaderRow() {
@@ -190,70 +360,46 @@ QWidget* P6PatrolPage::buildHeaderRow() {
     connect(mapMenu_, &QMenu::aboutToShow, this, [this] { mapMenu_->move(mapMenu_->pos() + QPoint(0, 6)); });
     rebuildMapMenu();
     layout->addWidget(mapChipBtn_);
+
+    // 로봇 상태(온라인 여부·주행 중 여부)를 DB/실시간 연결 기준으로 다시 맞춘다 —
+    // WS 메시지만으로는 페이지를 새로 열었을 때나 메시지를 놓쳤을 때 실제 상태를
+    // 알 길이 없어서 생긴 버튼. 배너가 떠 있을 때만이 아니라 항상 눌러볼 수 있게
+    // 헤더에 둔다(상태가 잘못 숨어 있는 경우도 있을 수 있어서).
+    refreshRobotStateBtn_ = new QPushButton(SimpleIcons::refresh(Tokens::TEXT_SECONDARY, 12), QString(), row);
+    refreshRobotStateBtn_->setProperty("variant", "secondary");
+    refreshRobotStateBtn_->setIconSize(QSize(12, 12));
+    refreshRobotStateBtn_->setToolTip(QStringLiteral("로봇 상태 새로고침"));
+    connect(refreshRobotStateBtn_, &QPushButton::clicked, this, &P6PatrolPage::refreshRobotState);
+    layout->addWidget(refreshRobotStateBtn_);
+
     layout->addStretch();
-
-    auto* estopBtn = new QPushButton(QStringLiteral("비상정지"), row);
-    estopBtn->setProperty("variant", "danger");
-    estopBtn->setProperty("size", "l");
-    connect(estopBtn, &QPushButton::clicked, this, &P6PatrolPage::handleEmergencyStop);
-    layout->addWidget(estopBtn);
-
-    auto* shutdownBtn = new QPushButton(QStringLiteral("로봇 종료"), row);
-    shutdownBtn->setProperty("variant", "danger");
-    shutdownBtn->setToolTip(
-        QStringLiteral("이 로봇에서 켜져 있는 모든 것(베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크)을\n"
-                        "한 번에 끕니다. 순찰/이동 중이면 먼저 안전하게 멈춘 뒤 끕니다."));
-    connect(shutdownBtn, &QPushButton::clicked, this, &P6PatrolPage::shutdownCurrentRobot);
-    layout->addWidget(shutdownBtn);
 
     return row;
 }
 
 QWidget* P6PatrolPage::buildCanvasCard() {
+    // objectName("card")를 안 준다 — P5MapPage::SlamMappingCard와 같은 이유(QFrame#card의
+    // 흰 배경+테두리를 두르면 캔버스 자신이 paintEvent에서 그리는 테두리와 겹쳐 "테두리
+    // 안에 테두리"로 보였다). 여백(CARD_PADDING)도 없애 캔버스가 이 카드가 차지하는
+    // 바깥 박스 크기 그대로 확장되게 한다.
     auto* card = new QFrame(this);
-    card->setObjectName("card");
     auto* layout = new QVBoxLayout(card);
-    layout->setContentsMargins(Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING,
-                                Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
-    layout->setSpacing(8);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
 
     canvasToolbarRow_ = new QWidget(card);
     auto* toolbar = new QHBoxLayout(canvasToolbarRow_);
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(6);
 
-    auto* addModeBtn = new QPushButton(QStringLiteral("WP 편집"), canvasToolbarRow_);
-    auto* moveModeBtn = new QPushButton(QStringLiteral("로봇 이동"), canvasToolbarRow_);
-    for (auto* btn : {addModeBtn, moveModeBtn}) {
-        btn->setObjectName("segBtn");
-        btn->setCheckable(true);
-    }
-    addModeBtn->setProperty("pos", "first");
-    moveModeBtn->setProperty("pos", "last");
-    // WaypointCanvas의 기본 모드(mode_)를 MoveWaypoint로 바꿔서, 여기 버튼 체크
-    // 상태도 그에 맞춰 "이동"을 기본으로 보여준다.
-    moveModeBtn->setChecked(true);
-    toolbar->addWidget(addModeBtn);
-    toolbar->addWidget(moveModeBtn);
-
-    // WP 추가 / 이동은 배타적 — 하나만 선택 가능하고, 선택된 모드에 따라 캔버스
-    // 클릭·드래그 동작이 달라진다 (WaypointCanvas::InteractionMode).
-    auto* modeGroup = new QButtonGroup(card);
-    modeGroup->setExclusive(true);
-    modeGroup->addButton(addModeBtn);
-    modeGroup->addButton(moveModeBtn);
-    connect(addModeBtn, &QPushButton::clicked, this, [this] {
-        canvas_->setInteractionMode(WaypointCanvas::InteractionMode::AddWaypoint);
-    });
-    connect(moveModeBtn, &QPushButton::clicked, this, [this] {
-        canvas_->setInteractionMode(WaypointCanvas::InteractionMode::MoveWaypoint);
-    });
-
-    // "위치 보정" — WP 추가/이동과 배타적인 세그먼트 그룹에는 넣지 않는다(그 둘은 계속
-    // 유지되는 모드지만, 이건 드래그 한 번으로 끝나는 단발성 동작이라 캔버스가 알아서
-    // 끝나면 poseCaptureMode를 꺼버린다 — initialPoseCaptureFinished/Cancelled에서 이
-    // 버튼 체크 상태만 되돌려주면 된다).
-    poseCaptureBtn_ = new QPushButton(QStringLiteral("위치 보정"), canvasToolbarRow_);
+    // 예전엔 "WP 편집"/"로봇 이동" 두 모드를 토글로 오갔다 — "로봇 이동"은 웨이포인트
+    // 편집 팝오버의 "경로 이동" 버튼으로 옮겨갔고(2026-09-10), 남은 동작(추가·이동·
+    // 편집·삭제)은 전부 하나의 상호작용으로 통일돼 더 이상 모드 전환 자체가 필요 없다.
+    //
+    // "위치 보정"은 드래그 한 번으로 끝나는 단발성 동작이라(캔버스가 알아서 끝나면
+    // poseCaptureMode를 꺼버린다 — initialPoseCaptureFinished/Cancelled에서 이 버튼
+    // 체크 상태만 되돌려주면 된다) 위 모드 개념과는 원래도 무관했다.
+    poseCaptureBtn_ = new QPushButton(QStringLiteral("초기 위치 설정"), canvasToolbarRow_);
     poseCaptureBtn_->setObjectName("segBtn");
     poseCaptureBtn_->setProperty("pos", "only");
     poseCaptureBtn_->setCheckable(true);
@@ -266,7 +412,7 @@ QWidget* P6PatrolPage::buildCanvasCard() {
     });
 
     auto* hint = new QLabel(
-        QStringLiteral("휠 확대/축소 · 휠 버튼 드래그로 이동 · 더블클릭 원상복귀 — 그 외 모드별 안내는 지도 하단 참고"),
+        QStringLiteral("휠 확대/축소 · 휠 버튼 드래그로 이동 · 더블클릭 원상복귀 — 그 외 안내는 지도 하단 참고"),
         canvasToolbarRow_);
     hint->setProperty("role", "muted");
     hint->setStyleSheet(QStringLiteral("font-size:11px;"));
@@ -339,16 +485,57 @@ QWidget* P6PatrolPage::buildRightColumn() {
 }
 
 QWidget* P6PatrolPage::buildWpListCard() {
+    // buildRouteCard()의 normalPage와 같은 뼈대(타이틀 행 + 목록 + 하단 안내 라벨)로
+    // 맞춘다 — 디자인 통일 요청(2026-09-10).
     wpListCard_ = new QFrame(this);
     wpListCard_->setObjectName("card");
     auto* outer = new QVBoxLayout(wpListCard_);
     outer->setContentsMargins(Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING,
                                Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
-    outer->setSpacing(4);
+    outer->setSpacing(6);
 
-    wpListLayout_ = new QVBoxLayout();
+    auto* titleRow = new QHBoxLayout();
+    wpListTitleLabel_ = new QLabel(QStringLiteral("웨이포인트 0"), wpListCard_);
+    wpListTitleLabel_->setProperty("role", "label");
+    titleRow->addWidget(wpListTitleLabel_);
+    titleRow->addStretch();
+    // 체크 상태가 canvas_->addWaypointMode()와 그대로 연결되는 토글이라(위 헤더 주석
+    // 참고) rebuildWpList()가 아니라 여기서 한 번만 만든다. 켜져 있는 동안만 지도 위
+    // 빈 곳 클릭이 새 웨이포인트 추가로 이어진다(WaypointCanvas::setAddWaypointMode).
+    addWpBtn_ = new QPushButton(QStringLiteral("+ 추가"), wpListCard_);
+    addWpBtn_->setObjectName("linkBtn");
+    addWpBtn_->setCheckable(true);
+    addWpBtn_->setToolTip(QStringLiteral("켜면 지도에서 빈 곳을 클릭(드래그로 방향 지정)해 새 웨이포인트를 추가할 수 있습니다."));
+    connect(addWpBtn_, &QPushButton::clicked, this, [this](bool checked) {
+        canvas_->setAddWaypointMode(checked);
+    });
+    titleRow->addWidget(addWpBtn_);
+    outer->addLayout(titleRow);
+
+    // 5줄까지만 보이고 그 이상은 세로 스크롤 — P6PatrolPage::buildRightColumn()의
+    // patrolRightColumnScroll과 같은 이유·같은 패턴(QScrollArea여야 내용이 실제
+    // 크기를 유지한 채 넘치는 만큼만 스크롤된다). QScrollArea::setWidget()은 레이아웃이
+    // 아니라 위젯을 요구하므로, wpListLayout_을 담을 빈 컨테이너 위젯이 하나 더 필요하다.
+    auto* wpListScroll = new QScrollArea(wpListCard_);
+    wpListScroll->setFrameShape(QFrame::NoFrame);
+    wpListScroll->setWidgetResizable(true);
+    wpListScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // setMaximumHeight만으로는 안 된다 — QScrollArea의 sizeHint()가 이미 그보다 작은
+    // 값을 돌려줘서 상한 자체가 한 번도 걸릴 일이 없었다(실측: 내용이 6줄이어도
+    // 3줄 높이로만 렌더링됨). routeOrderList_->setFixedHeight(120)과 같은 이유로
+    // 최小/최大를 모두 이 값으로 고정해 레이아웃이 반드시 이만큼 배정하게 한다.
+    wpListScroll->setFixedHeight(kWpListRowHeightPx * kWpListVisibleRows);
+    auto* wpListScrollContent = new QWidget(wpListScroll);
+    wpListLayout_ = new QVBoxLayout(wpListScrollContent);
+    wpListLayout_->setContentsMargins(0, 0, 0, 0);
     wpListLayout_->setSpacing(0);
-    outer->addLayout(wpListLayout_);
+    wpListScroll->setWidget(wpListScrollContent);
+    outer->addWidget(wpListScroll);
+
+    wpTypeHintLabel_ = new QLabel(QStringLiteral("유형: 순찰 지점 · 충전"), wpListCard_);
+    wpTypeHintLabel_->setProperty("role", "muted");
+    wpTypeHintLabel_->setStyleSheet(QStringLiteral("font-size:11px;"));
+    outer->addWidget(wpTypeHintLabel_);
 
     return wpListCard_;
 }
@@ -390,13 +577,32 @@ QWidget* P6PatrolPage::buildRouteCard() {
     titleRow->addWidget(deleteRouteBtn);
     normalLayout->addLayout(titleRow);
 
-    routeChipsLayout_ = new QHBoxLayout();
-    routeChipsLayout_->setSpacing(4);
-    normalLayout->addLayout(routeChipsLayout_);
+    auto* routeSelectRow = new QHBoxLayout();
+    routeSelectRow->setSpacing(4);
+    routeSelectCombo_ = new CareGuardComboBox(normalPage);
+    connect(routeSelectCombo_, &QComboBox::currentTextChanged, this, [this](const QString& name) {
+        if (name.isEmpty() || name == currentRoute_) return;
+        currentRoute_ = name;
+        // rebuildRouteOrderList()가 매번 resetRouteOrderEditUi()를 먼저 부르므로,
+        // 다른 경로로 전환하면서 이전 경로 기준의 편집 상태가 그대로 남는 일은 없다.
+        rebuildRouteOrderList();
+        refreshCanvasPreview();
+    });
+    routeSelectRow->addWidget(routeSelectCombo_, /*stretch=*/1);
+
+    // "편집"/"저장" — 편집으로 켜야만 아래 목록을 드래그로 재정렬할 수 있고, 저장으로
+    // 끄면 그 순서를 PUT /patrol-routes/{id}로 서버에 반영한다(toggleRouteOrderEditMode).
+    routeOrderEditToggleBtn_ = new QPushButton(QStringLiteral("편집"), normalPage);
+    routeOrderEditToggleBtn_->setProperty("variant", "secondary");
+    routeOrderEditToggleBtn_->setCheckable(true);
+    connect(routeOrderEditToggleBtn_, &QPushButton::clicked, this, &P6PatrolPage::toggleRouteOrderEditMode);
+    routeSelectRow->addWidget(routeOrderEditToggleBtn_);
+    normalLayout->addLayout(routeSelectRow);
 
     routeOrderList_ = new QListWidget(normalPage);
     routeOrderList_->setObjectName("routeOrderList");
-    routeOrderList_->setDragDropMode(QAbstractItemView::InternalMove);
+    // 기본은 드래그 잠금 — "편집"을 눌러야 재정렬할 수 있다(toggleRouteOrderEditMode).
+    routeOrderList_->setDragDropMode(QAbstractItemView::NoDragDrop);
     routeOrderList_->setFixedHeight(120);
     connect(routeOrderList_->model(), &QAbstractItemModel::rowsMoved, this, [this] {
         QVector<QString> order;
@@ -414,12 +620,12 @@ QWidget* P6PatrolPage::buildRouteCard() {
     routeStatsLabel_->setWordWrap(true);
     normalLayout->addWidget(routeStatsLabel_);
 
-    auto* testBtn = new QPushButton(SimpleIcons::radar(Tokens::TEXT_SECONDARY, 11),
-                                     QStringLiteral("순찰 시작"), normalPage);
-    testBtn->setProperty("variant", "secondary");
-    testBtn->setIconSize(QSize(11, 11));
-    connect(testBtn, &QPushButton::clicked, this, &P6PatrolPage::runTestRun);
-    normalLayout->addWidget(testBtn);
+    testBtn_ = new QPushButton(SimpleIcons::radar(Tokens::TEXT_SECONDARY, 11),
+                                QStringLiteral("경로 주행"), normalPage);
+    testBtn_->setProperty("variant", "secondary");
+    testBtn_->setIconSize(QSize(11, 11));
+    connect(testBtn_, &QPushButton::clicked, this, &P6PatrolPage::runTestRun);
+    normalLayout->addWidget(testBtn_);
 
     routeStack_->addWidget(normalPage);
 
@@ -598,7 +804,10 @@ QPointF P6PatrolPage::designMapMetersToCanvas(const MapData& md, QPointF meters)
 
 void P6PatrolPage::handleCanvasAddRequested(QPointF pos, qreal headingDeg) {
     popover_->setForNewWaypoint(pos, canvas_->canvasToMapMeters(pos), headingDeg);
-    const QPoint anchor = canvas_->mapTo(this, pos.toPoint());
+    // pos는 캔버스 "월드" 좌표(확대/축소·화면 이동 전)다 — mapTo()는 위젯 간 오프셋만
+    // 더할 뿐 그 배율·이동은 모르니, worldToScreen()으로 먼저 지금 실제 화면 위치로
+    // 바꿔야 한다(WaypointCanvas::worldToScreen 주석 참고).
+    const QPoint anchor = canvas_->mapTo(this, canvas_->worldToScreen(pos).toPoint());
     movePopoverNear(anchor);
     popover_->raise();
     popover_->show();
@@ -608,18 +817,25 @@ void P6PatrolPage::handleCanvasEditRequested(const QString& id) {
     const WaypointCanvas::Waypoint* wp = canvas_->findWaypoint(id);
     if (!wp) return;
     popover_->setForEditWaypoint(*wp);
-    const QPoint anchor = canvas_->mapTo(this, wp->pos.toPoint());
+    const QPoint anchor = canvas_->mapTo(this, canvas_->worldToScreen(wp->pos).toPoint());
     movePopoverNear(anchor);
     popover_->raise();
     popover_->show();
+    // "경로 이동"/"주행 취소" 토글 버튼을 지금 상태로 맞춘다. isVisible() 체크가
+    // 있는 refreshPopoverDriveButton()이라 반드시 show() 다음에 불러야 한다 — 이후
+    // updateDrivingButtonsEnabled()가 다시 불릴 때마다(로봇 상태·주행 상태가
+    // 바뀔 때마다) 같은 함수가 또 불려 열려 있는 동안에도 실시간으로 따라간다.
+    refreshPopoverDriveButton();
 }
 
 void P6PatrolPage::movePopoverNear(const QPoint& anchor) {
-    // 예전엔 아래쪽(y) 방향은 0 이상으로만 막고 화면 하단은 안 막아서, 지도 아래쪽을
-    // 클릭하면 팝업이 창 밖으로 넘어가 저장·취소 버튼이 잘려 보였다. x와 같은 방식으로
-    // 하단도 clamp한다.
-    const int x = qMin(anchor.x() + 12, width() - popover_->width() - 8);
-    const int y = qMin(qMax(anchor.y() - 20, 0), height() - popover_->height() - 8);
+    // x·y 둘 다 [8, 이 페이지 크기 - 팝오버 크기 - 8] 범위로 확실히 가둔다 — 예전엔
+    // x가 위쪽 경계(qMin)만 있고 아래쪽 경계(qMax)가 없어서, 캔버스를 왼쪽 끝까지
+    // 축소·이동한 뒤 거기 있는 마커를 누르면 팝오버가 페이지 왼쪽 밖으로 나가
+    // "메인 뷰를 벗어난" 채로(저장·취소 버튼이 화면 밖) 뜨는 경우가 있었다. y는
+    // 이미 qMax가 있었지만 같은 이유로 qBound로 통일한다.
+    const int x = qBound(8, anchor.x() + 12, width() - popover_->width() - 8);
+    const int y = qBound(8, anchor.y() - 20, height() - popover_->height() - 8);
     popover_->move(x, y);
 }
 
@@ -782,31 +998,19 @@ void P6PatrolPage::rebuildWpList() {
         delete item;
     }
 
-    // 헤더를 QWidget으로 감싸서 addWidget()한다 — addLayout()으로 바로 붙이면 위 clear
-    // 루프의 delete item->widget()이 nullptr을 지우는 셈이라(레이아웃 아이템은 위젯이
-    // 아니다) title·typeHint가 지워지지 않고 남아, 다시 그릴 때마다 옛 "웨이포인트 N"
-    // 라벨이 새 라벨과 겹쳐 보이는 버그가 있었다.
-    auto* headerRow = new QWidget(wpListCard_);
-    auto* header = new QHBoxLayout(headerRow);
-    header->setContentsMargins(0, 0, 0, 0);
-    auto* title = new QLabel(QStringLiteral("웨이포인트 %1").arg(waypoints_.size()), headerRow);
-    title->setProperty("role", "label");
-    header->addWidget(title);
-    header->addStretch();
-    auto* typeHint = new QLabel(QStringLiteral("유형: 순찰 지점 · 충전"), headerRow);
-    typeHint->setProperty("role", "muted");
-    typeHint->setStyleSheet(QStringLiteral("font-size:11px;"));
-    header->addWidget(typeHint);
-    wpListLayout_->addWidget(headerRow);
-    wpListLayout_->addSpacing(6);
+    // "웨이포인트 N" 개수만 갱신한다 — 타이틀 라벨과 "+ 추가" 버튼(addWpBtn_) 자체는
+    // buildWpListCard()가 한 번만 만든 채로 유지된다(addWpBtn_ 주석 참고: 매번 다시
+    // 만들면 체크 상태가 canvas_->addWaypointMode()와 어긋난다).
+    wpListTitleLabel_->setText(QStringLiteral("웨이포인트 %1").arg(waypoints_.size()));
 
-    // p6_patrol_route_wireframe.html 그대로 — 하나의 테두리 안에 구분선으로만 나뉜
-    // 단순한 한 줄짜리 행: ID · 이름 · (충전이면 "초기 위치" 배지, 아니면 우측 정렬된
-    // "x, y, yaw°"). 행 자체를 누르면 편집 팝오버가 열린다(eventFilter) — 와이어프레임엔
-    // 없는 동작이지만 겉모습은 바꾸지 않으면서 기존 "행 클릭 = 편집" 진입을 유지한다.
+    // 구분선으로만 나뉜 단순한 한 줄짜리 행: ID · 이름 · (충전이면 "초기 위치" 배지,
+    // 아니면 우측 정렬된 "x, y, yaw°"). 행 자체를 누르면 편집 팝오버가 열린다
+    // (eventFilter). 예전엔 이 목록 전체를 흰 배경+테두리로 한 번 더 감쌌는데(wpListCard_
+    // 자신이 이미 QFrame#card로 감싸져 있어 "테두리 안에 테두리"였다 — 경로 카드
+    // (buildRouteCard())의 routeOrderList_는 이런 이중 테두리 없이 카드 배경 위에 바로
+    // 놓여 있다), 그 감싸는 테두리를 없애 경로 카드와 같은 단순한 모양으로 맞춘다.
+    // 행 사이 구분선(위 주석의 "구분선")은 그대로 유지한다.
     auto* listFrame = new QFrame(wpListCard_);
-    listFrame->setStyleSheet(
-        QStringLiteral("border:1px solid #E3E8ED; border-radius:8px; background:#FFFFFF;"));
     auto* listLayout = new QVBoxLayout(listFrame);
     listLayout->setContentsMargins(0, 0, 0, 0);
     listLayout->setSpacing(0);
@@ -815,8 +1019,16 @@ void P6PatrolPage::rebuildWpList() {
         const WaypointCanvas::Waypoint& w = waypoints_[i];
 
         auto* row = new QFrame(listFrame);
+        // 지금 수동 주행 중인 그 웨이포인트만 배경을 얹어 하이라이트한다 — 팝오버의
+        // "주행 취소" 토글(refreshPopoverDriveButton)과 같은 drivingWaypointId_를
+        // 기준으로 삼아, 목록만 봐도 "지금 어디로 가는 중인지" 알 수 있게 한다.
+        const bool isDrivingThis = !drivingWaypointId_.isEmpty() && w.id == drivingWaypointId_;
+        QString rowStyle = isDrivingThis ? QStringLiteral("background:#E9F2FB;") : QString();
         if (i + 1 < waypoints_.size()) {
-            row->setStyleSheet(QStringLiteral("border-bottom:1px solid #E3E8ED;"));
+            rowStyle += QStringLiteral("border-bottom:1px solid #E3E8ED;");
+        }
+        if (!rowStyle.isEmpty()) {
+            row->setStyleSheet(rowStyle);
         }
         row->setCursor(Qt::PointingHandCursor);
         row->setProperty("wpId", w.id);
@@ -837,6 +1049,13 @@ void P6PatrolPage::rebuildWpList() {
         auto* nameLabel = new QLabel(w.name, row);
         nameLabel->setStyleSheet(QStringLiteral("color:#16202B; font-size:11px;"));
         rowLayout->addWidget(nameLabel);
+
+        if (isDrivingThis) {
+            auto* drivingBadge = new QLabel(QStringLiteral("주행 중"), row);
+            drivingBadge->setStyleSheet(QStringLiteral(
+                "color:#2563A8; background:#C2D9F0; font-size:10px; padding:1px 5px; border-radius:3px;"));
+            rowLayout->addWidget(drivingBadge);
+        }
         rowLayout->addStretch();
 
         if (w.charging) {
@@ -867,14 +1086,9 @@ bool P6PatrolPage::eventFilter(QObject* watched, QEvent* event) {
     if (event->type() == QEvent::MouseButtonPress) {
         const QVariant wpId = watched->property("wpId");
         if (wpId.isValid()) {
-            // 캔버스가 "이동" 모드일 때 지도 위 마커를 클릭하면 그 지점으로 주행하는
-            // 것과 똑같이, 목록에서도 같은 웨이포인트를 누르면 주행 요청으로 이어지게
-            // 한다. "WP 추가" 모드에서는 기존대로 편집 팝오버를 연다.
-            if (canvas_->interactionMode() == WaypointCanvas::InteractionMode::MoveWaypoint) {
-                driveToSingleWaypoint(wpId.toString());
-            } else {
-                handleCanvasEditRequested(wpId.toString());
-            }
+            // 목록 행을 누르면 캔버스에서 마커를 클릭한 것과 동일하게 편집 팝오버를
+            // 연다 — 실제 주행 요청은 그 팝오버의 "경로 이동" 버튼이 담당한다.
+            handleCanvasEditRequested(wpId.toString());
             return true;
         }
     }
@@ -900,31 +1114,28 @@ void P6PatrolPage::prepareNavigationForCurrentMap() {
     apiClient_->prepareNavigation(current.robotId, current.serverMapId);
 }
 
-void P6PatrolPage::rebuildRouteChips() {
-    QLayoutItem* item;
-    while ((item = routeChipsLayout_->takeAt(0)) != nullptr) {
-        delete item->widget();
-        delete item;
+void P6PatrolPage::rebuildRouteSelector() {
+    // currentIndexChanged가 항목 재구성 중에 엉뚱한 인덱스로 튀는 걸 막는다 — 실제
+    // 전환은 이 함수가 끝난 뒤 아래에서 currentRoute_ 기준으로 다시 맞춘다.
+    const QSignalBlocker blocker(routeSelectCombo_);
+    routeSelectCombo_->clear();
+    routeSelectCombo_->addItems(routes_.keys());
+    const int idx = routeSelectCombo_->findText(currentRoute_);
+    if (idx >= 0) {
+        routeSelectCombo_->setCurrentIndex(idx);
+    } else if (routeSelectCombo_->count() > 0) {
+        // currentRoute_가 없어졌으면(경로 삭제 등) 첫 항목으로 대신한다.
+        currentRoute_ = routeSelectCombo_->itemText(0);
+        routeSelectCombo_->setCurrentIndex(0);
     }
-
-    for (auto it = routes_.constBegin(); it != routes_.constEnd(); ++it) {
-        const QString name = it.key();
-        auto* chip = new QPushButton(name, this);
-        chip->setObjectName("routeChip");
-        chip->setCheckable(true);
-        chip->setChecked(name == currentRoute_);
-        connect(chip, &QPushButton::clicked, this, [this, name] {
-            currentRoute_ = name;
-            rebuildRouteChips();
-            rebuildRouteOrderList();
-            refreshCanvasPreview();
-        });
-        routeChipsLayout_->addWidget(chip);
-    }
-    routeChipsLayout_->addStretch();
 }
 
 void P6PatrolPage::rebuildRouteOrderList() {
+    // 목록을 통째로 다시 그리는 시점엔 편집 중이던 드래그 순서가 이미 routes_에
+    // 반영돼 있거나(rowsMoved) 무의미해진(맵/경로 전환, 웨이포인트 삭제) 상태다 —
+    // 매번 안전하게 "편집 꺼짐"으로 되돌려 다음에 다시 "편집"을 눌러야 재정렬할 수
+    // 있게 한다(서버 저장은 하지 않음 — resetRouteOrderEditUi 참고).
+    resetRouteOrderEditUi();
     routeOrderList_->clear();
 
     if (currentRoute_.isEmpty()) {
@@ -1179,7 +1390,7 @@ void P6PatrolPage::exitRouteEditMode(bool save) {
     routeEditBanner_->hide();
     canvasToolbarRow_->show();
 
-    rebuildRouteChips();
+    rebuildRouteSelector();
     rebuildRouteOrderList();
     refreshCanvasPreview();
 }
@@ -1248,6 +1459,54 @@ void P6PatrolPage::startNewRoute() {
     enterRouteEditMode(name);
 }
 
+void P6PatrolPage::resetRouteOrderEditUi() {
+    routeOrderEditToggleBtn_->setChecked(false);
+    routeOrderList_->setDragDropMode(QAbstractItemView::NoDragDrop);
+    routeOrderEditToggleBtn_->setText(QStringLiteral("편집"));
+    routeOrderEditToggleBtn_->setProperty("variant", "secondary");
+    routeOrderEditToggleBtn_->style()->unpolish(routeOrderEditToggleBtn_);
+    routeOrderEditToggleBtn_->style()->polish(routeOrderEditToggleBtn_);
+}
+
+void P6PatrolPage::toggleRouteOrderEditMode(bool editing) {
+    if (!editing) {
+        resetRouteOrderEditUi();
+    } else {
+        routeOrderList_->setDragDropMode(QAbstractItemView::InternalMove);
+        routeOrderEditToggleBtn_->setText(QStringLiteral("저장"));
+        routeOrderEditToggleBtn_->setProperty("variant", "primary");
+        routeOrderEditToggleBtn_->style()->unpolish(routeOrderEditToggleBtn_);
+        routeOrderEditToggleBtn_->style()->polish(routeOrderEditToggleBtn_);
+        return;  // 편집 켜는 쪽은 저장할 게 없다 — 드래그 허용만 하면 끝.
+    }
+
+    // "저장" — 지금 routeOrderList_ 순서를 서버(patrol_route.steps)에 반영한다.
+    // 예전엔 드래그로 순서를 바꿔도(rowsMoved) routes_(화면)에만 반영되고 서버에는
+    // 전혀 안 실렸다 — "경로 순서를 바꿔도 DB에 안 들어간다" 리포트(2026-09-10).
+    if (currentRoute_.isEmpty() || currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    MapData& current = maps_[currentMapIndex_];
+    const int routeId = current.routeServerIds.value(currentRoute_, -1);
+    if (routeId <= 0) {
+        QMessageBox::warning(this, QStringLiteral("경로 순서 저장 실패"),
+                              QStringLiteral("이 경로가 아직 서버에 저장되지 않았습니다. \"+ 새 경로\"로 다시 "
+                                             "만들어 저장한 뒤 순서를 편집해 주세요."));
+        return;
+    }
+    QJsonArray stepsArray;
+    for (const QString& code : routes_.value(currentRoute_)) {
+        const int wpId = current.waypointServerIds.value(code, -1);
+        if (wpId > 0) stepsArray.append(wpId);
+    }
+    apiClient_->updatePatrolRoute(routeId, QJsonObject{{"steps", stepsArray}},
+                                   [this](bool ok, const ApiClient::PatrolRouteInfo&, const QString& err) {
+                                       if (!ok) {
+                                           QMessageBox::warning(
+                                               this, QStringLiteral("경로 순서 저장 실패"),
+                                               err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
+                                       }
+                                   });
+}
+
 void P6PatrolPage::deleteCurrentRoute() {
     if (currentRoute_.isEmpty() || !routes_.contains(currentRoute_)) return;
 
@@ -1277,7 +1536,7 @@ void P6PatrolPage::deleteCurrentRoute() {
         }
     }
 
-    rebuildRouteChips();
+    rebuildRouteSelector();
     rebuildRouteOrderList();
     rebuildScheduleList();
     refreshCanvasPreview();
@@ -1317,15 +1576,22 @@ void P6PatrolPage::runTestRun() {
         [this](bool ok, const ApiClient::PatrolRunInfo& run, const QString& err) {
             if (!ok) {
                 QMessageBox::warning(this, QStringLiteral("순찰 시작 실패"),
-                                      err.isEmpty() ? QStringLiteral("서버에 순찰 시작 요청을 보내지 못했습니다.")
-                                                    : err);
+                                      err.isEmpty() ? QStringLiteral("로봇 ws 연결을 확인해주세요.") : err);
                 return;
             }
             if (!run.robotConnected) {
-                QMessageBox::information(
-                    this, QStringLiteral("순찰 시작"),
-                    QStringLiteral("순찰 기록은 저장했지만 로봇이 아직 연결되어 있지 않습니다."));
+                QMessageBox::information(this, QStringLiteral("순찰 시작"),
+                                          QStringLiteral("로봇 ws 연결을 확인해주세요."));
+                return;
             }
+            // 실제로 로봇에 명령이 나갔다 — patrol_done(WS)이 올 때까지 이 로봇에
+            // 새 주행 명령(순찰 시작/경로 이동)을 막는다. patrol_task.py의 액션
+            // 서버가 동시 목표를 REJECT하므로 안 막아도 로봇이 두 개를 같이 하진
+            // 않지만, 그 전에 버튼을 잠가 "왜 안 되는지" 미리 알린다.
+            isPatrolling_ = true;
+            activePatrolTrigger_ = QStringLiteral("manual");  // 이 버튼이 보내는 건 항상 수동 트리거.
+            updateRobotStatusBanner();
+            updateDrivingButtonsEnabled();
         });
 }
 
@@ -1345,13 +1611,53 @@ void P6PatrolPage::driveToSingleWaypoint(const QString& id) {
     const QPointF meters = canvas_->canvasToMapMeters(wp->pos);
     apiClient_->driveToPoint(robotCode, mapId, wp->id, meters.x(), meters.y(),
                               CanvasGeometry::canvasYawDegToMapYawRad(wp->yawDeg),
-                              [this](bool ok, const QString& err) {
+                              [this, id](bool ok, const QString& err) {
                                   if (!ok) {
                                       QMessageBox::warning(
                                           this, QStringLiteral("이동 실패"),
-                                          err.isEmpty() ? QStringLiteral("로봇이 연결되어 있지 않습니다.") : err);
+                                          err.isEmpty() ? QStringLiteral("로봇 ws 연결을 확인해주세요.") : err);
+                                      return;
                                   }
+                                  // runTestRun()과 같은 이유 — 이 "이동"도 patrol_task.py
+                                  // 액션을 그대로 쓰므로(run_id=0) patrol_done이 올 때까지
+                                  // 같은 방식으로 잠근다. run_id=0이라 patrol_run 행 자체가
+                                  // 없어 서버에 물어볼 trigger가 없다 — 대시보드에서 직접
+                                  // 누른 동작이니 "manual"로 둔다.
+                                  isPatrolling_ = true;
+                                  activePatrolTrigger_ = QStringLiteral("manual");
+                                  drivingWaypointId_ = id;
+                                  updateRobotStatusBanner();
+                                  updateDrivingButtonsEnabled();  // refreshPopoverDriveButton()도 여기서 같이 불린다.
+                                  rebuildWpList();
                               });
+}
+
+void P6PatrolPage::cancelCurrentDrive(const QString& id) {
+    // 팝오버가 "주행 취소"를 보내는 시점엔 id == drivingWaypointId_가 항상 성립하지만
+    // (같은 팝오버가 그 상태를 보고 토글을 만든 것이므로), 방어적으로 파라미터 자체는
+    // 안 쓰고 drivingWaypointId_ 기준으로 정리한다 — 취소는 "지금 이 로봇이 하고 있는
+    // 주행 전체"를 멈추는 것이지, 특정 웨이포인트 id에 종속된 개념이 아니다.
+    Q_UNUSED(id);
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const QString robotCode = maps_[currentMapIndex_].robotId;
+    if (robotCode.isEmpty()) return;
+
+    apiClient_->cancelPatrolRun(robotCode, [this](bool ok, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("주행 취소 실패"),
+                                  err.isEmpty() ? QStringLiteral("로봇 ws 연결을 확인해주세요.") : err);
+            return;
+        }
+        // 서버는 로봇 연결 성공 여부와 무관하게 DB의 running 기록을 항상 정리하므로
+        // (patrol.py::cancel_patrol_run 참고), 대시보드도 robot_connected 값과 무관하게
+        // "주행 중" 상태를 여기서 확정적으로 해제한다.
+        isPatrolling_ = false;
+        activePatrolTrigger_.clear();
+        drivingWaypointId_.clear();
+        updateRobotStatusBanner();
+        updateDrivingButtonsEnabled();
+        rebuildWpList();
+    });
 }
 
 void P6PatrolPage::handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg) {
@@ -1372,45 +1678,10 @@ void P6PatrolPage::handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg
                                 [this](bool ok, const QString& err) {
                                     if (!ok) {
                                         QMessageBox::warning(
-                                            this, QStringLiteral("위치 보정 실패"),
-                                            err.isEmpty() ? QStringLiteral("로봇이 연결되어 있지 않습니다.") : err);
+                                            this, QStringLiteral("초기 위치 설정 실패"),
+                                            err.isEmpty() ? QStringLiteral("로봇 ws 연결을 확인해주세요.") : err);
                                     }
                                 });
-}
-
-void P6PatrolPage::shutdownCurrentRobot() {
-    // "로봇 종료" — 이 로봇에서 켜져 있는 전부(베이스 구동+Nav2/SLAM+rviz2+업링크/
-    // 다운링크)를 한 번에 내린다. 물리적 로봇의 동작에 영향을 주는 되돌리기 어려운
-    // 조작이라(순찰/이동 중이었다면 그것도 멈춘다) 확인 없이 바로 실행하지 않는다.
-    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
-    const QString robotCode = maps_[currentMapIndex_].robotId;
-    if (robotCode.isEmpty()) return;
-
-    const auto reply = QMessageBox::question(
-        this, QStringLiteral("로봇 종료"),
-        QStringLiteral("%1 로봇에서 켜져 있는 모든 프로그램(베이스 구동·Nav2/SLAM·rviz2·업링크·다운링크)을\n"
-                        "전부 끕니다. 계속할까요?")
-            .arg(robotCode),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (reply != QMessageBox::Yes) return;
-
-    apiClient_->shutdownRobot(robotCode, [this](bool ok, const QString& err) {
-        if (!ok) {
-            QMessageBox::warning(this, QStringLiteral("종료 실패"),
-                                  err.isEmpty() ? QStringLiteral("로봇이 연결되어 있지 않습니다.") : err);
-        }
-    });
-}
-
-void P6PatrolPage::handleEmergencyStop() {
-    // P5MapPage::handleEmergencyStop과 같은 이유·같은 패턴 — Space와 같은 경로라
-    // 확인 대화상자를 띄우기 전에 이미 실제 정지 명령이 나간다(안전이 우선이라
-    // 사용자 확인을 기다리지 않는다).
-    teleopPanel_->handleKeyPress(Qt::Key_Space);
-    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
-    const QString robotCode = maps_[currentMapIndex_].robotId;
-    QMessageBox::warning(this, QStringLiteral("비상정지"),
-                          QStringLiteral("%1를 비상정지합니다. 진행 중인 순찰/이동이 중단됩니다.").arg(robotCode));
 }
 
 void P6PatrolPage::keyPressEvent(QKeyEvent* event) {
@@ -1682,10 +1953,20 @@ void P6PatrolPage::loadMapData(int index) {
     MapData& m = maps_[index];
     currentMapIndex_ = index;
 
-    // 맵(=로봇)이 바뀌면 이전 로봇의 온라인 상태를 그대로 들고 있으면 안 된다 — 새
-    // robot_status가 올 때까지는 안전하게 오프라인으로 되돌린다.
+    // 맵(=로봇)이 바뀌면 이전 로봇의 온라인·주행 상태를 그대로 들고 있으면 안 된다 —
+    // 실제 값을 다시 받아올 때까지는 안전하게 오프라인/대기로 되돌려 둔다.
     robotOnline_ = false;
-    robotOfflineBanner_->setVisible(true);
+    isPatrolling_ = false;
+    activePatrolTrigger_.clear();
+    drivingWaypointId_.clear();
+    slamActive_ = false;
+    navRunning_ = false;
+    updateRobotStatusBanner();
+    updateDrivingButtonsEnabled();
+    // WS 이벤트만 기다리면 페이지를 새로 열었을 때(또는 이 로봇으로 막 전환했을 때)
+    // "지금 실제로 어떤 상태인지"를 알 길이 없다 — DB/실시간 연결 기준으로 다시
+    // 맞춘다(새로고침 버튼과 같은 함수).
+    refreshRobotState();
     // 다른 로봇의 맵으로 전환한 것 — 그 로봇의 Nav2도 미리 준비시킨다(showEvent와
     // 같은 이유).
     prepareNavigationForCurrentMap();
@@ -1729,7 +2010,7 @@ void P6PatrolPage::loadMapData(int index) {
         canvas_->setCurrentRobotPosition(c->pos, 0.0);
     }
     rebuildWpList();
-    rebuildRouteChips();
+    rebuildRouteSelector();
     rebuildRouteOrderList();
     rebuildScheduleList();
     refreshCanvasPreview();
@@ -1968,7 +2249,41 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         // 예전엔 이 함수가 robot_position/camera_frame만 처리하고 나머지는 다 무시했다
         // — 그래서 P5에서 SLAM 맵을 새로 저장해도 P6의 맵 드롭다운은 앱을 껐다 켤 때까지
         // (loadMapsFromServer()가 생성자에서 딱 한 번만 불림) 절대 안 바뀌었다.
-        refreshMapForRobot(message.value(QStringLiteral("robot_code")).toString());
+        const QString robotCode = message.value(QStringLiteral("robot_code")).toString();
+        refreshMapForRobot(robotCode);
+        if (currentMapIndex_ >= 0 && currentMapIndex_ < maps_.size() &&
+            maps_[currentMapIndex_].robotId == robotCode) {
+            slamActive_ = false;
+            updateRobotStatusBanner();
+            updateDrivingButtonsEnabled();
+        }
+        return;
+    }
+
+    if (type == QStringLiteral("slam_progress")) {
+        // 지금은 "SLAM 매핑 중" 상태를 refreshRobotState()의 GET /slam-jobs 조회로
+        // 이미 잡아내지만(페이지를 열 때/맵 전환/새로고침), P5에서 이 페이지를 열기
+        // 전에 이미 SLAM을 시작한 경우 patrol_progress와 같은 이유로 아직 못 잡았을
+        // 수 있다 — 1Hz로 오는 이 메시지가 그 공백을 메운다.
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].robotId != message.value(QStringLiteral("robot_code")).toString()) return;
+        if (!slamActive_) {
+            slamActive_ = true;
+            updateRobotStatusBanner();
+            updateDrivingButtonsEnabled();
+        }
+        return;
+    }
+
+    if (type == QStringLiteral("nav_status")) {
+        // downlink_node._send_nav_status — Nav2가 실제로 준비됐는지/내려갔는지를
+        // 알려주는 유일한 신호다(DB에 남지 않는 실시간 전용 메시지라 초기 동기화는
+        // nav_prepare 응답에 기댄다 — nav_status 주석 참고).
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].robotId != message.value(QStringLiteral("robot_code")).toString()) return;
+        navRunning_ = message.value(QStringLiteral("running")).toBool();
+        updateRobotStatusBanner();
+        updateDrivingButtonsEnabled();
         return;
     }
 
@@ -1988,7 +2303,49 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
         if (maps_[currentMapIndex_].robotId != message.value(QStringLiteral("robot_code")).toString()) return;
         robotOnline_ = message.value(QStringLiteral("online")).toBool();
-        robotOfflineBanner_->setVisible(!robotOnline_);
+        if (!robotOnline_) {
+            // 오프라인이 되면 이 로봇의 주행 상태를 더 이상 신뢰할 수 없다(patrol_done을
+            // 영영 못 받을 수 있다) — 다시 온라인이 되면 사용자가 재시도할 수 있도록
+            // 안전하게 "주행 중 아님"으로 되돌린다.
+            isPatrolling_ = false;
+            activePatrolTrigger_.clear();
+            drivingWaypointId_.clear();
+            slamActive_ = false;
+            navRunning_ = false;
+            rebuildWpList();
+        }
+        updateRobotStatusBanner();
+        updateDrivingButtonsEnabled();
+        return;
+    }
+
+    if (type == QStringLiteral("patrol_done")) {
+        // 서버 ws/robot_ws.py가 patrol_task.py의 patrol_done을 그대로 중계한 것 —
+        // 진행 상황이 DB(patrol_run.status)에는 이미 기록되고 있었지만, 이 메시지
+        // 자체를 대시보드가 받아본 적이 없어서 화면(상태 바·버튼 잠금)엔 전혀
+        // 반영되지 않았다.
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].robotId != message.value(QStringLiteral("robot_code")).toString()) return;
+        isPatrolling_ = false;
+        activePatrolTrigger_.clear();
+        drivingWaypointId_.clear();
+        updateRobotStatusBanner();
+        updateDrivingButtonsEnabled();
+        rebuildWpList();
+        return;
+    }
+
+    if (type == QStringLiteral("patrol_progress")) {
+        // 지금은 "주행 중" 상태를 startPatrolRun/driveToPoint 성공 시점에 이미 true로
+        // 켜두므로(그 사이 공백을 없애기 위해) 이 메시지로 새로 켤 건 없다 — 다만 혹시
+        // 그 시작 시점을 놓쳤을 경우(예: 페이지를 새로 연 사이 이미 진행 중이던 순찰,
+        // 또는 스케줄 자동 트리거처럼 이 페이지가 직접 시작하지 않은 주행)를 대비해
+        // 반영해둔다. 이 메시지 자체엔 trigger가 안 실려 있어(robot_ws.py 참고)
+        // "manual"/"schedule" 문구를 정확히 가르려면 refreshRobotState()로 DB를
+        // 다시 조회해야 한다.
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].robotId != message.value(QStringLiteral("robot_code")).toString()) return;
+        if (!isPatrolling_) refreshRobotState();
         return;
     }
 
