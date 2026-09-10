@@ -1,0 +1,16 @@
+[Unit]
+Description=CareGuard R-07 LIMO bringup (limo_base+ydlidar+robot_localization+camera)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wego
+Environment=ROS_DOMAIN_ID=0
+Environment=ROS_LOCALHOST_ONLY=1
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/wego_ws/install/setup.bash && source ~/robot_careguard_ws/install/setup.bash && exec ros2 launch careguard_bringup teleop_launch.py'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
