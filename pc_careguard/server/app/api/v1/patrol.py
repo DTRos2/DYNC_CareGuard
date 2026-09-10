@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from typing import List, Optional
 
 import psycopg2.extras
@@ -12,6 +13,7 @@ from ...schemas import (
     PatrolRouteUpdate,
     PatrolRunCreate,
     PatrolRunItem,
+    PatrolRunLogItem,
     PatrolScheduleCreate,
     PatrolScheduleItem,
     PatrolScheduleUpdate,
@@ -356,6 +358,78 @@ async def shutdown_robot(payload: ShutdownRobotRequest):
     if not connected:
         raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
     return DriveToPointResponse(robot_connected=connected)
+
+
+# trigger/status 원본 코드 -> 한글 라벨. audit.py의 라벨 표(USER_ACTION_LABELS 등)와
+# 같은 정책 — 새 값이 생기면 이 표에만 추가하면 된다.
+TRIGGER_LABELS = {"schedule": "예약", "manual": "수동", "recheck": "재확인"}
+STATUS_LABELS = {"running": "진행 중", "completed": "완료", "aborted": "중단", "failed": "실패"}
+
+_RUN_LOG_QUERY = """
+    SELECT pr.id, pr.started_at, pr.ended_at, pr.trigger, pr.status,
+           pr.waypoints_total, pr.waypoints_done,
+           r.code AS robot_code, rc.name AS recipient_name, rt.name AS route_name
+    FROM patrol_run pr
+    JOIN robot r ON r.id = pr.robot_id
+    LEFT JOIN recipient rc ON rc.id = pr.recipient_id
+    LEFT JOIN patrol_route rt ON rt.id = pr.route_id
+    WHERE pr.started_at::date BETWEEN %(start)s AND %(end)s
+    ORDER BY pr.started_at DESC
+    LIMIT %(limit)s
+"""
+
+# audit-log와 같은 이유로 상한을 둔다(app/audit.py::MAX_ENTRIES 참고) — 과거 데이터를
+# 통째로 내려주지 않기 위함. 필요해지면 같이 cursor 페이지네이션으로 바꾼다.
+_RUN_LOG_MAX_ENTRIES = 300
+
+
+@runs_router.get("", response_model=List[PatrolRunLogItem])
+def list_patrol_runs(
+    start: Optional[date] = Query(None, description="조회 시작일. 생략하면 오늘부터 7일 전"),
+    end: Optional[date] = Query(None, description="조회 종료일. 생략하면 오늘"),
+    q: Optional[str] = Query(None, description="로봇·대상자·경로·상태 텍스트 검색어"),
+):
+    """시스템 설정 > 경로순찰 로그 탭. patrol_run을 시각 역순으로, 사람이 읽을 이름과
+    한글 라벨로 변환해 반환한다 — audit-log(GET /audit-log)와 같은 필터 관례
+    (start/end/q, 기본 최근 7일)를 그대로 따른다.
+    """
+    end = end or date.today()
+    start = start or (end - timedelta(days=7))
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(_RUN_LOG_QUERY, {"start": start, "end": end, "limit": _RUN_LOG_MAX_ENTRIES})
+        rows = cur.fetchall()
+
+    entries = [
+        PatrolRunLogItem(
+            id=row["id"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            robot_code=row["robot_code"],
+            recipient_name=row["recipient_name"],
+            route_name=row["route_name"],
+            trigger=TRIGGER_LABELS.get(row["trigger"], row["trigger"]),
+            status=STATUS_LABELS.get(row["status"], row["status"]),
+            waypoints_done=row["waypoints_done"],
+            waypoints_total=row["waypoints_total"],
+            highlight=row["status"] in ("failed", "aborted"),
+        )
+        for row in rows
+    ]
+
+    if q:
+        keyword = q.strip().lower()
+        if keyword:
+            entries = [
+                e
+                for e in entries
+                if keyword in e.robot_code.lower()
+                or keyword in (e.recipient_name or "").lower()
+                or keyword in (e.route_name or "").lower()
+                or keyword in e.status.lower()
+            ]
+
+    return entries
 
 
 @runs_router.get("/{run_id}", response_model=PatrolRunItem)
