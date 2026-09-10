@@ -84,6 +84,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 eventPage->filterToRecipient(recipientName);
             });
 
+    // P4 재생 모달의 "이벤트 상세로 이동" → P2로 전환하고 그 이벤트의 상세 모달을 바로 연다.
+    connect(videoPage_, &P4VideoPage::eventDetailRequested, this,
+            [this, eventPage](const QString& eventUid) {
+                switchToPage(1);
+                eventPage->openEventByUid(eventUid);
+            });
+
     rootLayout->addLayout(body, /*stretch=*/1);
 }
 
