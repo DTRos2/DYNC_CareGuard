@@ -1,0 +1,17 @@
+[Unit]
+Description=CareGuard R-06 TurtleBot3 bringup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yeyu
+Environment=ROS_DOMAIN_ID=40
+Environment=TURTLEBOT3_MODEL=burger
+Environment=LDS_MODEL=LDS-03
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/turtlebot3_ws/install/setup.bash && exec ros2 launch turtlebot3_bringup robot.launch.py'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
