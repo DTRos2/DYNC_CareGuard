@@ -669,7 +669,6 @@ class DownlinkNode(Node):
             '구독하지 않았습니다 — 순찰은 계속 진행하지만 음성 안내가 안 나올 수 있습니다')
         return False
 
-    def _download_map(self, map_id: int) -> str:
     def _download_map(self, map_id: int) -> Tuple[str, bool]:
         """서버 GET /maps/active에서 이 로봇의 활성 맵 메타데이터+이미지를 받아
         로봇 로컬에 저장하고, (만들어진 .yaml 경로, 내용이 실제로 바뀌었는지)를
