@@ -20,6 +20,7 @@ setup(
     entry_points={
         'console_scripts': [
             'video_recorder = careguard_perception.video_recorder:main',
+            'auto_face_capture_node = careguard_perception.auto_face_capture_node:main',
         ],
     },
 )
