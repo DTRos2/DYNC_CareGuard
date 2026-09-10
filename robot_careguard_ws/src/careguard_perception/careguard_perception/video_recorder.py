@@ -16,6 +16,15 @@
     ros2 topic pub --once /careguard/perception/record_trigger std_msgs/msg/String \
         "data: '{\"care_event_id\": null, \"reason\": \"manual test\"}'"
 
+payload에 severity("emergency"/"attention")가 실려 오면, 녹화를 시작하기 직전에
+careguard_hmi/audio_player.py가 재생하는 /careguard/voice/announce로 "긴급/주의
+이벤트 발생! 영상 녹화를 시작합니다" 안내를 먼저 쏜다(_ANNOUNCE_TEXT 참고).
+audio_player는 downlink_node.py의 _ensure_voice_announcer_running()이 nav_prepare/
+start_patrol 시점에 미리 띄워두므로, 순찰 중 발생하는 이벤트라면 이미 떠있다:
+
+    ros2 topic pub --once /careguard/perception/record_trigger std_msgs/msg/String \
+        "data: '{\"care_event_id\": 4, \"severity\": \"emergency\", \"reason\": \"manual test\"}'"
+
 순찰 녹화 시작/종료는 /careguard/perception/patrol_recording(std_msgs/String,
 JSON)로 받는다. careguard_mission/patrol_task.py가 순찰 시작 직후와 끝(성공/
 실패 불문)에 발행한다:
@@ -46,6 +55,13 @@ from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 
 from . import config
+
+# severity -> 음성 안내 문구. media.py의 SEVERITY_TAGS(media.py:37)와 같은 값 집합을
+# 쓴다 — 목록에 없는 값(info 등)이나 severity가 아예 없는 트리거는 조용히 안내를 건너뛴다.
+_ANNOUNCE_TEXT = {
+    'emergency': '긴급 이벤트 발생! 영상 녹화를 시작합니다',
+    'attention': '주의 이벤트 발생! 영상 녹화를 시작합니다',
+}
 
 
 class _ActiveRecording:
@@ -103,6 +119,9 @@ class VideoRecorder(Node):
         self.create_subscription(
             String, config.PATROL_RECORDING_TOPIC, self._on_patrol_trigger, 10
         )
+        # patrol_task.py(_publish_voice)와 같은 패턴 — "완성된 문장을 그대로 받는" 토픽이라
+        # 여기서 문구만 만들어 그대로 발행하면 된다.
+        self._voice_pub = self.create_publisher(String, config.VOICE_TOPIC, 10)
 
         self.get_logger().info(
             f'video_recorder 시작: pre={self._pre_event_sec}s post={self._post_event_sec}s '
@@ -156,7 +175,16 @@ class VideoRecorder(Node):
             )
             return
 
+        self._announce_severity(payload.get('severity'))
         self._start_recording(care_event_id, post_event_sec)
+
+    def _announce_severity(self, severity):
+        text = _ANNOUNCE_TEXT.get(severity)
+        if text is None:
+            return  # severity 없음(순찰과 무관한 옛 방식 호출) 또는 안내 대상이 아닌 값
+        msg = String()
+        msg.data = json.dumps({'text': text})
+        self._voice_pub.publish(msg)
 
     def _start_recording(self, care_event_id, post_event_sec: float):
         pre_frames = list(self._pre_buffer)  # 스냅샷 — 이후 들어오는 프레임과 안 섞이게 복사

@@ -317,8 +317,8 @@ void P2EventPage::seedMockData() {
     model_->setRows(rows);
 }
 
-void P2EventPage::loadEventsFromServer() {
-    apiClient_->fetchEvents([this](bool ok, const QVector<ApiClient::EventInfo>& items) {
+void P2EventPage::loadEventsFromServer(std::function<void()> onLoaded) {
+    apiClient_->fetchEvents([this, onLoaded](bool ok, const QVector<ApiClient::EventInfo>& items) {
         if (!ok) return;  // 서버 미기동 등: seedMockData()로 채워둔 화면을 그대로 둔다
 
         using Row = EventTableModel::EventRow;
@@ -353,6 +353,7 @@ void P2EventPage::loadEventsFromServer() {
             rows.append(row);
         }
         model_->setRows(rows);
+        if (onLoaded) onLoaded();
     });
 }
 
@@ -466,6 +467,31 @@ void P2EventPage::filterToRecipient(const QString& recipientName) {
     periodMonthBtn_->setChecked(true);  // 오늘 범위 밖(어제 등) 이벤트도 가리지 않도록 30일로 확장
     applyPeriodPreset(29);
     searchEdit_->setText(recipientName);
+}
+
+void P2EventPage::openEventByUid(const QString& eventUid) {
+    periodMonthBtn_->setChecked(true);  // filterToRecipient()와 동일 — 오늘 범위 밖이어도 가리지 않음
+    applyPeriodPreset(29);
+    searchEdit_->setText(eventUid);
+
+    // P4에서 방금 막 업로드가 끝나 새로 생긴 이벤트일 수 있어, 페이지 로드 시점 스냅샷
+    // (model_)만 보지 않고 항상 한 번 다시 받아온 뒤에 연다.
+    loadEventsFromServer([this, eventUid] { openEventRowIfPresent(eventUid); });
+}
+
+void P2EventPage::openEventRowIfPresent(const QString& eventUid) {
+    for (int row = 0; row < model_->rowCount(); ++row) {
+        const EventTableModel::EventRow eventRow = model_->rowAt(row);
+        if (eventRow.eventId != eventUid) continue;
+        auto* modal = new EventDetailModal(eventRow, this);
+        modal->setAttribute(Qt::WA_DeleteOnClose);
+        connect(modal, &EventDetailModal::eventResolved, this, &P2EventPage::resolveEvent);
+        modal->exec();
+        return;
+    }
+    // 취소된 이벤트(GET /events가 status='cancelled'는 제외함) 등으로 못 찾는 경우의 안내.
+    QMessageBox::information(this, QStringLiteral("CareGuard"),
+                              QStringLiteral("연동된 이벤트(%1)를 찾을 수 없습니다.").arg(eventUid));
 }
 
 void P2EventPage::showComingSoon(const QString& feature) {

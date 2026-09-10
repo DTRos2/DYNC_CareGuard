@@ -23,3 +23,8 @@ PATROL_RECORDING_TOPIC = '/careguard/perception/patrol_recording'
 # 트리거 전/후 기본 녹화 구간(초). ros2 파라미터로 덮어쓸 수 있다.
 PRE_EVENT_SEC_DEFAULT = 5.0
 POST_EVENT_SEC_DEFAULT = 15.0
+
+# careguard_hmi/config.py의 VOICE_TOPIC과 같은 문자열(다른 패키지 간 토픽명 공유 없이
+# 문자열로 중복 정의하는 기존 방식 — PATROL_RECORDING_TOPIC 주석 참고). record_trigger에
+# severity가 실려 오면 video_recorder.py가 이 토픽으로 "긴급/주의 이벤트 발생" 안내를 쏜다.
+VOICE_TOPIC = '/careguard/voice/announce'

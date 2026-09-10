@@ -476,6 +476,10 @@ public:
     bool wasViewed() const { return viewed_; }
     QString enteredReason() const { return reasonInput_->text().trimmed(); }
 
+signals:
+    // "이벤트 상세로 이동" 클릭. P4VideoPage::openVideoPlayer()가 자기 시그널로 그대로 이어
+    // 내보낸다 (다이얼로그가 스택 로컬 변수라 MainWindow가 직접 연결할 수 없어서).
+    void eventDetailRequested(const QString& eventUid);
 
 private:
     QWidget* buildHeader() {
@@ -797,9 +801,12 @@ private:
         subtitle->setProperty("role", "secondary");  // TEXT_SECONDARY — 와이어프레임 부제는 회색
         layout->addWidget(subtitle);
 
-        // TODO(team): P2 이벤트 상세 모달로 이동하는 라우팅은 아직 없음 (페이지 간 네비게이션 미구현).
         auto* link = new QPushButton(QStringLiteral("이벤트 상세로 이동 →"), card);
         link->setObjectName("linkBtn");
+        connect(link, &QPushButton::clicked, this, [this] {
+            emit eventDetailRequested(clip_.eventId);
+            accept();  // P2로 화면이 전환되니 이 재생 모달은 닫는다
+        });
         layout->addWidget(link, 0, Qt::AlignLeft);
 
         return card;
@@ -1444,6 +1451,8 @@ void P4VideoPage::openVideoPlayer(int clipIndex) {
     overlay->raise();
 
     VideoPlayerDialog dialog(clips_[clipIndex], topLevel);
+    connect(&dialog, &VideoPlayerDialog::eventDetailRequested, this,
+            &P4VideoPage::eventDetailRequested);
     dialog.exec();
 
     overlay->deleteLater();

@@ -65,6 +65,11 @@ public:
     // §7 열람 이력에 "누가 열람했는지" 기록할 때 이 값을 쓴다.
     void setUserName(const QString& name);
 
+signals:
+    // 재생 모달의 "이벤트 상세로 이동" 클릭. MainWindow가 P2 이벤트 페이지로 전환 +
+    // 상세 모달 오픈에 연결한다 (P3RecipientPage::eventCheckRequested와 같은 패턴).
+    void eventDetailRequested(const QString& eventUid);
+
 protected:
     // 창 크기가 바뀔 때마다 카드 그리드 열 수를 다시 계산해 반응형으로 재배치한다.
     void resizeEvent(QResizeEvent* event) override;
