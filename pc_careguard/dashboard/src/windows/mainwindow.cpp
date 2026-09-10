@@ -84,6 +84,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 eventPage->filterToRecipient(recipientName);
             });
 
+    // P4 재생 모달의 "이벤트 상세로 이동" → P2로 전환하고 그 이벤트의 상세 모달을 바로 연다.
+    connect(videoPage_, &P4VideoPage::eventDetailRequested, this,
+            [this, eventPage](const QString& eventUid) {
+                switchToPage(1);
+                eventPage->openEventByUid(eventUid);
+            });
+
+    // 반대 방향 — P2 이벤트 상세 모달의 "사유 입력 후 열람" → 페이지 전환 없이 그 자리에
+    // P4의 재생 모달을 그대로 띄운다(연결된 클립을 찾아서). eventDetailRequested와 달리
+    // 여기선 switchToPage를 안 부른다 — 이미 P2를 보고 있는 채로 재생 모달이 그 위에 뜬다.
+    connect(eventPage, &P2EventPage::videoViewRequested, this,
+            [this](const QString& eventUid) { videoPage_->openVideoPlayerByEventUid(eventUid); });
+
     rootLayout->addLayout(body, /*stretch=*/1);
 }
 

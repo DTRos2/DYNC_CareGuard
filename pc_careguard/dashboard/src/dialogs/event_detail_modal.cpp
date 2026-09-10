@@ -340,8 +340,12 @@ QWidget* EventDetailModal::buildVideoSection() {
     auto* viewBtn = new QPushButton(QStringLiteral("사유 입력 후 열람"), box);
     viewBtn->setProperty("variant", "secondary");
     viewBtn->setProperty("size", "s");
+    // 실제 사유 입력·잠금 UI는 P4의 재생 모달(VideoPlayerDialog)이 이미 갖고 있어 여기서
+    // 새로 안 만든다 — eventId만 실어 올려보내면 P4VideoPage가 그 클립을 찾아 그 모달을
+    // 그대로 띄운다. 이 상세 모달은 닫지 않는다 — 재생 모달이 그 위에 뜨고, 닫으면 다시
+    // 이 화면으로 돌아온다.
     connect(viewBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("영상 열람")); });
+            [this] { emit videoViewRequested(row_.eventId); });
     boxLayout->addWidget(viewBtn);
 
     layout->addWidget(box);

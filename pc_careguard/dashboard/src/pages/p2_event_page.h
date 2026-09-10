@@ -1,4 +1,6 @@
 #pragma once
+#include <functional>
+
 #include <QWidget>
 
 class QLabel;
@@ -30,9 +32,16 @@ public:
     // 이벤트만 보이게 하고, 기간을 30일로 넓혀 오늘 범위 밖 이벤트도 가리지 않게 한다.
     void filterToRecipient(const QString& recipientName);
 
+    // P4 영상 페이지 "이벤트 상세로 이동" 클릭 진입점. eventUid로 검색·기간을 맞춘 뒤,
+    // 최신 상태를 다시 받아와(P4에서 방금 막 생긴 이벤트일 수 있음) 상세 모달을 바로 연다.
+    void openEventByUid(const QString& eventUid);
+
 signals:
     // MainWindow가 TopBar 뱃지(setEmergencyCount/setAttentionCount)에 연결한다.
     void unresolvedCountsChanged(int emergencyCount, int attentionCount);
+    // EventDetailModal::videoViewRequested를 그대로 위로 전달한다. MainWindow가
+    // P4VideoPage::openVideoPlayerByEventUid()에 연결한다.
+    void videoViewRequested(const QString& eventUid);
 
 protected:
     // 기간 세그먼트가 "직접"이 아닐 때 날짜 칸은 읽기 전용으로 계산된 범위만 보여준다.
@@ -48,7 +57,12 @@ private:
     QWidget* buildPagination();
 
     void seedMockData();
-    void loadEventsFromServer();
+    // onLoaded: 목록 갱신이 끝난 뒤(성공 시에만) 호출할 콜백. openEventByUid()가 재조회 후
+    // 상세 모달을 여는 데 쓴다 — 기본값(nullptr)이면 그냥 갱신만 한다.
+    void loadEventsFromServer(std::function<void()> onLoaded = nullptr);
+    // loadEventsFromServer() 콜백에서 호출. model_에서 eventUid로 행을 찾아 상세 모달을
+    // 열고, 못 찾으면(아직 처리 중이거나 취소된 이벤트) 안내만 띄운다.
+    void openEventRowIfPresent(const QString& eventUid);
     void resolveEvent(const QString& eventId);
     void refreshCounts();
     void onCellClicked(const QModelIndex& index);
