@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app import db
+from app.core import db
 from app.services.scheduler import _medication_tick
 
 

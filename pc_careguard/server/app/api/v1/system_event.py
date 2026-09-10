@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Query
 
-from ... import db
+from ...core import db
 from ...schemas import SystemEventLogItem
 
 router = APIRouter(prefix="/system-events", tags=["system-event"])

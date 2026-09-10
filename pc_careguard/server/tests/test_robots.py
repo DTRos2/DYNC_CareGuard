@@ -1,7 +1,7 @@
 import uuid
 
-from app import db
-from app.robots import _map_recipient_label
+from app.core import db
+from app.api.v1.robots import _map_recipient_label
 
 
 def _unique_code():
