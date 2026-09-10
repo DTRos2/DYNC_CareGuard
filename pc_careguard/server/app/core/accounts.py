@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 
 from . import db
-from .schemas import (
+from ..schemas import (
     AccountItem,
     AssignRecipientsRequest,
     ChangePasswordRequest,

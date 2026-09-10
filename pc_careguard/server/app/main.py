@@ -3,8 +3,8 @@ import asyncio
 import bcrypt
 from fastapi import FastAPI, HTTPException
 
-from . import db
-from .accounts import router as accounts_router
+from .core import db
+from .core.accounts import router as accounts_router
 from .api.v1 import event as event_api
 from .api.v1 import map as map_api
 from .api.v1 import mission as mission_api
@@ -12,10 +12,10 @@ from .api.v1 import patrol as patrol_api
 from .api.v1 import recipient as recipient_api
 from .api.v1 import system_event as system_event_api
 from .api.v1 import teleop as teleop_api
-from .audit import router as audit_router
+from .api.v1.audit import router as audit_router
 from .api.v1.media import router as media_router
 from .api.v1.media import video_events_router
-from .robots import router as robots_router
+from .api.v1.robots import router as robots_router
 from .schemas import LoginRequest, LoginResponse
 from .services.scheduler import run_scheduler_loop
 from .ws import dashboard_ws, robot_ws

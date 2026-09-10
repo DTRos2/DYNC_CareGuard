@@ -1,6 +1,6 @@
 import uuid
 
-from app import db
+from app.core import db
 from app.ws import robot_ws
 
 

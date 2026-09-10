@@ -5,6 +5,9 @@ from pathlib import Path
 VIDEO_OUTPUT_DIR = Path(
     os.environ.get('CAREGUARD_VIDEO_DIR', os.path.expanduser('~/careguard_data/videos'))
 )
+FACE_DATASET_DIR = Path(
+    os.environ.get('CAREGUARD_FACE_DATASET_DIR', os.path.expanduser('~/careguard_data/face_dataset'))
+)
 
 # 사이드카 메타데이터에 남길 로봇 코드. POST /media/upload가 robot_code도 받으므로
 # robot_id 변환 없이 그대로 쓴다.

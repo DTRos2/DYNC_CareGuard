@@ -2,7 +2,7 @@ from typing import Dict, List
 
 from fastapi import APIRouter, HTTPException
 
-from ... import db
+from ...core import db
 from ...schemas import EventItem
 
 router = APIRouter(prefix="/events", tags=["event"])
