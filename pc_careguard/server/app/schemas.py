@@ -341,6 +341,34 @@ class PatrolRunItem(BaseModel):
     robot_connected: bool = False
 
 
+class PatrolRunLogItem(BaseModel):
+    """시스템 설정 > 경로순찰 로그 탭 한 줄. PatrolRunItem과 달리 ID가 아니라
+    사람이 읽을 이름(로봇 코드·대상자·경로명)과 한글 라벨을 바로 담아, 대시보드가
+    AuditRow처럼 그대로 테이블에 그릴 수 있게 한다."""
+    id: int
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+    robot_code: str
+    recipient_name: Optional[str] = None
+    route_name: Optional[str] = None
+    trigger: str  # 한글 라벨(예약/수동/재확인)
+    status: str   # 한글 라벨(진행 중/완료/중단/실패)
+    waypoints_done: int
+    waypoints_total: int
+    highlight: bool = False  # 중단·실패
+
+
+class SystemEventLogItem(BaseModel):
+    """시스템 설정 > 임계값·알림 로그 탭 한 줄. system_event(배터리 임계값 등 자동
+    감지 경보) 원본을 감사 로그(AuditRow)와 같은 모양으로 변환한 것."""
+    occurred_at: datetime
+    robot_code: Optional[str] = None
+    event_type: str  # 한글 라벨
+    severity: str    # info/warn/error (원본 그대로 — 색상 표시용)
+    message: str
+    highlight: bool = False
+
+
 class RobotItem(BaseModel):
     id: int
     code: str
