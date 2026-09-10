@@ -19,6 +19,9 @@ public:
 signals:
     // "RESOLVED 전환" 확정 시 P2EventPage가 모델에 반영하도록 전달한다.
     void eventResolved(const QString& eventId);
+    // "사유 입력 후 열람" 클릭. P2EventPage -> MainWindow -> P4VideoPage::openVideoPlayerByEventUid()로
+    // 이어져, 이 모달 위에 재생 모달(사유 입력 잠금 포함)을 그대로 띄운다.
+    void videoViewRequested(const QString& eventUid);
 
 private:
     QWidget* buildHeader();

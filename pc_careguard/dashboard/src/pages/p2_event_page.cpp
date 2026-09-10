@@ -390,6 +390,7 @@ void P2EventPage::onCellClicked(const QModelIndex& index) {
     auto* modal = new EventDetailModal(row, this);
     modal->setAttribute(Qt::WA_DeleteOnClose);
     connect(modal, &EventDetailModal::eventResolved, this, &P2EventPage::resolveEvent);
+    connect(modal, &EventDetailModal::videoViewRequested, this, &P2EventPage::videoViewRequested);
     modal->exec();
 }
 
@@ -486,6 +487,7 @@ void P2EventPage::openEventRowIfPresent(const QString& eventUid) {
         auto* modal = new EventDetailModal(eventRow, this);
         modal->setAttribute(Qt::WA_DeleteOnClose);
         connect(modal, &EventDetailModal::eventResolved, this, &P2EventPage::resolveEvent);
+        connect(modal, &EventDetailModal::videoViewRequested, this, &P2EventPage::videoViewRequested);
         modal->exec();
         return;
     }
