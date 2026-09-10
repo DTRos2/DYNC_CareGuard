@@ -349,6 +349,11 @@ QWidget* makeInfoPanel(const VideoClip& clip) {
     titleFont.setPixelSize(Tokens::Font::LABEL);
     titleFont.setWeight(QFont::Medium);
     title->setFont(titleFont);
+    // 줄바꿈이 없으면 라벨의 최소 너비가 텍스트 전체 길이가 돼버려, 이벤트 설명이 긴
+    // 카드가 속한 컬럼만 setColumnStretch()의 균등 배분과 무관하게 더 넓어진다
+    // (1/2/3열 카드 가로 길이가 서로 달라 보이는 원인). wordWrap으로 최소 너비를
+    // "가장 긴 단어" 수준까지 낮춰 컬럼 폭이 고르게 나뉘게 한다.
+    title->setWordWrap(true);
     layout->addWidget(title);
 
     auto* meta = new QLabel(QStringLiteral("%1 · %2").arg(clip.capturedAt, clip.eventId));
@@ -792,6 +797,11 @@ private:
         QFont sf = summary->font();
         sf.setWeight(QFont::Medium);
         summary->setFont(sf);
+        // wordWrap 없으면 이 라벨의 최소 너비가 텍스트 전체 길이가 돼버려, 다이얼로그가
+        // setFixedWidth로 고정된 상태에서 오른쪽 컬럼(stretch 5) 최소 너비를 밀어올리고
+        // 그만큼 왼쪽 영상 영역(stretch 7)이 줄어든다 — 클립마다 재생 화면 좌/우 비율이
+        // 달라 보이는 원인. makeInfoPanel() title과 같은 이유·같은 처방.
+        summary->setWordWrap(true);
         layout->addWidget(summary);  // 기본 QWidget 색(TEXT_PRIMARY) 그대로 — 와이어프레임 제목은 검정
 
         const QString status = clip_.tagStyle == VideoTagStyle::Emergency ? QStringLiteral("대응 중")
@@ -799,6 +809,7 @@ private:
         auto* subtitle = new QLabel(
             QStringLiteral("%1 · %2 · 담당 도희정").arg(clip_.location, status), card);
         subtitle->setProperty("role", "secondary");  // TEXT_SECONDARY — 와이어프레임 부제는 회색
+        subtitle->setWordWrap(true);  // summary와 같은 이유
         layout->addWidget(subtitle);
 
         auto* link = new QPushButton(QStringLiteral("이벤트 상세로 이동 →"), card);
@@ -880,6 +891,7 @@ private:
 
         auto* line2 = new QLabel(reason, row);
         line2->setProperty("role", "muted");
+        line2->setWordWrap(true);  // 사람이 직접 입력하는 자유 텍스트라 길이가 들쭉날쭉함 — summary와 같은 이유
         layout->addWidget(line2);
 
         return row;
