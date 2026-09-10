@@ -99,6 +99,17 @@ class DownlinkNode(Node):
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
 
+        # video_recorder/audio_player는 map_id에 안 묶이는, "한 번 뜨면 계속 재사용"되는
+        # 프로세스다(_ensure_video_recorder_running/_ensure_voice_announcer_running 주석
+        # 참고) — 그래서 순찰 시작(nav_prepare/patrol_start)까지 기다릴 이유가 없다. 순찰
+        # 전 대기 상태에서 긴급/주의 이벤트가 터져도 바로 녹화·음성 안내가 나가야 하므로
+        # 이 노드가 뜨는 즉시 같이 띄워둔다. 이미 떠있으면 그대로 재사용하는 함수라 이후
+        # nav_prepare/start_patrol에서 다시 불러도 중복 기동은 안 된다. 최대 각각
+        # VIDEO_RECORDER_READY_TIMEOUT_SEC/VOICE_ANNOUNCER_READY_TIMEOUT_SEC초 블로킹되지만
+        # 서버 웹소켓 연결(위 _thread)은 별도 스레드라 이 대기와 무관하게 계속 진행된다.
+        self._ensure_video_recorder_running()
+        self._ensure_voice_announcer_running()
+
     def _run_ws_loop(self):
         asyncio.set_event_loop(self._loop)
         self._loop.run_until_complete(self._connect_forever())
