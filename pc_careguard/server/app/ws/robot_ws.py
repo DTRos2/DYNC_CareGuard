@@ -212,7 +212,19 @@ async def _handle_message(robot_code: str, message: dict) -> None:
             _last_battery_check[robot_code] = now
             # db.get_connection()이 매번 원격 DB에 새로 접속하는 blocking 호출이라
             # (§_battery_check_interval_sec 주석), 이벤트 루프를 막지 않게 스레드로 뺀다.
-            await asyncio.to_thread(_handle_battery_state, robot_code, percentage)
+            return_map_id = await asyncio.to_thread(_handle_battery_state, robot_code, percentage)
+            if return_map_id is not None:
+                # 빈 웨이포인트 + return_to_charging=True — _start_patrol이 이미
+                # "웨이포인트 다 돌고 충전소로 복귀"로 처리하는 조합을 그대로 재사용한다
+                # (0개를 돌면 바로 복귀 단계로 넘어간다). 로봇 쪽에 새 명령을 안 추가해도
+                # 되는 이유는 _handle_battery_state 주석 참고.
+                await send_command(robot_code, {
+                    "type": "patrol_start",
+                    "run_id": 0,
+                    "waypoints": [],
+                    "return_to_charging": True,
+                    "map_id": return_map_id,
+                })
 
     elif msg_type == "patrol_done":
         status = message.get("status", "completed")
@@ -310,20 +322,24 @@ def _save_slam_result(message: dict) -> Optional[int]:
     return map_id
 
 
-def _handle_battery_state(robot_code: str, percentage: float) -> None:
+def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
     """시스템 설정 > 임계값·알림의 "배터리 주의/복귀" 값과 비교해 임계값을 넘는
     순간에만 system_event를 한 번 남긴다(§_battery_alert_state 주석 참고).
 
-    "복귀"는 로봇을 실제로 충전소로 돌려보내는 자동 주행까지는 아직 안 한다 —
-    통합 관제의 "충전 복귀" 버튼 자체가 아직 클릭해도 아무 일도 안 하는 목업이라
-    (P1OverviewPage::buildHeaderRow), 자동 주행 명령을 내릴 대상이 없다. 지금은
-    "복귀가 필요하다"는 경보만 남기고, 실제 자동 복귀 주행은 별도 작업으로 미룬다.
+    "복귀" 임계값을 막 넘은 순간(상태가 새로 return_needed가 된 순간)에는, 그
+    로봇의 활성 맵 id를 반환한다 — 호출부(비동기 쪽)가 이 값으로 downlink에
+    "patrol_start"(웨이포인트 0개 + return_to_charging=True) 명령을 보내
+    실제로 충전소 복귀 주행을 시작시킨다. LIMO downlink_node._start_patrol이
+    이미 이 조합(빈 웨이포인트 목록 + return_to_charging)을 "그냥 충전소로
+    복귀"로 처리하므로(patrol_task.py의 순찰 종료 로직 재사용), 로봇 쪽에는
+    새 명령 타입을 추가할 필요가 없다. 활성 맵이 없으면(SLAM 전 로봇 등)
+    None을 반환해 호출부가 명령을 보내지 않게 한다.
     """
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
         robot = cur.fetchone()
         if robot is None:
-            return
+            return None
         robot_id = robot["id"]
 
         cur.execute(
@@ -344,14 +360,14 @@ def _handle_battery_state(robot_code: str, percentage: float) -> None:
         previous_state = _battery_alert_state.get(robot_code, "normal")
         _battery_alert_state[robot_code] = new_state
         if new_state == previous_state:
-            return
+            return None
 
         if new_state == "attention":
             event_type, severity = "battery_attention", "warn"
             event_message = f"배터리 {percentage:.0f}% — 주의 임계값({attention_pct}%) 이하"
         elif new_state == "return_needed":
             event_type, severity = "battery_return_needed", "error"
-            event_message = f"배터리 {percentage:.0f}% — 복귀 임계값({return_pct}%) 이하, 충전 복귀 필요"
+            event_message = f"배터리 {percentage:.0f}% — 복귀 임계값({return_pct}%) 이하, 충전 복귀 시작"
         else:
             event_type, severity = "battery_recovered", "info"
             event_message = f"배터리 {percentage:.0f}% — 정상 범위로 회복"
@@ -361,6 +377,16 @@ def _handle_battery_state(robot_code: str, percentage: float) -> None:
             (robot_id, event_type, severity, event_message),
         )
         conn.commit()
+
+        if new_state != "return_needed":
+            return None
+
+        cur.execute(
+            "SELECT id FROM map WHERE robot_id = %s AND is_active = TRUE ORDER BY created_at DESC LIMIT 1",
+            (robot_id,),
+        )
+        active_map = cur.fetchone()
+        return active_map["id"] if active_map else None
 
 
 def _update_patrol_run(run_id, **fields) -> None:
