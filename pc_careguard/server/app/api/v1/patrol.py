@@ -3,7 +3,7 @@ from typing import List, Optional
 import psycopg2.extras
 from fastapi import APIRouter, HTTPException, Query
 
-from ... import db
+from ...core import db
 from ...schemas import (
     DriveToPointRequest,
     DriveToPointResponse,

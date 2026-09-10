@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, time as time_cls
 from zoneinfo import ZoneInfo
 
-from .. import db
+from ..core import db
 from ..api.v1.patrol import start_patrol_run
 
 KST = ZoneInfo("Asia/Seoul")

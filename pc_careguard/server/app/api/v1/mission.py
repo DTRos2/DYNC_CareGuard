@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from ... import db
+from ...core import db
 from ...schemas import MissionCreate, MissionItem
 from ...ws import robot_ws
 

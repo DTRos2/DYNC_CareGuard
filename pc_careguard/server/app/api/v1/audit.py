@@ -3,8 +3,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Query
 
-from . import db
-from .schemas import AuditLogEntry
+from ...core import db
+from ...schemas import AuditLogEntry
 
 router = APIRouter(prefix="/audit-log", tags=["audit-log"])
 

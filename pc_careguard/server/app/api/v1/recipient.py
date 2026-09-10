@@ -4,7 +4,7 @@ from typing import List, Optional
 import anyio
 from fastapi import APIRouter, HTTPException
 
-from ... import db
+from ...core import db
 from ...schemas import (
     GuardianItem,
     MedicationScheduleItem,
