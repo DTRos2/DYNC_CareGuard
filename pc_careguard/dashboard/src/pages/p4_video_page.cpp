@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QAudioOutput>
 #include <QMediaPlayer>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -446,8 +447,13 @@ protected:
 class VideoPlayerDialog : public QDialog {
     Q_OBJECT
 public:
-    VideoPlayerDialog(const VideoClip& clip, QWidget* parent = nullptr)
-        : QDialog(parent), clip_(clip) {
+    // hideEventLink: P2 이벤트 상세 모달에서 "사유 입력 후 열람"으로 이 모달을 띄운
+    // 경우 true. 그 경우엔 이 모달 바로 밑에 이미 그 이벤트의 상세 모달이 떠 있으므로
+    // "연결 이벤트" 카드의 "이벤트 상세로 이동" 버튼을 감춘다 — 안 감추면 눌렀을 때
+    // 새 이벤트 상세 모달이 하나 더 뜨고, 이 재생 모달만 accept()로 닫혀서 밑에 있던
+    // 원래 모달까지 X를 두 번 눌러야 닫히는 문제가 있었다.
+    VideoPlayerDialog(const VideoClip& clip, QWidget* parent = nullptr, bool hideEventLink = false)
+        : QDialog(parent), clip_(clip), hideEventLink_(hideEventLink) {
         setModal(true);
         // 창이 M 사이즈보다 좁으면 모달도 S 사이즈까지 줄어든다.
         int modalWidth = Tokens::Layout::MODAL_W_M;
@@ -812,13 +818,17 @@ private:
         subtitle->setWordWrap(true);  // summary와 같은 이유
         layout->addWidget(subtitle);
 
-        auto* link = new QPushButton(QStringLiteral("이벤트 상세로 이동 →"), card);
-        link->setObjectName("linkBtn");
-        connect(link, &QPushButton::clicked, this, [this] {
-            emit eventDetailRequested(clip_.eventId);
-            accept();  // P2로 화면이 전환되니 이 재생 모달은 닫는다
-        });
-        layout->addWidget(link, 0, Qt::AlignLeft);
+        // hideEventLink_이면(P2 이벤트 상세에서 열람으로 들어온 경우) 이 버튼 자체를 안
+        // 만든다 — 생성자 주석 참고.
+        if (!hideEventLink_) {
+            auto* link = new QPushButton(QStringLiteral("이벤트 상세로 이동 →"), card);
+            link->setObjectName("linkBtn");
+            connect(link, &QPushButton::clicked, this, [this] {
+                emit eventDetailRequested(clip_.eventId);
+                accept();  // P2로 화면이 전환되니 이 재생 모달은 닫는다
+            });
+            layout->addWidget(link, 0, Qt::AlignLeft);
+        }
 
         return card;
     }
@@ -1020,6 +1030,7 @@ private:
     }
 
     VideoClip clip_;
+    bool hideEventLink_ = false;
     bool viewed_ = false;
     bool isFullScreen_ = false;
     int remainingSeconds_ = 0;
@@ -1278,13 +1289,36 @@ void P4VideoPage::handleWsMessage(const QJsonObject& message) {
     fetchVideoClips();
 }
 
-void P4VideoPage::fetchVideoClips() {
+void P4VideoPage::fetchVideoClips(std::function<void()> onLoaded) {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/video-events")));
     QNetworkReply* reply = netManager_->get(request);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, onLoaded] {
         handleVideoClipsReply(reply);
         reply->deleteLater();
+        if (onLoaded) onLoaded();
+    });
+}
+
+void P4VideoPage::openVideoPlayerByEventUid(const QString& eventUid) {
+    auto tryOpen = [this, eventUid]() -> bool {
+        for (int i = 0; i < clips_.size(); ++i) {
+            if (clips_[i].eventId == eventUid) {
+                openVideoPlayer(i, /*cameFromEventDetail=*/true);
+                return true;
+            }
+        }
+        return false;
+    };
+    if (tryOpen()) return;
+
+    // P2에서 방금 막 생긴 이벤트에 연동된 영상일 수 있어(이 페이지가 아직
+    // video_event_created push를 못 받았을 수 있음) 한 번 더 받아온 뒤 재시도한다.
+    fetchVideoClips([this, eventUid, tryOpen] {
+        if (!tryOpen()) {
+            QMessageBox::information(this, QStringLiteral("CareGuard"),
+                                      QStringLiteral("이 이벤트에 연동된 영상을 찾을 수 없습니다."));
+        }
     });
 }
 
@@ -1453,7 +1487,7 @@ bool P4VideoPage::matchesFilters(const VideoClip& clip) const {
     return true;
 }
 
-void P4VideoPage::openVideoPlayer(int clipIndex) {
+void P4VideoPage::openVideoPlayer(int clipIndex, bool cameFromEventDetail) {
     // §4-4: 배경 흐림은 부모 위 반투명 오버레이 QWidget을 띄우고 그 위에 다이얼로그를 얹는다.
     QWidget* topLevel = window();
     auto* overlay = new QWidget(topLevel);
@@ -1462,7 +1496,7 @@ void P4VideoPage::openVideoPlayer(int clipIndex) {
     overlay->show();
     overlay->raise();
 
-    VideoPlayerDialog dialog(clips_[clipIndex], topLevel);
+    VideoPlayerDialog dialog(clips_[clipIndex], topLevel, cameFromEventDetail);
     connect(&dialog, &VideoPlayerDialog::eventDetailRequested, this,
             &P4VideoPage::eventDetailRequested);
     dialog.exec();

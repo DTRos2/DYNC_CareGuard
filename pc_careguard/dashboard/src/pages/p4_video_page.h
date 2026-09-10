@@ -1,4 +1,6 @@
 #pragma once
+#include <functional>
+
 #include <QDateTime>
 #include <QString>
 #include <QStringList>
@@ -65,6 +67,12 @@ public:
     // §7 열람 이력에 "누가 열람했는지" 기록할 때 이 값을 쓴다.
     void setUserName(const QString& name);
 
+    // P2 이벤트 상세 모달의 "사유 입력 후 열람" 진입점. eventUid에 연동된 클립을 clips_에서
+    // 찾아 재생 모달(사유 입력 잠금 포함, openVideoPlayer()와 완전히 동일)을 그대로 띄운다.
+    // 못 찾으면 목록을 한 번 새로 받아온 뒤 재시도하고, 그래도 없으면 안내만 띄운다 —
+    // P2EventPage::openEventByUid()와 같은 이유(방금 막 생긴 영상일 수 있음).
+    void openVideoPlayerByEventUid(const QString& eventUid);
+
 signals:
     // 재생 모달의 "이벤트 상세로 이동" 클릭. MainWindow가 P2 이벤트 페이지로 전환 +
     // 상세 모달 오픈에 연결한다 (P3RecipientPage::eventCheckRequested와 같은 패턴).
@@ -82,14 +90,18 @@ private:
     // 그리드 뷰(rebuildCardGrid())와 같은 clips_/matchesFilters()를 표로 다시 그린다.
     // rebuildCardGrid() 끝에서 항상 같이 호출되어, 필터 변경·목록 새로고침 시 두 뷰가 같이 갱신된다.
     void rebuildTableView();
-    void openVideoPlayer(int clipIndex);
+    // cameFromEventDetail: true면 재생 모달의 "연결 이벤트" 카드에서 "이벤트 상세로
+    // 이동" 버튼을 숨긴다 — openVideoPlayerByEventUid() 참고.
+    void openVideoPlayer(int clipIndex, bool cameFromEventDetail = false);
     bool matchesFilters(const VideoClip& clip) const;
     int computeColumnCount() const;
 
     // 서버 GET /video-events 호출해 clips_를 채운 뒤 rebuildCardGrid()로 다시 그린다.
     // 실패해도(네트워크 에러 등) clips_를 비운 채로 두고 조용히 넘어간다 — §4 카드 그리드는
     // 비어 있으면 makeEmptySlot() 안내만 보여주므로 별도 에러 배너는 아직 안 만든다.
-    void fetchVideoClips();
+    // onLoaded: 응답 처리(성공/실패 불문)가 끝난 뒤 호출할 콜백 — openVideoPlayerByEventUid()가
+    // 재조회 후 찾기를 재시도하는 데 쓴다. 기본값(nullptr)이면 그냥 갱신만 한다.
+    void fetchVideoClips(std::function<void()> onLoaded = nullptr);
     void handleVideoClipsReply(QNetworkReply* reply);
 
     // /ws/dashboard가 push하는 "video_event_created"(새 영상 클립 저장 완료)를 받아

@@ -39,6 +39,9 @@ public:
 signals:
     // MainWindow가 TopBar 뱃지(setEmergencyCount/setAttentionCount)에 연결한다.
     void unresolvedCountsChanged(int emergencyCount, int attentionCount);
+    // EventDetailModal::videoViewRequested를 그대로 위로 전달한다. MainWindow가
+    // P4VideoPage::openVideoPlayerByEventUid()에 연결한다.
+    void videoViewRequested(const QString& eventUid);
 
 protected:
     // 기간 세그먼트가 "직접"이 아닐 때 날짜 칸은 읽기 전용으로 계산된 범위만 보여준다.
