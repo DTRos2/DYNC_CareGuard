@@ -2,9 +2,9 @@ import psycopg2
 from fastapi import APIRouter, HTTPException
 from typing import List
 
-from . import db
-from .ws.robot_ws import is_connected, nav_running
-from .schemas import (
+from ...core import db
+from ...ws.robot_ws import is_connected, nav_running
+from ...schemas import (
     AssignRobotRecipientRequest,
     RegisterRobotRequest,
     RegisterRobotResponse,

@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from psycopg2.extras import Json
 
-from ... import config, db
+from ...core import config, db
 from ...schemas import (
     MapImageUploadResponse,
     MediaUploadResponse,
@@ -176,7 +176,7 @@ def upload_map_image(
         raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
     robot_id = robot["id"]
 
-    robot_dir = MAP_DIR / str(robot_id)
+    robot_dir = MAP_DIR / robot_code
     robot_dir.mkdir(parents=True, exist_ok=True)
 
     ext = Path(file.filename).suffix
