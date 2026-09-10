@@ -104,6 +104,22 @@ WaypointPopover::WaypointPopover(QWidget* parent) : QFrame(parent), isCharging_(
     btnRow->addWidget(cancelBtn_);
     layout->addLayout(btnRow);
 
+    // "경로 이동" — 저장된(편집 중인) 웨이포인트로 실제 주행을 요청한다. 신규
+    // 웨이포인트(아직 저장 전)에는 보낼 좌표가 서버에 없으니 숨긴다(setForNewWaypoint).
+    driveBtn_ = new QPushButton(QStringLiteral("경로 이동"), this);
+    driveBtn_->setProperty("variant", "secondary");
+    driveBtn_->hide();
+    connect(driveBtn_, &QPushButton::clicked, this, [this] {
+        // hide()하지 않는다 — 토글 버튼이라 응답이 오면 같은 팝오버 안에서
+        // setDriveButtonState로 "경로 이동" <-> "주행 취소"만 바뀐다.
+        if (drivingThis_) {
+            emit cancelDriveRequested(editingId_);
+        } else {
+            emit driveRequested(editingId_);
+        }
+    });
+    layout->addWidget(driveBtn_);
+
     deleteBtn_ = new QPushButton(QStringLiteral("삭제"), this);
     deleteBtn_->setProperty("variant", "danger");
     deleteBtn_->hide();
@@ -135,6 +151,7 @@ void WaypointPopover::setForNewWaypoint(QPointF canvasPos, QPointF meters, qreal
     // yawDeg는 atan2 결과라 (-180, 180] 범위 — 다이얼/스핀박스는 [0, 359]라 감아준다.
     const int deg = ((static_cast<int>(std::lround(yawDeg)) % 360) + 360) % 360;
     yawSpin_->setValue(deg);
+    driveBtn_->hide();
     deleteBtn_->hide();
     adjustSize();
 }
@@ -149,8 +166,35 @@ void WaypointPopover::setForEditWaypoint(const WaypointCanvas::Waypoint& wp) {
     // range(0, 359)에 그냥 넣으면 음수가 0으로 clamp돼 버려(감아주지 않고 잘림)
     // 실제 방향과 다르게 보인다. setForNewWaypoint와 같은 방식으로 감아준다.
     yawSpin_->setValue(((static_cast<int>(std::lround(wp.yawDeg)) % 360) + 360) % 360);
-    deleteBtn_->setVisible(!wp.charging);
+    driveBtn_->show();
+    // 예전엔 충전 스테이션이면 삭제 버튼을 숨겼다 — 캔버스 우클릭 삭제는 애초에
+    // 충전/순찰 구분 없이 항상 허용하고 있었으니(WaypointCanvas::mousePressEvent의
+    // 우클릭 분기), 팝오버만 더 제한적이었던 불일치였다. 항상 보이게 맞춘다.
+    deleteBtn_->show();
+    // 실제 토글 상태는 호출부가 이 직후 setDriveButtonState로 맞춘다 — 여기서는
+    // "경로 이동"으로 잠깐이라도 잘못된("주행 취소") 텍스트가 보이지 않게만 초기화한다.
+    drivingThis_ = false;
+    driveBtn_->setText(QStringLiteral("경로 이동"));
     adjustSize();
+}
+
+void WaypointPopover::setDriveButtonState(bool canInteract, bool isDrivingThis) {
+    drivingThis_ = isDrivingThis;
+    if (isDrivingThis) {
+        driveBtn_->setText(QStringLiteral("주행 취소"));
+        driveBtn_->setProperty("variant", "danger");
+        // 취소는 오프라인이어도(DB의 stuck 기록 정리를 위해) 항상 누를 수 있게 둔다.
+        driveBtn_->setEnabled(true);
+        driveBtn_->setToolTip(QString());
+    } else {
+        driveBtn_->setText(QStringLiteral("경로 이동"));
+        driveBtn_->setProperty("variant", "secondary");
+        driveBtn_->setEnabled(canInteract);
+        driveBtn_->setToolTip(canInteract ? QString()
+                                           : QStringLiteral("로봇 ws 연결을 확인해주세요"));
+    }
+    style()->unpolish(driveBtn_);
+    style()->polish(driveBtn_);
 }
 
 void WaypointPopover::emitSave() {

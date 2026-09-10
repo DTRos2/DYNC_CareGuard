@@ -32,11 +32,6 @@ constexpr qreal kLegacyPxPerMeter = 40.0;
 WaypointCanvas::WaypointCanvas(QWidget* parent)
     : QFrame(parent),
       routeEditMode_(false),
-      // P6 페이지에 처음 들어왔을 때는 웨이포인트를 새로 추가하기보다 로봇을
-      // 움직여보고 싶어하는 경우가 더 많아서(순찰 페이지 = 이미 있는 지점으로
-      // 보내보는 용도) 기본 모드를 "이동"으로 바꿨다. p6_patrol_page.cpp의
-      // moveModeBtn->setChecked(true)와 짝을 맞춰야 한다.
-      mode_(InteractionMode::MoveWaypoint),
       dragging_(false),
       dragMoved_(false),
       dragIndex_(-1),
@@ -87,8 +82,9 @@ void WaypointCanvas::setRouteEditSelection(const QVector<QString>& orderedIds) {
     update();
 }
 
-void WaypointCanvas::setInteractionMode(InteractionMode mode) {
-    mode_ = mode;
+void WaypointCanvas::setAddWaypointMode(bool on) {
+    addWaypointMode_ = on;
+    update();
 }
 
 void WaypointCanvas::setPoseCaptureMode(bool on) {
@@ -296,7 +292,11 @@ QPointF WaypointCanvas::nearestFreePoint(QPointF canvasPos) const {
     return canvasPos;  // 못 찾으면 원래 위치 유지 (최선의 노력).
 }
 
-QRectF WaypointCanvas::floorBounds() const { return rect().adjusted(22, 16, -22, -16); }
+// 예전엔 (22, 16)이었다 — 바깥 카드(buildCanvasCard())가 흰 배경+테두리를 두르고
+// 있을 때는 자연스러운 여백이었지만, SlamMapView(P5)와 같은 이유로 그 카드
+// 테두리를 없앤 뒤로는 위젯 크기와 무관한 고정 회색 여백만 남아 "박스를 키워도
+// 그대로"로 보였다. SlamMapView::exploredBounds()와 같은 값(8px)으로 맞춘다.
+QRectF WaypointCanvas::floorBounds() const { return rect().adjusted(8, 8, -8, -8); }
 
 int WaypointCanvas::hitTest(const QPointF& pt) const {
     // 마커 화면 크기가 zoomScale_와 무관하게 고정되도록 바꿨으니(paintEvent), 클릭
@@ -369,10 +369,9 @@ void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
     }
 
     if (idx >= 0) {
-        // 마커를 누른 경우 — 모드와 무관하게 뗄 때까지 추적한다. 실제로 옮기는 동작은
-        // mouseMoveEvent에서 "WP 추가" 모드일 때만 허용한다("이동" 모드에서는 드래그를
-        // 무시하고, 뗄 때 항상 그 웨이포인트로 주행 요청을 보낸다 — mouseReleaseEvent).
-        // dragStartPos_는 드래그 방향(headingDeg)을 "시작->끝"으로 계산하는 데 쓴다.
+        // 마커를 누른 경우 — 뗄 때까지 추적한다. 실제로 옮기는 동작은 mouseMoveEvent가
+        // 허용한다. dragStartPos_는 드래그 방향(headingDeg)을 "시작->끝"으로 계산하는
+        // 데 쓴다.
         dragging_ = true;
         dragMoved_ = false;
         dragIndex_ = idx;
@@ -380,18 +379,17 @@ void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
-    if (mode_ == InteractionMode::AddWaypoint) {
-        // "위치 보정"과 같은 클릭+드래그 — 방향까지 한 번에 잡는다(mouseReleaseEvent
-        // 에서 확정). 이 모드에서는 빈 곳 드래그가 더 이상 패닝을 하지 않는다("이동"
-        // 모드로 바꾸면 패닝 가능).
+    if (addWaypointMode_) {
+        // 빈 공간을 눌렀다 — "위치 보정"과 같은 클릭+드래그로 방향까지 한 번에 잡는다
+        // (mouseReleaseEvent에서 확정).
         addAiming_ = true;
         addAimAnchor_ = pt;
         addAimCurrent_ = pt;
         return;
     }
 
-    // 빈 공간을 눌렀다("이동" 모드) — 드래그하면 패닝, 드래그 없이 떼면 아무 일도
-    // 없다(mouseReleaseEvent).
+    // "추가" 모드가 아닐 때 빈 곳을 누르면 패닝(화면 이동)이다 — 왼쪽 드래그로도
+    // 지도를 둘러볼 수 있다(휠 버튼 드래그와 동일한 기능, 굳이 안 눌러도 된다).
     panning_ = true;
     panMoved_ = false;
     panStartMouse_ = screenPt;
@@ -414,13 +412,9 @@ void WaypointCanvas::mouseMoveEvent(QMouseEvent* event) {
     }
 
     if (dragging_ && dragIndex_ >= 0) {
-        // "이동" 모드에서는 드래그 자체를 무시한다 — dragMoved_가 계속 false로 남아야
-        // mouseReleaseEvent에서 "그냥 클릭"으로 처리되어 주행 요청으로 이어진다.
-        if (mode_ == InteractionMode::AddWaypoint) {
-            dragMoved_ = true;
-            waypoints_[dragIndex_].pos = toWorld(screenPt);
-            update();
-        }
+        dragMoved_ = true;
+        waypoints_[dragIndex_].pos = toWorld(screenPt);
+        update();
         return;
     }
 
@@ -479,10 +473,9 @@ void WaypointCanvas::mouseReleaseEvent(QMouseEvent* event) {
                 : std::atan2(delta.y(), delta.x()) * 180.0 / M_PI;
             waypoints_[dragIndex_].yawDeg = headingDeg;
             emit waypointMoved(id, freePos, headingDeg);
-        } else if (mode_ == InteractionMode::MoveWaypoint) {
-            // "이동" 모드에서 드래그 없이 그냥 클릭 = 그 웨이포인트로 주행.
-            emit waypointDriveRequested(id);
         } else {
+            // 드래그 없이 그냥 클릭 = 편집 팝오버. 그 팝오버의 "경로 이동" 버튼이
+            // 실제 주행 요청을 담당한다(WaypointPopover::driveRequested).
             emit waypointEditRequested(id);
         }
         dragging_ = false;
@@ -492,8 +485,8 @@ void WaypointCanvas::mouseReleaseEvent(QMouseEvent* event) {
     }
 
     if (panning_) {
-        // "WP 추가" 모드의 빈 곳 클릭/드래그는 이제 addAiming_이 전담한다 — 여기
-        // panning_ 경로는 "이동" 모드·경로 편집 모드의 지도 둘러보기 용도로만 남는다.
+        // 빈 곳 클릭/드래그는 이제 addAiming_이 전담한다 — 여기 panning_ 경로는
+        // 경로 편집 모드의 지도 둘러보기(빈 곳 드래그)와 휠 버튼 드래그 용도로만 남는다.
         panning_ = false;
         panMoved_ = false;
     }
@@ -815,8 +808,8 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
 
     p.restore();  // 확대/패닝 종료 — 이 아래는 항상 고정 크기로 그린다.
 
-    // 편집 모드 안내는 캔버스 위 배너(P6PatrolPage::routeEditBanner_)가 맡는다 — 여기서는
-    // 일반 모드(WP 추가/이동)일 때만 캔버스 하단에 조작 힌트를 그린다.
+    // 경로 편집 모드 안내는 캔버스 위 배너(P6PatrolPage::routeEditBanner_)가 맡는다 —
+    // 여기서는 그 모드가 아닐 때만 캔버스 하단에 조작 힌트를 그린다.
     if (!routeEditMode_) {
         p.setFont(captionFont);
         p.setPen(Tokens::TEXT_MUTED);
@@ -824,8 +817,8 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
                    Qt::AlignLeft | Qt::AlignVCenter,
                    poseCaptureMode_
                        ? QStringLiteral("로봇의 실제 위치를 클릭한 채 드래그해 방향까지 지정 · 놓으면 확정 · 우클릭 취소")
-                   : mode_ == InteractionMode::AddWaypoint
+                   : addWaypointMode_
                        ? QStringLiteral("드래그로 추가(방향 지정) · 마커 드래그로 이동+재조준 · 클릭하여 편집 · 우클릭 삭제 · 휠 버튼 드래그로 화면 이동")
-                       : QStringLiteral("클릭하여 주행 · 우클릭 삭제"));
+                       : QStringLiteral("마커 드래그로 이동+재조준 · 클릭하여 편집(이동은 편집창의 \"경로 이동\") · 우클릭 삭제 · 드래그로 화면 이동 · 새 웨이포인트는 목록의 \"+ 추가\""));
     }
 }

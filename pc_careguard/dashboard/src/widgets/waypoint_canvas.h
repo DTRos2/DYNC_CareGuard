@@ -14,14 +14,17 @@ class QContextMenuEvent;
 class CameraLiveView;
 
 // P6 웨이포인트 편집 캔버스 — p6_patrol_route_wireframe.html의 <svg> 영역.
-// 맵 클릭으로 웨이포인트 추가, 드래그로 이동, 우클릭으로 삭제. 경로 편집 모드에서는
-// 클릭 순서대로 웨이포인트를 골라 경로를 구성한다 (충전 스테이션은 클릭 불가).
-// 마우스 휠로 확대/축소, 빈 공간 드래그로 패닝, 마커 밖 더블클릭으로 보기 초기화.
+// addWaypointMode()가 켜져 있을 때만 빈 곳 드래그로 웨이포인트를 추가한다(방향
+// 지정) — 꺼져 있으면 빈 곳 드래그는 패닝이다. 마커 드래그로 이동+재조준, 마커를
+// 드래그 없이 클릭하면 편집 팝오버(WaypointPopover의 "경로 이동" 버튼이 실제
+// 주행 요청을 담당한다 — 이 캔버스 자신은 더 이상 클릭만으로 주행을 요청하지
+// 않는다)는 addWaypointMode()와 무관하게 항상 가능하다. 우클릭으로 삭제. 경로
+// 편집 모드에서는 클릭 순서대로 웨이포인트를 골라 경로를 구성한다(충전 스테이션은
+// 클릭 불가). 마우스 휠로 확대/축소, 휠 버튼(가운데 클릭) 드래그로 화면 이동,
+// 마커 밖 더블클릭으로 보기 초기화.
 class WaypointCanvas : public QFrame {
     Q_OBJECT
 public:
-    enum class InteractionMode { AddWaypoint, MoveWaypoint };
-
     struct Waypoint {
         QString id;
         QString name;
@@ -53,9 +56,13 @@ public:
     // 경로 편집 모드에서 지금까지 클릭으로 고른 순서.
     void setRouteEditSelection(const QVector<QString>& orderedIds);
 
-    // "WP 추가"/"이동" 툴바 토글 — 배타적으로 하나만 적용된다.
-    void setInteractionMode(InteractionMode mode);
-    InteractionMode interactionMode() const { return mode_; }
+    // 웨이포인트 목록 카드의 "+ 추가" 토글(P6PatrolPage::addWpBtn_)이 켜져 있는
+    // 동안만 빈 곳 클릭+드래그가 새 웨이포인트 추가(방향 지정)로 이어진다 — 꺼져
+    // 있으면 빈 곳 드래그는 그냥 패닝(화면 이동)이다. 마커 클릭(편집 팝오버)·드래그
+    // (이동+재조준)·우클릭(삭제)은 이 값과 무관하게 항상 가능하다 — "추가" 모드는
+    // 오직 "빈 곳을 눌렀을 때 무슨 일이 생기는지"만 가른다.
+    void setAddWaypointMode(bool on);
+    bool addWaypointMode() const { return addWaypointMode_; }
 
     // "위치 보정" 모드 — AMCL 초기 위치를 지도 위 클릭+드래그(위치+방향)로 직접
     // 잡아 보정한다. WP 추가/이동 모드와 배타적으로 이 모드가 켜져 있는 동안은
@@ -90,6 +97,15 @@ public:
     // 실제 map 프레임 미터 -> 캔버스 좌표. 서버에서 받은 웨이포인트/로봇 위치(미터)를
     // 화면에 그릴 때 쓴다.
     QPointF mapMetersToCanvas(QPointF meters) const;
+
+    // 월드(캔버스 논리) 좌표 -> 이 위젯의 실제 화면(로컬) 좌표. paintEvent가 그리는
+    // translate(panOffset_)+scale(zoomScale_)와 정확히 같은 변환(toWorld()의 역함수) —
+    // 확대/축소하거나 드래그로 화면을 이동한 뒤에는 Waypoint::pos(월드 좌표)를 그대로
+    // mapTo()에 넘기면 안 된다(mapTo는 위젯 간 오프셋만 더할 뿐 이 배율·이동은 모른다).
+    // P6PatrolPage가 웨이포인트 편집 팝오버를 마커의 "지금 화면에 보이는" 위치 근처에
+    // 띄우려면 이걸 거쳐야 한다("지도를 옮긴 뒤 웨이포인트를 클릭하면 옮기기 전
+    // 위치에 팝오버가 뜬다" 리포트로 발견).
+    QPointF worldToScreen(QPointF worldPt) const { return worldPt * zoomScale_ + panOffset_; }
 
     // canvasToMapMeters/mapMetersToCanvas가 배경 이미지를 배치하는 데 쓰는 것과 같은
     // "그리기 가능 영역". P6PatrolPage가 지금 canvas_에 표시 중이 아닌(맵 전환 전)
@@ -141,8 +157,6 @@ signals:
     // 규칙). 드래그가 너무 짧으면 기존 yawDeg를 그대로 돌려준다(의미 없는 미세한
     // 떨림으로 방향이 바뀌지 않도록).
     void waypointMoved(const QString& id, QPointF newPos, qreal headingDeg);
-    // "이동" 모드에서 드래그 없이 웨이포인트를 클릭하면(= 그냥 클릭) 그 지점으로 주행 요청.
-    void waypointDriveRequested(const QString& id);
     void routeWaypointClicked(const QString& id);
     void chargingClickBlocked();
     // 창 크기 변경으로 웨이포인트/로봇 위치를 지도에 맞춰 다시 배치했다 — 호출자가
@@ -180,7 +194,7 @@ private:
     QVector<QString> routePreview_;
     QVector<QString> routeEditSelection_;
     bool routeEditMode_;
-    InteractionMode mode_;
+    bool addWaypointMode_ = false;
 
     bool dragging_;
     bool dragMoved_;

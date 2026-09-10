@@ -5,13 +5,15 @@
 
 빌드/실행 미검증.
 """
-from typing import Optional
+from typing import Callable, Optional
 
 from .waypoint_manager import WaypointManager
 
 
-def return_to_charging(manager: WaypointManager) -> Optional[object]:
+def return_to_charging(
+    manager: WaypointManager, cancel_check: Optional[Callable[[], bool]] = None
+) -> Optional[object]:
     charge = manager.charging_waypoint()
     if charge is None:
         return None
-    return manager.navigate_sequence([charge.code])
+    return manager.navigate_sequence([charge.code], cancel_check=cancel_check)

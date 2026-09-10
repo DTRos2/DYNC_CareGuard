@@ -302,6 +302,13 @@ class DriveToPointResponse(BaseModel):
     robot_connected: bool
 
 
+class CancelPatrolRunRequest(BaseModel):
+    # P6 웨이포인트 팝오버 "주행 취소" — patrol_run.id를 모른 채로도(P6 "이동"은
+    # run_id=0이라 애초에 patrol_run 행이 없다) "이 로봇이 지금 하고 있는 걸 멈춰라"를
+    # 표현할 수 있어야 해서 robot_code 하나만 받는다.
+    robot_code: str
+
+
 class PrepareNavigationRequest(BaseModel):
     # P6 페이지를 열거나 다른 로봇의 맵으로 전환할 때 — 실제 순찰/이동 목표 없이
     # Nav2(맵 다운로드+런치+초기 위치)만 미리 준비시킨다. "웨이포인트를 보내기
@@ -378,6 +385,9 @@ class RobotItem(BaseModel):
     ip: Optional[str] = None
     map_recipient: str = "-"
     is_online: bool
+    # WS nav_status로만 갱신되는 캐시값(robot_ws.py::nav_running) — 로봇이 한 번도
+    # nav_status를 보낸 적 없으면(막 등록됐거나 재시작 후 재연결 전) False.
+    is_nav_running: bool = False
 
 
 class RegisterRobotRequest(BaseModel):

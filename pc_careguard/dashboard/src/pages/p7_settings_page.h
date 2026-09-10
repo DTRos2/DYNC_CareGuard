@@ -94,7 +94,7 @@ private:
         bool highlight;  // severity == error(복귀 필요) 등
     };
 
-    // GET /patrol-runs 응답 한 줄.
+    // GET /patrol-runs/log 응답 한 줄.
     struct PatrolRunLogRow {
         QString time;
         QString robotCode;
@@ -132,7 +132,7 @@ private:
     void onPatrolRunDateRangeChanged();
     void applyPatrolRunPeriodPreset(int spanDays);
     void setPatrolRunDateEditsReadOnly(bool readOnly);
-    void fetchPatrolRunLog();  // GET /patrol-runs?start=&end=&q=
+    void fetchPatrolRunLog();  // GET /patrol-runs/log?start=&end=&q=
     void handlePatrolRunLogReply(QNetworkReply* reply);
     void refreshPatrolRunTable();
 

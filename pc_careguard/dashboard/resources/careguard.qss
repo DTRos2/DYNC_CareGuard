@@ -102,6 +102,9 @@ QPushButton#linkBtn {
 }
 QPushButton#linkBtn:hover { text-decoration: underline; }
 QPushButton#linkBtn:disabled { background: transparent; border: none; color: #93A0AC; }
+/* P6 "+ 추가"(웨이포인트 목록)처럼 checkable로 쓰는 linkBtn용 — 켜진 상태를 색+밑줄로
+   구분한다. 일반 링크 버튼(예: "+ 새 경로")은 체크 불가라 이 규칙이 안 걸린다. */
+QPushButton#linkBtn:checked { text-decoration: underline; color: #096A60; background: #E0F5F2; border-radius: 4px; }
 
 /* ---------- 상태 배지 (QLabel#badge) ---------- */
 QLabel#badge {
@@ -472,15 +475,30 @@ QPushButton#loginBtn:disabled { background: #EDF1F4; color: #93A0AC; border: 1px
 QPushButton#loginBtn[state="loading"] { background: #0B7A6E; }
 QLabel#loginError { color: #D93B47; font-size: 11px; }
 
-/* ---------- P5 로봇 셀렉터 칩 / P6 맵 선택 칩 ---------- */
+/* ---------- P5 로봇 셀렉터 칩(QPushButton, 2026-09-10부로 P5는 아래 CareGuardComboBox
+   버전으로 교체됨) / P6 맵 선택 칩 ---------- */
 QPushButton#robotChip {
+    /* min/max-height, text-align을 지정하지 않아 기본 QPushButton 규칙(36px, 가운데
+       정렬)을 그대로 물려받는다 — "파일로 등록" 등 옆 버튼과 높이를 맞추고, 내용이
+       왼쪽 테두리에 붙어 보이던 것도 가운데 정렬로 해결된다. */
     background: #FFFFFF; color: #16202B; border: 1px solid #CDD5DD; border-radius: 6px;
-    font-size: 11px; padding: 0 10px; min-height: 28px; max-height: 28px; text-align: left;
+    font-size: 11px; padding: 0 14px;
 }
 QPushButton#robotChip:hover { background: #F0F4F7; }
 /* 문구 안에 이미 "▾"를 직접 넣으므로, setMenu()가 붙는 버튼(P6 mapChipBtn_)의 Qt 기본
    메뉴 인디케이터는 숨긴다 — 안 그러면 화살표가 두 개 겹쳐 보인다. */
 QPushButton#robotChip::menu-indicator { image: none; width: 0; }
+
+/* ---------- P5 로봇 셀렉터 콤보(CareGuardComboBox) ---------- */
+/* 위 QPushButton#robotChip과 같은 박스 값(높이 36px는 기본 QComboBox 규칙엔 없어서
+   여기서 직접 지정) — 대상자 페이지 모달의 로봇/맵 배정 콤보와 같은 위젯으로 통일하되,
+   헤더 툴바에서 옆 버튼("파일로 등록"·"매핑 시작")과 높이가 맞아야 해서 그 값만 맞춘다.
+   화살표는 CareGuardComboBox::paintEvent가 직접 그리므로 여기서 손댈 것 없다. */
+QComboBox#robotChip {
+    background: #FFFFFF; color: #16202B; border: 1px solid #CDD5DD; border-radius: 6px;
+    font-size: 11px; padding: 0 14px; min-height: 36px; max-height: 36px;
+}
+QComboBox#robotChip:hover { background: #F0F4F7; }
 
 /* ---------- 드롭다운 메뉴 (예: P6 mapMenu_) ---------- */
 QMenu {
@@ -506,7 +524,7 @@ QFrame#mappingStatusRow { border-bottom: 1px solid #E3E8ED; }
 QFrame#mappingStatusRow[warn="true"] { background: #FFF6E5; }
 
 /* ---------- P5 SLAM 매핑 카드 ---------- */
-QFrame#slamCanvas { background: #F5F7F9; border: 1px solid #E3E8ED; border-radius: 8px; }
+QFrame#slamCanvas { background: #F5F7F9; }
 
 /* ---------- P5 텔레옵 키패드 ---------- */
 QPushButton#keypadBtn {

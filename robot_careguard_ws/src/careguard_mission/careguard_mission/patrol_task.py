@@ -35,7 +35,7 @@ import json
 import os
 
 import rclpy
-from rclpy.action import ActionServer, GoalResponse
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -78,13 +78,23 @@ class PatrolTask(Node):
         # 돌게 막는다.
         self._executing = False
         self._action_server = ActionServer(
-            self, Patrol, 'patrol', self._execute, goal_callback=self._handle_goal_request)
+            self, Patrol, 'patrol', self._execute, goal_callback=self._handle_goal_request,
+            cancel_callback=self._handle_cancel_request)
 
     def _handle_goal_request(self, goal_request):
         if self._executing:
             self.get_logger().warn('이미 순찰/이동 중이라 새 요청을 거부합니다 — 끝난 뒤 다시 시도하세요')
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
+
+    def _handle_cancel_request(self, goal_handle):
+        # 예전엔 cancel_callback을 아예 안 줘서 rclpy 기본값(모든 취소 요청 REJECT)이
+        # 적용됐다 — "주행 취소" 자체가 구조적으로 불가능했다. 여기서 ACCEPT해도
+        # _execute의 웨이포인트 루프가 goal_handle.is_cancel_requested를 직접 확인
+        # (WaypointManager._go_through의 cancel_check)하지 않으면 여전히 안 멈춘다 —
+        # 그 확인은 아래 _execute에서 한다.
+        self.get_logger().info('취소 요청 수신')
+        return CancelResponse.ACCEPT
 
     def _publish_status(self, **fields):
         msg = String()
@@ -117,7 +127,21 @@ class PatrolTask(Node):
             self.get_logger().info(f'순찰 시작: run_id={run_id} 지점 {waypoints_total}개')
 
             for i, wp in enumerate(waypoints, start=1):
-                nav_result = self._waypoint_manager.navigate_poses([wp])
+                nav_result = self._waypoint_manager.navigate_poses(
+                    [wp], cancel_check=lambda: goal_handle.is_cancel_requested)
+
+                # WaypointManager._go_through가 cancel_check()에 걸려 중간에 cancelTask()로
+                # 내리면 None을 반환한다 — nav_result != SUCCEEDED로도 걸리긴 하지만, 그러면
+                # "실패"로 잘못 기록된다(아래에서 다시 안 걸리게 먼저 따로 처리).
+                if goal_handle.is_cancel_requested:
+                    self.get_logger().info(f'{i}번째 웨이포인트({wp.code}) 이동 중 취소됨')
+                    self._publish_status(type='patrol_done', run_id=run_id, status='cancelled')
+                    goal_handle.canceled()
+                    result = Patrol.Result()
+                    result.status = 'cancelled'
+                    result.waypoints_done = i - 1
+                    return result
+
                 # 예전엔 이 결과를 아예 확인 안 했다 — Nav2 goal이 아무리 실패(FAILED)/
                 # 취소(CANCELED)돼도 그냥 다음 지점으로 넘어가거나 끝까지 다 돌고 나서
                 # goal_handle.succeed()+status='completed'로 끝냈다. 그래서 bt_navigator가
@@ -151,7 +175,18 @@ class PatrolTask(Node):
                 # 안 남고 goal_handle.succeed()+'completed'로 끝났다("wp3에서 충전소로
                 # 복귀를 안 함" 리포트, 2026-09-08). charge 웨이포인트 자체가 없는
                 # 경우(None)와 실제 이동 실패(FAILED/CANCELED)를 구분해서 로그를 남긴다.
-                charge_result = return_to_charging(self._waypoint_manager)
+                charge_result = return_to_charging(
+                    self._waypoint_manager, cancel_check=lambda: goal_handle.is_cancel_requested)
+                if goal_handle.is_cancel_requested:
+                    # charge_result도 취소되면 None이라 "충전 웨이포인트가 없음"과
+                    # 구분이 안 된다 — 취소 여부를 먼저 확인해서 가린다.
+                    self.get_logger().info('충전소 복귀 중 취소됨')
+                    self._publish_status(type='patrol_done', run_id=run_id, status='cancelled')
+                    goal_handle.canceled()
+                    result = Patrol.Result()
+                    result.status = 'cancelled'
+                    result.waypoints_done = waypoints_total
+                    return result
                 if charge_result is None:
                     self.get_logger().warn('충전 스테이션 웨이포인트가 없어 복귀를 건너뜁니다')
                 elif charge_result != TaskResult.SUCCEEDED:

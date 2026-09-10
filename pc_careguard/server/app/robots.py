@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 
 from . import db
-from .ws.robot_ws import is_connected
+from .ws.robot_ws import is_connected, nav_running
 from .schemas import (
     AssignRobotRecipientRequest,
     RegisterRobotRequest,
@@ -52,6 +52,7 @@ def _row_to_item(row) -> RobotItem:
         ip=row["ip"],
         map_recipient=_map_recipient_label(row["map_name"], row["recipient_name"]),
         is_online=is_connected(row["code"]),
+        is_nav_running=nav_running(row["code"]),
     )
 
 

@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -307,10 +307,11 @@ async def start_slam_job(payload: SlamJobCreate):
 
 @slam_jobs_router.post("/{job_id}/cancel", response_model=SlamJobItem)
 async def cancel_slam_job(job_id: int):
-    """진행 중인 SLAM을 취소한다 — "매핑 취소"/"매핑 재시작"(재시작은 취소 후 다시 시작)이 쓴다.
+    """진행 중인 SLAM을 취소한다 — P5 "초기화"가 쓴다. "매핑 시작"은 이후 사용자가
+    별도로 다시 눌러야 하는 독립된 동작이다(자동 재시작 체인 없음).
 
     로봇에는 slam_stop을 보내 downlink_node가 띄워둔 cartographer 프로세스를 죽이게
-    한다(안 죽이고 그대로 두면 재시작 시 "이미 SLAM 작업이 진행 중입니다"로 거부됨).
+    한다(안 죽이고 그대로 두면 다음 매핑 시작 시 "이미 SLAM 작업이 진행 중입니다"로 거부됨).
     """
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -383,6 +384,38 @@ async def save_slam_job(job_id: int, payload: SlamJobSaveRequest = SlamJobSaveRe
     if not connected:
         raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")
     return SlamJobItem(**row, robot_connected=connected)
+
+
+@slam_jobs_router.get("", response_model=List[SlamJobItem])
+def list_slam_jobs(
+    robot_id: Optional[int] = Query(None, description="로봇으로 필터링"),
+    status: Optional[str] = Query(None, description="slam_job.status로 필터링(예: queued)"),
+):
+    """SLAM 작업 목록. P6PatrolPage가 페이지를 열거나(맵 전환 포함) 새로고침 버튼을
+    눌렀을 때, robot_id + status=queued로 걸어 "지금 이 로봇이 SLAM 매핑 중인지"를
+    DB 기준으로 맞추는 용도로 쓴다. slam_job.status는 시작 시 'queued'로 들어간 뒤
+    취소('cancelled')·저장('saved')으로만 바뀌므로, 'queued'가 곧 "진행 중"이다
+    (patrol_run처럼 별도 'running' 상태를 두지 않는다 — GET /patrol-runs와 같은 패턴).
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT sj.id, sj.robot_id, sj.map_id, sj.map_name, sj.slam_backend, sj.status,
+                   sj.started_at, sj.ended_at, r.code AS robot_code
+            FROM slam_job sj JOIN robot r ON r.id = sj.robot_id
+            WHERE (%(robot_id)s IS NULL OR sj.robot_id = %(robot_id)s)
+                AND (%(status)s IS NULL OR sj.status = %(status)s)
+            ORDER BY sj.started_at DESC
+            """,
+            {"robot_id": robot_id, "status": status},
+        )
+        rows = cur.fetchall()
+
+    return [
+        SlamJobItem(**{k: v for k, v in row.items() if k != "robot_code"},
+                    robot_connected=robot_ws.is_connected(row["robot_code"]))
+        for row in rows
+    ]
 
 
 @slam_jobs_router.get("/{job_id}", response_model=SlamJobItem)

@@ -6,7 +6,6 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QPushButton>
 #include <QResizeEvent>
 #include <QStyle>
 #include <QTimer>
@@ -100,7 +99,13 @@ void SlamMapView::setLiveScan(const QVector<QPointF>& pointsMeters) {
 
 QRectF SlamMapView::exploredBounds() const {
     const QRectF r = rect();
-    const qreal margin = 28;
+    // 예전엔 28px였다 — 바깥 카드(SlamMappingCard)가 흰 배경+테두리(QFrame#card)를
+    // 두르고 있을 때는 이 안쪽 여백이 "카드 안의 여백"처럼 자연스러웠지만, 카드가
+    // 자기 테두리를 없애고(위 SlamMappingCard 생성자 참고) 이 캔버스 자체가 유일한
+    // 박스가 된 뒤로는 28px가 위젯 크기와 무관하게 고정된 회색 여백으로만 보여
+    // "박스를 키워도 그대로"인 것처럼 보이는 원인이었다. 격자 캡션 문구·카메라
+    // 오버레이가 겨우 들어갈 만큼만 남기고 최소화한다.
+    const qreal margin = 8;
     return r.adjusted(margin, margin, -margin, -margin);
 }
 
@@ -344,19 +349,24 @@ SlamMappingCard::SlamMappingCard(QWidget* parent)
       elapsedSeconds_(0),
       areaM2_(0.0),
       moving_(false) {
-    setObjectName("card");
-
+    // objectName("card")를 안 준다 — QFrame#card의 흰 배경+테두리(QSS)를 두르지
+    // 않는다. 테두리는 SlamMapView::paintEvent가 이미 직접 그리고 있어서(위 border
+    // 없이도 캔버스 자체가 하나의 박스로 보인다), 이 바깥 프레임까지 테두리를 두르면
+    // "테두리 안에 테두리"로 겹쳐 보였다. 여백(CARD_PADDING)도 없애 캔버스가 이 카드가
+    // 차지하는 바깥 박스 크기 그대로 확장되게 한다.
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING,
-                                Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
-    layout->setSpacing(8);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
 
     auto* header = new QHBoxLayout();
     header->setSpacing(8);
 
-    badge_ = new QLabel(QStringLiteral("SLAM 매핑 중"), this);
+    // 실제로 매핑 중인지 아직 모르는 초기 상태 — "SLAM 매핑 중"이 기본값이면 페이지에
+    // 막 들어왔을 때도(또는 등록된 맵이 없는 로봇을 봐도) 항상 이 문구가 떠 있었다.
+    // 실제 상태는 resetForRobot/applyRegisteredMap/markMappingStarted가 뒤이어 바로잡는다.
+    badge_ = new QLabel(QStringLiteral("맵 없음"), this);
     badge_->setObjectName("badge");
-    badge_->setProperty("level", "info");
+    badge_->setProperty("level", "offline");
     header->addWidget(badge_);
 
     targetLabel_ = new QLabel(QStringLiteral("동산주택 2층 · R-04"), this);
@@ -372,39 +382,6 @@ SlamMappingCard::SlamMappingCard(QWidget* parent)
 
     view_ = new SlamMapView(this);
     layout->addWidget(view_, /*stretch=*/1);
-
-    auto* buttons = new QHBoxLayout();
-    buttons->setSpacing(6);
-
-    auto* restartBtn = new QPushButton(QStringLiteral("매핑 재시작"), this);
-    restartBtn->setProperty("variant", "secondary");
-    connect(restartBtn, &QPushButton::clicked, this, [this] {
-        view_->resetMapping();
-        elapsedSeconds_ = 0;
-        areaM2_ = 0.0;
-        emit mappingRestartRequested();
-    });
-    buttons->addWidget(restartBtn);
-
-    auto* cancelBtn = new QPushButton(QStringLiteral("매핑 취소"), this);
-    cancelBtn->setProperty("variant", "secondary");
-    connect(cancelBtn, &QPushButton::clicked, this, [this] {
-        view_->resetMapping();
-        elapsedSeconds_ = 0;
-        areaM2_ = 0.0;
-        emit mappingCancelRequested();
-    });
-    buttons->addWidget(cancelBtn);
-
-    buttons->addStretch();
-
-    auto* estopBtn = new QPushButton(QStringLiteral("비상정지"), this);
-    estopBtn->setProperty("variant", "danger");
-    estopBtn->setProperty("size", "l");
-    connect(estopBtn, &QPushButton::clicked, this, &SlamMappingCard::emergencyStopRequested);
-    buttons->addWidget(estopBtn);
-
-    layout->addLayout(buttons);
 
     elapsedLabel_ = stats;  // 시간·면적을 한 줄에 표시 (mono)
 
@@ -425,14 +402,21 @@ void SlamMappingCard::applyRegisteredMap(const QImage& image, const QString& map
 
 void SlamMappingCard::resetForRobot(const QString& robotId) {
     view_->resetMapping();
-    badge_->setText(QStringLiteral("SLAM 매핑 중"));
-    badge_->setProperty("level", "info");
+    badge_->setText(QStringLiteral("맵 없음"));
+    badge_->setProperty("level", "offline");
     badge_->style()->unpolish(badge_);
     badge_->style()->polish(badge_);
     targetLabel_->setText(QStringLiteral("맵 없음 · %1").arg(robotId));
     elapsedSeconds_ = 0;
     areaM2_ = 0.0;
     updateStatsLabel();
+}
+
+void SlamMappingCard::markMappingStarted() {
+    badge_->setText(QStringLiteral("SLAM 매핑 중"));
+    badge_->setProperty("level", "info");
+    badge_->style()->unpolish(badge_);
+    badge_->style()->polish(badge_);
 }
 
 void SlamMappingCard::setVelocity(qreal linearMps, qreal angularRadps) {
