@@ -1,0 +1,16 @@
+[Unit]
+Description=CareGuard R-05 TurtleBot3 bringup (MediRun launch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aurix
+Environment=ROS_DOMAIN_ID=50
+Environment=TURTLEBOT3_MODEL=burger
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/turtlebot3_ws/install/setup.bash && source ~/medirun_ws/install/setup.bash && exec ros2 launch medirun_bringup pi_bringup.launch.py'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

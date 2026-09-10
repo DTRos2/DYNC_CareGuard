@@ -84,10 +84,34 @@ private:
         bool highlight;  // 영상 열람·이벤트 완료 등 책임 추적 대상
     };
 
+    // GET /system-events 응답 한 줄 — 감사 로그(AuditRow)와 같은 모양으로 맞춰서
+    // buildAuditTab()과 같은 방식으로 그린다.
+    struct SystemEventLogRow {
+        QString time;
+        QString robotCode;
+        QString eventType;
+        QString message;
+        bool highlight;  // severity == error(복귀 필요) 등
+    };
+
+    // GET /patrol-runs 응답 한 줄.
+    struct PatrolRunLogRow {
+        QString time;
+        QString robotCode;
+        QString recipient;
+        QString route;
+        QString trigger;
+        QString status;
+        QString progress;  // "3/5" 형태
+        bool highlight;     // 중단·실패
+    };
+
     QWidget* buildRobotTab();
     QWidget* buildAccountTab();
     QWidget* buildThresholdTab();
     QWidget* buildAuditTab();
+    QWidget* buildSystemEventLogTab();
+    QWidget* buildPatrolRunLogTab();
 
     void onAuditDateRangeChanged();
     void applyAuditPeriodPreset(int spanDays);  // -1 = 직접, 0/6/29 = 오늘/7일/30일
@@ -95,6 +119,22 @@ private:
     void fetchAuditLog();  // GET /audit-log?start=&end=&q= — 기간/검색 바뀔 때마다 다시 호출
     void handleAuditLogReply(QNetworkReply* reply);
     void refreshAuditTable();  // auditLog_ 내용을 auditTable_에 그린다
+
+    // 아래 두 탭은 buildAuditTab()과 완전히 같은 필터 UI(기간 세그먼트+날짜+검색) 관례를
+    // 따른다 — 위 buildAuditTab() 구현의 주석 참고, 여기서는 반복하지 않는다.
+    void onSystemEventDateRangeChanged();
+    void applySystemEventPeriodPreset(int spanDays);
+    void setSystemEventDateEditsReadOnly(bool readOnly);
+    void fetchSystemEventLog();  // GET /system-events?start=&end=&q=
+    void handleSystemEventLogReply(QNetworkReply* reply);
+    void refreshSystemEventTable();
+
+    void onPatrolRunDateRangeChanged();
+    void applyPatrolRunPeriodPreset(int spanDays);
+    void setPatrolRunDateEditsReadOnly(bool readOnly);
+    void fetchPatrolRunLog();  // GET /patrol-runs?start=&end=&q=
+    void handlePatrolRunLogReply(QNetworkReply* reply);
+    void refreshPatrolRunTable();
 
     void openRobotDialog(int rowIndex);  // -1이면 신규 등록
     void populateRobotRow(int r);
@@ -147,6 +187,20 @@ private:
     // setCurrentUserLoginId()로 실제 로그인 ID가 들어오기 전까지의 기본값.
     QString currentUserLoginId_ = QStringLiteral("admin");
 
+    QTableWidget* systemEventTable_ = nullptr;
+    QDateEdit* systemEventStartDateEdit_ = nullptr;
+    QDateEdit* systemEventEndDateEdit_ = nullptr;
+    QPushButton* systemEventPeriodCustomBtn_ = nullptr;
+    LiveSearchLineEdit* systemEventSearchEdit_ = nullptr;
+    QString systemEventSearchText_;
+
+    QTableWidget* patrolRunTable_ = nullptr;
+    QDateEdit* patrolRunStartDateEdit_ = nullptr;
+    QDateEdit* patrolRunEndDateEdit_ = nullptr;
+    QPushButton* patrolRunPeriodCustomBtn_ = nullptr;
+    LiveSearchLineEdit* patrolRunSearchEdit_ = nullptr;
+    QString patrolRunSearchText_;
+
     QComboBox* thresholdRobotCombo_ = nullptr;
     QLineEdit* batteryAttentionEdit_ = nullptr;
     QLineEdit* batteryReturnEdit_ = nullptr;
@@ -162,4 +216,6 @@ private:
     std::vector<AccountRow> accounts_;
     std::vector<RecipientRow> recipients_;
     std::vector<AuditRow> auditLog_;
+    std::vector<SystemEventLogRow> systemEventLog_;
+    std::vector<PatrolRunLogRow> patrolRunLog_;
 };

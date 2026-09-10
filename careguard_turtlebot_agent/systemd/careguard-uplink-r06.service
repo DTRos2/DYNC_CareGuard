@@ -1,0 +1,20 @@
+[Unit]
+Description=CareGuard R-06 uplink_node (robot -> server relay)
+After=careguard-bringup-r06.service network-online.target
+Wants=network-online.target
+BindsTo=careguard-bringup-r06.service
+
+[Service]
+Type=simple
+User=yeyu
+Environment=ROS_DOMAIN_ID=40
+Environment=TURTLEBOT3_MODEL=burger
+Environment=CAREGUARD_ROBOT_CODE=R-06
+Environment=CAREGUARD_SERVER_URL=http://100.107.185.97:8000
+ExecStartPre=/bin/sleep 1
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/careguard_turtlebot_agent_ws/install/setup.bash && exec ros2 run careguard_turtlebot_agent uplink_node'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

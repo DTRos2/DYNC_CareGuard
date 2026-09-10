@@ -173,6 +173,16 @@ bool P7SettingsPage::eventFilter(QObject* watched, QEvent* event) {
         auditStartDateEdit_->isReadOnly()) {
         applyAuditPeriodPreset(-1);
     }
+    if (event->type() == QEvent::MouseButtonPress &&
+        (watched == systemEventStartDateEdit_ || watched == systemEventEndDateEdit_) &&
+        systemEventStartDateEdit_->isReadOnly()) {
+        applySystemEventPeriodPreset(-1);
+    }
+    if (event->type() == QEvent::MouseButtonPress &&
+        (watched == patrolRunStartDateEdit_ || watched == patrolRunEndDateEdit_) &&
+        patrolRunStartDateEdit_->isReadOnly()) {
+        applyPatrolRunPeriodPreset(-1);
+    }
     return QWidget::eventFilter(watched, event);
 }
 
@@ -199,6 +209,8 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     tabs->addTab(buildAccountTab(), QStringLiteral("계정 관리"));
     tabs->addTab(buildThresholdTab(), QStringLiteral("임계값 · 알림"));
     tabs->addTab(buildAuditTab(), QStringLiteral("사용자 로그"));
+    tabs->addTab(buildSystemEventLogTab(), QStringLiteral("임계값·알림 로그"));
+    tabs->addTab(buildPatrolRunLogTab(), QStringLiteral("경로순찰 로그"));
     layout->addWidget(tabs);
 
     serverUrl_ = QProcessEnvironment::systemEnvironment().value(
@@ -207,6 +219,8 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     fetchAccounts();
     fetchRecipients();
     fetchAuditLog();
+    fetchSystemEventLog();
+    fetchPatrolRunLog();
     fetchRobots();
 
     wsClient_ = new WsClient(this);
@@ -675,6 +689,426 @@ void P7SettingsPage::refreshAuditTable() {
         auto* detailItem = new QTableWidgetItem(log.detail);
         detailItem->setTextAlignment(Qt::AlignCenter);
         auditTable_->setItem(r, 3, detailItem);
+    }
+}
+
+// ---------- 임계값·알림 로그 탭 — buildAuditTab()과 같은 필터 UI 관례를 그대로 따른다 ----------
+
+QWidget* P7SettingsPage::buildSystemEventLogTab() {
+    auto* tab = new QWidget();
+    auto* layout = new QVBoxLayout(tab);
+    layout->setContentsMargins(0, 12, 0, 0);
+    layout->setSpacing(8);
+
+    auto* filterRow = new QWidget(tab);
+    auto* filterLayout = new QHBoxLayout(filterRow);
+    filterLayout->setContentsMargins(0, 0, 0, 0);
+    filterLayout->setSpacing(6);
+
+    const QDate today = QDate::currentDate();
+
+    auto* periodSeg = new QWidget(filterRow);
+    auto* periodSegLayout = new QHBoxLayout(periodSeg);
+    periodSegLayout->setContentsMargins(0, 0, 0, 0);
+    periodSegLayout->setSpacing(0);
+
+    auto* periodTodayBtn = new QPushButton(QStringLiteral("오늘"), periodSeg);
+    auto* periodWeekBtn = new QPushButton(QStringLiteral("7일"), periodSeg);
+    auto* periodMonthBtn = new QPushButton(QStringLiteral("30일"), periodSeg);
+    systemEventPeriodCustomBtn_ = new QPushButton(QStringLiteral("직접"), periodSeg);
+    periodTodayBtn->setProperty("pos", "first");
+    systemEventPeriodCustomBtn_->setProperty("pos", "last");
+
+    auto* periodGroup = new QButtonGroup(this);
+    periodGroup->setExclusive(true);
+    for (auto* btn : {periodTodayBtn, periodWeekBtn, periodMonthBtn, systemEventPeriodCustomBtn_}) {
+        btn->setObjectName("segBtn");
+        btn->setCheckable(true);
+        periodSegLayout->addWidget(btn);
+        periodGroup->addButton(btn);
+    }
+    periodWeekBtn->setChecked(true);
+    filterLayout->addWidget(periodSeg);
+
+    connect(periodTodayBtn, &QPushButton::clicked, this, [this] { applySystemEventPeriodPreset(0); });
+    connect(periodWeekBtn, &QPushButton::clicked, this, [this] { applySystemEventPeriodPreset(6); });
+    connect(periodMonthBtn, &QPushButton::clicked, this, [this] { applySystemEventPeriodPreset(29); });
+    connect(systemEventPeriodCustomBtn_, &QPushButton::clicked, this,
+            [this] { applySystemEventPeriodPreset(-1); });
+
+    systemEventStartDateEdit_ = new CareGuardDateEdit(today, filterRow);
+    CareGuard::applyCareGuardDateEdit(systemEventStartDateEdit_);
+    filterLayout->addWidget(systemEventStartDateEdit_);
+
+    filterLayout->addWidget(makeMutedLabel(QStringLiteral("~"), filterRow));
+    systemEventEndDateEdit_ = new CareGuardDateEdit(today, filterRow);
+    CareGuard::applyCareGuardDateEdit(systemEventEndDateEdit_);
+    filterLayout->addWidget(systemEventEndDateEdit_);
+
+    connect(systemEventStartDateEdit_, &QDateEdit::dateChanged, this,
+            &P7SettingsPage::onSystemEventDateRangeChanged);
+    connect(systemEventEndDateEdit_, &QDateEdit::dateChanged, this,
+            &P7SettingsPage::onSystemEventDateRangeChanged);
+    systemEventStartDateEdit_->installEventFilter(this);
+    systemEventEndDateEdit_->installEventFilter(this);
+
+    applySystemEventPeriodPreset(6);
+
+    systemEventSearchEdit_ = new LiveSearchLineEdit(filterRow);
+    systemEventSearchEdit_->setPlaceholderText(QStringLiteral("로봇·종류·메시지 검색"));
+    connect(systemEventSearchEdit_, &LiveSearchLineEdit::liveTextChanged, this, [this](const QString& text) {
+        systemEventSearchText_ = text;
+        fetchSystemEventLog();
+    });
+    filterLayout->addWidget(systemEventSearchEdit_, /*stretch=*/1);
+    layout->addWidget(filterRow);
+
+    systemEventTable_ = new QTableWidget(tab);
+    const QStringList headers = {QStringLiteral("시각"), QStringLiteral("로봇"), QStringLiteral("종류"),
+                                  QStringLiteral("메시지")};
+    systemEventTable_->setColumnCount(headers.size());
+    systemEventTable_->setHorizontalHeaderLabels(headers);
+    systemEventTable_->verticalHeader()->setVisible(false);
+    systemEventTable_->verticalHeader()->setDefaultSectionSize(Tokens::Layout::TABLE_ROW_H);
+    systemEventTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    systemEventTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    systemEventTable_->setFocusPolicy(Qt::NoFocus);
+    systemEventTable_->setShowGrid(false);
+
+    auto* seHeader = systemEventTable_->horizontalHeader();
+    seHeader->setSectionResizeMode(QHeaderView::Interactive);
+    seHeader->setSectionResizeMode(3, QHeaderView::Stretch);
+    systemEventTable_->setColumnWidth(0, 160);
+    systemEventTable_->setColumnWidth(1, 100);
+    systemEventTable_->setColumnWidth(2, 160);
+    layout->addWidget(systemEventTable_, /*stretch=*/1);
+
+    return tab;
+}
+
+void P7SettingsPage::onSystemEventDateRangeChanged() {
+    if (systemEventStartDateEdit_->date() > systemEventEndDateEdit_->date()) {
+        systemEventEndDateEdit_->setDate(systemEventStartDateEdit_->date());
+        return;
+    }
+    fetchSystemEventLog();
+}
+
+void P7SettingsPage::applySystemEventPeriodPreset(int spanDays) {
+    if (spanDays >= 0) {
+        const QDate today = QDate::currentDate();
+        systemEventStartDateEdit_->setDate(today.addDays(-spanDays));
+        systemEventEndDateEdit_->setDate(today);
+        setSystemEventDateEditsReadOnly(true);
+    } else {
+        setSystemEventDateEditsReadOnly(false);
+        if (!systemEventPeriodCustomBtn_->isChecked()) {
+            systemEventPeriodCustomBtn_->setChecked(true);
+        }
+    }
+}
+
+void P7SettingsPage::setSystemEventDateEditsReadOnly(bool readOnly) {
+    for (auto* edit : {systemEventStartDateEdit_, systemEventEndDateEdit_}) {
+        edit->setReadOnly(readOnly);
+        edit->setProperty("state", readOnly ? QStringLiteral("off") : QVariant());
+        repolish(edit);
+    }
+}
+
+void P7SettingsPage::fetchSystemEventLog() {
+    if (systemEventStartDateEdit_ == nullptr || netManager_ == nullptr) return;
+
+    QUrl url(serverUrl_ + QStringLiteral("/system-events"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("start"), systemEventStartDateEdit_->date().toString(Qt::ISODate));
+    query.addQueryItem(QStringLiteral("end"), systemEventEndDateEdit_->date().toString(Qt::ISODate));
+    if (!systemEventSearchText_.trimmed().isEmpty()) {
+        query.addQueryItem(QStringLiteral("q"), systemEventSearchText_.trimmed());
+    }
+    url.setQuery(query);
+
+    QNetworkReply* reply = netManager_->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        handleSystemEventLogReply(reply);
+        reply->deleteLater();
+    });
+}
+
+void P7SettingsPage::handleSystemEventLogReply(QNetworkReply* reply) {
+    systemEventLog_.clear();
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode == 200) {
+        for (const QJsonValue& value : QJsonDocument::fromJson(reply->readAll()).array()) {
+            const QJsonObject obj = value.toObject();
+
+            const QString iso = obj.value("occurred_at").toString();
+            QDateTime occurredAt = QDateTime::fromString(iso, Qt::ISODateWithMs);
+            if (!occurredAt.isValid()) occurredAt = QDateTime::fromString(iso, Qt::ISODate);
+
+            SystemEventLogRow row;
+            row.time = occurredAt.toString(QStringLiteral("MM.dd HH:mm"));
+            row.robotCode = obj.value("robot_code").toString(QStringLiteral("-"));
+            row.eventType = obj.value("event_type").toString();
+            row.message = obj.value("message").toString();
+            row.highlight = obj.value("highlight").toBool();
+            systemEventLog_.push_back(row);
+        }
+    }
+    refreshSystemEventTable();
+}
+
+void P7SettingsPage::refreshSystemEventTable() {
+    if (systemEventTable_ == nullptr) return;
+
+    systemEventTable_->setRowCount(static_cast<int>(systemEventLog_.size()));
+    for (int r = 0; r < static_cast<int>(systemEventLog_.size()); ++r) {
+        const SystemEventLogRow& log = systemEventLog_[static_cast<size_t>(r)];
+
+        auto* timeItem = new QTableWidgetItem(log.time);
+        timeItem->setFont(QFont(Tokens::Font::MONO));
+        timeItem->setTextAlignment(Qt::AlignCenter);
+        timeItem->setForeground(Tokens::TEXT_SECONDARY);
+        systemEventTable_->setItem(r, 0, timeItem);
+
+        auto* robotItem = new QTableWidgetItem(log.robotCode);
+        robotItem->setTextAlignment(Qt::AlignCenter);
+        systemEventTable_->setItem(r, 1, robotItem);
+
+        auto* typeItem = new QTableWidgetItem(log.eventType);
+        typeItem->setTextAlignment(Qt::AlignCenter);
+        if (log.highlight) {
+            typeItem->setForeground(Tokens::EMERGENCY.main);
+            QFont f = typeItem->font();
+            f.setWeight(QFont::DemiBold);
+            typeItem->setFont(f);
+        }
+        systemEventTable_->setItem(r, 2, typeItem);
+
+        auto* messageItem = new QTableWidgetItem(log.message);
+        messageItem->setTextAlignment(Qt::AlignCenter);
+        systemEventTable_->setItem(r, 3, messageItem);
+    }
+}
+
+// ---------- 경로순찰 로그 탭 — buildAuditTab()과 같은 필터 UI 관례를 그대로 따른다 ----------
+
+QWidget* P7SettingsPage::buildPatrolRunLogTab() {
+    auto* tab = new QWidget();
+    auto* layout = new QVBoxLayout(tab);
+    layout->setContentsMargins(0, 12, 0, 0);
+    layout->setSpacing(8);
+
+    auto* filterRow = new QWidget(tab);
+    auto* filterLayout = new QHBoxLayout(filterRow);
+    filterLayout->setContentsMargins(0, 0, 0, 0);
+    filterLayout->setSpacing(6);
+
+    const QDate today = QDate::currentDate();
+
+    auto* periodSeg = new QWidget(filterRow);
+    auto* periodSegLayout = new QHBoxLayout(periodSeg);
+    periodSegLayout->setContentsMargins(0, 0, 0, 0);
+    periodSegLayout->setSpacing(0);
+
+    auto* periodTodayBtn = new QPushButton(QStringLiteral("오늘"), periodSeg);
+    auto* periodWeekBtn = new QPushButton(QStringLiteral("7일"), periodSeg);
+    auto* periodMonthBtn = new QPushButton(QStringLiteral("30일"), periodSeg);
+    patrolRunPeriodCustomBtn_ = new QPushButton(QStringLiteral("직접"), periodSeg);
+    periodTodayBtn->setProperty("pos", "first");
+    patrolRunPeriodCustomBtn_->setProperty("pos", "last");
+
+    auto* periodGroup = new QButtonGroup(this);
+    periodGroup->setExclusive(true);
+    for (auto* btn : {periodTodayBtn, periodWeekBtn, periodMonthBtn, patrolRunPeriodCustomBtn_}) {
+        btn->setObjectName("segBtn");
+        btn->setCheckable(true);
+        periodSegLayout->addWidget(btn);
+        periodGroup->addButton(btn);
+    }
+    periodWeekBtn->setChecked(true);
+    filterLayout->addWidget(periodSeg);
+
+    connect(periodTodayBtn, &QPushButton::clicked, this, [this] { applyPatrolRunPeriodPreset(0); });
+    connect(periodWeekBtn, &QPushButton::clicked, this, [this] { applyPatrolRunPeriodPreset(6); });
+    connect(periodMonthBtn, &QPushButton::clicked, this, [this] { applyPatrolRunPeriodPreset(29); });
+    connect(patrolRunPeriodCustomBtn_, &QPushButton::clicked, this,
+            [this] { applyPatrolRunPeriodPreset(-1); });
+
+    patrolRunStartDateEdit_ = new CareGuardDateEdit(today, filterRow);
+    CareGuard::applyCareGuardDateEdit(patrolRunStartDateEdit_);
+    filterLayout->addWidget(patrolRunStartDateEdit_);
+
+    filterLayout->addWidget(makeMutedLabel(QStringLiteral("~"), filterRow));
+    patrolRunEndDateEdit_ = new CareGuardDateEdit(today, filterRow);
+    CareGuard::applyCareGuardDateEdit(patrolRunEndDateEdit_);
+    filterLayout->addWidget(patrolRunEndDateEdit_);
+
+    connect(patrolRunStartDateEdit_, &QDateEdit::dateChanged, this,
+            &P7SettingsPage::onPatrolRunDateRangeChanged);
+    connect(patrolRunEndDateEdit_, &QDateEdit::dateChanged, this,
+            &P7SettingsPage::onPatrolRunDateRangeChanged);
+    patrolRunStartDateEdit_->installEventFilter(this);
+    patrolRunEndDateEdit_->installEventFilter(this);
+
+    applyPatrolRunPeriodPreset(6);
+
+    patrolRunSearchEdit_ = new LiveSearchLineEdit(filterRow);
+    patrolRunSearchEdit_->setPlaceholderText(QStringLiteral("로봇·대상자·경로·상태 검색"));
+    connect(patrolRunSearchEdit_, &LiveSearchLineEdit::liveTextChanged, this, [this](const QString& text) {
+        patrolRunSearchText_ = text;
+        fetchPatrolRunLog();
+    });
+    filterLayout->addWidget(patrolRunSearchEdit_, /*stretch=*/1);
+    layout->addWidget(filterRow);
+
+    patrolRunTable_ = new QTableWidget(tab);
+    const QStringList headers = {QStringLiteral("시작 시각"), QStringLiteral("로봇"), QStringLiteral("대상자"),
+                                  QStringLiteral("경로"),     QStringLiteral("유형"), QStringLiteral("상태"),
+                                  QStringLiteral("진행")};
+    patrolRunTable_->setColumnCount(headers.size());
+    patrolRunTable_->setHorizontalHeaderLabels(headers);
+    patrolRunTable_->verticalHeader()->setVisible(false);
+    patrolRunTable_->verticalHeader()->setDefaultSectionSize(Tokens::Layout::TABLE_ROW_H);
+    patrolRunTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    patrolRunTable_->setSelectionMode(QAbstractItemView::NoSelection);
+    patrolRunTable_->setFocusPolicy(Qt::NoFocus);
+    patrolRunTable_->setShowGrid(false);
+
+    auto* prHeader = patrolRunTable_->horizontalHeader();
+    prHeader->setSectionResizeMode(QHeaderView::Interactive);
+    prHeader->setSectionResizeMode(3, QHeaderView::Stretch);
+    patrolRunTable_->setColumnWidth(0, 140);
+    patrolRunTable_->setColumnWidth(1, 70);
+    patrolRunTable_->setColumnWidth(2, 110);
+    patrolRunTable_->setColumnWidth(4, 60);
+    patrolRunTable_->setColumnWidth(5, 60);
+    patrolRunTable_->setColumnWidth(6, 60);
+    layout->addWidget(patrolRunTable_, /*stretch=*/1);
+
+    return tab;
+}
+
+void P7SettingsPage::onPatrolRunDateRangeChanged() {
+    if (patrolRunStartDateEdit_->date() > patrolRunEndDateEdit_->date()) {
+        patrolRunEndDateEdit_->setDate(patrolRunStartDateEdit_->date());
+        return;
+    }
+    fetchPatrolRunLog();
+}
+
+void P7SettingsPage::applyPatrolRunPeriodPreset(int spanDays) {
+    if (spanDays >= 0) {
+        const QDate today = QDate::currentDate();
+        patrolRunStartDateEdit_->setDate(today.addDays(-spanDays));
+        patrolRunEndDateEdit_->setDate(today);
+        setPatrolRunDateEditsReadOnly(true);
+    } else {
+        setPatrolRunDateEditsReadOnly(false);
+        if (!patrolRunPeriodCustomBtn_->isChecked()) {
+            patrolRunPeriodCustomBtn_->setChecked(true);
+        }
+    }
+}
+
+void P7SettingsPage::setPatrolRunDateEditsReadOnly(bool readOnly) {
+    for (auto* edit : {patrolRunStartDateEdit_, patrolRunEndDateEdit_}) {
+        edit->setReadOnly(readOnly);
+        edit->setProperty("state", readOnly ? QStringLiteral("off") : QVariant());
+        repolish(edit);
+    }
+}
+
+void P7SettingsPage::fetchPatrolRunLog() {
+    if (patrolRunStartDateEdit_ == nullptr || netManager_ == nullptr) return;
+
+    QUrl url(serverUrl_ + QStringLiteral("/patrol-runs"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("start"), patrolRunStartDateEdit_->date().toString(Qt::ISODate));
+    query.addQueryItem(QStringLiteral("end"), patrolRunEndDateEdit_->date().toString(Qt::ISODate));
+    if (!patrolRunSearchText_.trimmed().isEmpty()) {
+        query.addQueryItem(QStringLiteral("q"), patrolRunSearchText_.trimmed());
+    }
+    url.setQuery(query);
+
+    QNetworkReply* reply = netManager_->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        handlePatrolRunLogReply(reply);
+        reply->deleteLater();
+    });
+}
+
+void P7SettingsPage::handlePatrolRunLogReply(QNetworkReply* reply) {
+    patrolRunLog_.clear();
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (statusCode == 200) {
+        for (const QJsonValue& value : QJsonDocument::fromJson(reply->readAll()).array()) {
+            const QJsonObject obj = value.toObject();
+
+            const QString iso = obj.value("started_at").toString();
+            QDateTime startedAt = QDateTime::fromString(iso, Qt::ISODateWithMs);
+            if (!startedAt.isValid()) startedAt = QDateTime::fromString(iso, Qt::ISODate);
+
+            PatrolRunLogRow row;
+            row.time = startedAt.toString(QStringLiteral("MM.dd HH:mm"));
+            row.robotCode = obj.value("robot_code").toString(QStringLiteral("-"));
+            row.recipient = obj.value("recipient_name").toString(QStringLiteral("-"));
+            row.route = obj.value("route_name").toString(QStringLiteral("-"));
+            row.trigger = obj.value("trigger").toString();
+            row.status = obj.value("status").toString();
+            row.progress = QStringLiteral("%1/%2")
+                                .arg(obj.value("waypoints_done").toInt())
+                                .arg(obj.value("waypoints_total").toInt());
+            row.highlight = obj.value("highlight").toBool();
+            patrolRunLog_.push_back(row);
+        }
+    }
+    refreshPatrolRunTable();
+}
+
+void P7SettingsPage::refreshPatrolRunTable() {
+    if (patrolRunTable_ == nullptr) return;
+
+    patrolRunTable_->setRowCount(static_cast<int>(patrolRunLog_.size()));
+    for (int r = 0; r < static_cast<int>(patrolRunLog_.size()); ++r) {
+        const PatrolRunLogRow& log = patrolRunLog_[static_cast<size_t>(r)];
+
+        auto* timeItem = new QTableWidgetItem(log.time);
+        timeItem->setFont(QFont(Tokens::Font::MONO));
+        timeItem->setTextAlignment(Qt::AlignCenter);
+        timeItem->setForeground(Tokens::TEXT_SECONDARY);
+        patrolRunTable_->setItem(r, 0, timeItem);
+
+        auto* robotItem = new QTableWidgetItem(log.robotCode);
+        robotItem->setTextAlignment(Qt::AlignCenter);
+        patrolRunTable_->setItem(r, 1, robotItem);
+
+        auto* recipientItem = new QTableWidgetItem(log.recipient);
+        recipientItem->setTextAlignment(Qt::AlignCenter);
+        patrolRunTable_->setItem(r, 2, recipientItem);
+
+        auto* routeItem = new QTableWidgetItem(log.route);
+        routeItem->setTextAlignment(Qt::AlignCenter);
+        patrolRunTable_->setItem(r, 3, routeItem);
+
+        auto* triggerItem = new QTableWidgetItem(log.trigger);
+        triggerItem->setTextAlignment(Qt::AlignCenter);
+        patrolRunTable_->setItem(r, 4, triggerItem);
+
+        auto* statusItem = new QTableWidgetItem(log.status);
+        statusItem->setTextAlignment(Qt::AlignCenter);
+        if (log.highlight) {
+            statusItem->setForeground(Tokens::EMERGENCY.main);
+            QFont f = statusItem->font();
+            f.setWeight(QFont::DemiBold);
+            statusItem->setFont(f);
+        }
+        patrolRunTable_->setItem(r, 5, statusItem);
+
+        auto* progressItem = new QTableWidgetItem(log.progress);
+        progressItem->setFont(QFont(Tokens::Font::MONO));
+        progressItem->setTextAlignment(Qt::AlignCenter);
+        patrolRunTable_->setItem(r, 6, progressItem);
     }
 }
 
