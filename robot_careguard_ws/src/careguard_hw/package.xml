@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>careguard_hw</name>
+  <version>0.1.0</version>
+  <description>약통(pillbox) 서보·IR 센서 등 로봇 부착 하드웨어 드라이버 계층. 이번
+    스코프는 아두이노 펌웨어와 시리얼로 통신하는 pillbox_controller 노드 하나만
+    포함한다(실제 서보/IR 배선·펌웨어 프로토콜은 미확정 — 빌드/실행 미검증).</description>
+  <maintainer email="careguard@example.com">CareGuard Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_srvs</depend>
+  <depend>std_msgs</depend>
+  <depend>python3-serial</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
