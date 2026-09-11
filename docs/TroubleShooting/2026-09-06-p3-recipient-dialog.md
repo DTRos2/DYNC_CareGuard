@@ -1,5 +1,6 @@
 # 2026-09-06 트러블슈팅 — 대상자 관리 > 등록/상세 모달
 
+> 작성자: 도희정
 > `feature/dashboard-p3-recipient-dialog` 브랜치 작업 중 발생한 문제의 증상·원인·해결을 정리한 기록.
 > 대상 파일: `pc_careguard/dashboard/src/dialogs/{p3_recipient_create_dialog.*, p3_recipient_detail_dialog.*}`
 

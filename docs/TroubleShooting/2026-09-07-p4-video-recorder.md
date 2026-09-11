@@ -1,5 +1,6 @@
 # 2026-09-07 트러블슈팅 — careguard_agent/server > 영상 업로드 (robot_id 요구사항)
 
+> 작성자: 김예은
 > `feature/perception-video-recording` 브랜치에서 6단계(video_recorder.py)의
 > 결과물을 서버로 올리는 7단계를 설계하던 중 발견한 문제의 증상·원인·해결을 정리한 기록.
 > 대상 파일: `pc_careguard/server/app/media.py`,
