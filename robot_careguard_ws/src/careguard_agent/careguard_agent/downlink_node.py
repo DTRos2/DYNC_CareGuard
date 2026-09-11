@@ -26,7 +26,7 @@ from geometry_msgs.msg import Twist
 from rclpy.action import ActionClient
 from rclpy.node import Node
 
-from careguard_msgs.action import Patrol
+from careguard_msgs.action import DeliverMedication, Patrol
 from careguard_msgs.msg import Waypoint as WaypointMsg
 
 from . import media_uploader, ws_config
@@ -72,6 +72,13 @@ class DownlinkNode(Node):
     def __init__(self):
         super().__init__('downlink_node')
         self._patrol_client = ActionClient(self, Patrol, 'patrol')
+        # P3 "복약 재안내" 버튼(서버 "medication_start" WS, 순찰과 무관한 즉시 호출)
+        # 전용 — patrol_task.py를 거치는 자동 트리거는 medication_client.py(패키지
+        # 내부)가 따로 쓰고, 여기서 만드는 클라이언트는 비동기(fire-and-forget)만
+        # 한다는 점이 다르다(_patrol_client와 같은 이유 — 이 노드의 spin은
+        # _run_ws_loop 스레드가 아니라 main()의 rclpy.spin이 돌리므로 블로킹 호출을
+        # 넣으면 그동안 다른 모든 명령 처리가 멈춘다).
+        self._medication_client = ActionClient(self, DeliverMedication, 'deliver_medication')
         # 지금 진행 중인 Patrol goal의 핸들 — patrol_stop이 취소할 대상을 찾는 데 쓴다.
         # send_goal_async()의 반환값(Future)을 예전엔 아무 데도 안 담아둬서, "취소"라는
         # 개념 자체가 구조적으로 불가능했다(patrol_task.py의 cancel_callback 부재와
@@ -177,6 +184,8 @@ class DownlinkNode(Node):
             self._start_patrol(message)
         elif msg_type == 'patrol_stop':
             self._stop_patrol(message)
+        elif msg_type == 'medication_start':
+            self._start_medication(message)
         elif msg_type == 'slam_start':
             self._start_slam(message)
         elif msg_type == 'slam_stop':
@@ -303,8 +312,56 @@ class DownlinkNode(Node):
         # 서버가 안 보내면(기존 patrol_start 호출부들) True가 기본 — 원래 순찰처럼 다
         # 돌고 충전소로 복귀한다. P6 "이동"만 명시적으로 False를 실어 보낸다.
         goal.return_to_charging = bool(message.get('return_to_charging', True))
+        # 둘 다 서버가 안 보내면(기존 호출부 전부) 0 — "복약 전달 경로 아님"의 기본값과
+        # 같다(Patrol.action 주석 참고). patrol.py::start_patrol_run이 schedule_id로
+        # patrol_schedule.medication_schedule_id를 조회했을 때만 채워 보낸다.
+        goal.medication_schedule_id = int(message.get('medication_schedule_id', 0) or 0)
+        goal.slot_no = int(message.get('slot_no', 0) or 0)
         send_future = self._patrol_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_patrol_goal_response)
+
+    def _start_medication(self, message: dict):
+        """서버 mission.py::create_mission()이 보내는 "medication_start" — P3
+        "복약 재안내" 버튼(순찰과 무관, 로봇이 이미 대상자 앞에 있다고 가정한
+        즉시 호출). patrol_task.py를 거치는 자동 경로(medication_client.py)와 달리
+        여기는 비동기(fire-and-forget)로만 보낸다 — 이 노드의 spin은 main()의
+        rclpy.spin이 돌리므로, 여기서 블로킹하면 그동안 patrol_stop 등 다른 모든
+        WS 명령 처리가 멈춘다.
+
+        slot_no는 mission.py::create_mission이 payload.slot_no를 그대로 실어 보낸
+        값 — 그 값 자체는 대시보드 p3_recipient_page.cpp가 카드에 이미 표시 중이던
+        "미수령" 슬롯에서 찾아온 것(서버는 재조회하지 않고 그대로 전달만 함). schedule_id는
+        이 버튼 경로엔 없다(특정 회차와 안 묶인 즉시 호출이라 0으로 감 — medication_log에
+        안 남는다, medication_task.py 주석 참고).
+        """
+        slot_no = int(message.get('slot_no', 0) or 0)
+        if slot_no <= 0:
+            self.get_logger().warn(
+                'medication_start에 유효한 slot_no가 없어 무시합니다(서버 쪽 mission.py가 아직 안 채움)')
+            return
+
+        if not self._medication_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error('DeliverMedication 액션 서버를 찾을 수 없습니다')
+            return
+
+        goal = DeliverMedication.Goal()
+        goal.slot_no = slot_no
+        goal.schedule_id = int(message.get('schedule_id', 0) or 0)
+        goal.person_timeout_sec = float(message.get('person_timeout_sec', 0.0) or 0.0)
+        send_future = self._medication_client.send_goal_async(goal)
+        send_future.add_done_callback(self._on_medication_goal_response)
+
+    def _on_medication_goal_response(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().warn('medication goal이 거부됐습니다(이미 다른 배출이 진행 중일 수 있음)')
+            return
+        # patrol_start와 달리 이 goal은 서버가 취소를 보낼 경로가 아직 없어(P3
+        # 버튼에 "재안내 취소"는 없음) goal_handle을 따로 안 들고 있는다 — 결과는
+        # medication_task.py가 /careguard/patrol_status로 이미 relay하므로(patrol_
+        # task.py._deliver_medication과 같은 토픽 재사용) 여기서 또 처리할 필요가
+        # 없다(patrol_start의 _on_patrol_result와 같은 이유).
+        goal_handle.get_result_async()
 
     def _on_patrol_goal_response(self, future):
         """patrol_task의 액션 서버가 goal을 accept/reject한 직후 온다 — accept면 그
