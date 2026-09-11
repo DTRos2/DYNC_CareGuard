@@ -19,6 +19,7 @@
 #include "pages/p5_map_page.h"
 #include "pages/p6_patrol_page.h"
 #include "pages/p7_settings_page.h"
+#include "pages/p8_logs_page.h"
 #include "theme/tokens.h"
 #include "widgets/simple_icons.h"
 
@@ -56,6 +57,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     pageStack_->addWidget(patrolPage);                       // idx 5
     settingsPage_ = new P7SettingsPage(pageStack_);
     pageStack_->addWidget(settingsPage_);                    // idx 6
+    pageStack_->addWidget(new P8LogsPage(pageStack_));       // idx 7
     body->addWidget(pageStack_, /*stretch=*/1);
 
     // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 반영한다. mapRegistered 시그널엔
@@ -192,6 +194,10 @@ QWidget* MainWindow::buildSidebar() {
     addNavButton(layout, SimpleIcons::route(Tokens::TEXT_SECONDARY, 14), QStringLiteral("순찰·경로"), 5,
                  navGroup_);
     addNavButton(layout, SimpleIcons::settings(Tokens::TEXT_SECONDARY, 14), QStringLiteral("시스템"), 6,
+                 navGroup_);
+
+    addGroupLabel(QStringLiteral("로그"));
+    addNavButton(layout, SimpleIcons::list(Tokens::TEXT_SECONDARY, 14), QStringLiteral("통합 로그"), 7,
                  navGroup_);
 
     layout->addStretch();
