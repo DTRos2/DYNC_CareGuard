@@ -3,7 +3,7 @@
 <package format="3">
   <name>careguard_mission</name>
   <version>0.1.0</version>
-  <description>시나리오 실행 엔진. 이번 스코프는 순찰 액션 서버만 포함한다(복약 등은 밖).</description>
+  <description>시나리오 실행 엔진. 순찰(patrol_task)·복약 전달(medication_task) 액션 서버.</description>
   <maintainer email="careguard@example.com">CareGuard Team</maintainer>
   <license>Apache-2.0</license>
 
