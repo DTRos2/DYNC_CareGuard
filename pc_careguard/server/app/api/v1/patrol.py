@@ -25,6 +25,27 @@ from ...schemas import (
 )
 from ...ws import robot_ws
 
+def _reject_non_patrol_steps(cur, steps: List[int]) -> None:
+    """patrol_route.steps에는 kind='patrol' 웨이포인트만 넣을 수 있다 — charge(자동
+    출발·복귀)와 emergency(즉시 단독 이동 전용, 경로 불필요)는 DB CHECK로는 막을 수
+    없어(steps는 그냥 정수 배열) 여기서 저장 시점에 막는다. 프런트가 이미 charge를
+    클릭 못 하게 막고 있지만(WaypointCanvas), API를 직접 호출하면 우회할 수 있었다.
+    """
+    if not steps:
+        return
+    cur.execute("SELECT id, kind FROM waypoint WHERE id = ANY(%s)", (list(steps),))
+    kind_by_id = {row["id"]: row["kind"] for row in cur.fetchall()}
+    for step_id in steps:
+        kind = kind_by_id.get(step_id)
+        if kind is None:
+            raise HTTPException(status_code=400, detail=f"존재하지 않는 웨이포인트입니다: {step_id}")
+        if kind != "patrol":
+            raise HTTPException(
+                status_code=400,
+                detail=f"경로에는 순찰 지점(kind=patrol)만 넣을 수 있습니다: waypoint {step_id}(kind={kind})",
+            )
+
+
 routes_router = APIRouter(prefix="/patrol-routes", tags=["patrol"])
 schedules_router = APIRouter(prefix="/patrol-schedules", tags=["patrol"])
 
@@ -61,6 +82,8 @@ def create_patrol_route(payload: PatrolRouteCreate):
         if cur.fetchone():
             raise HTTPException(status_code=409, detail="이미 같은 이름의 경로가 있습니다")
 
+        _reject_non_patrol_steps(cur, payload.steps)
+
         cur.execute(
             """
             INSERT INTO patrol_route (map_id, name, description, steps, created_by)
@@ -86,13 +109,15 @@ def update_patrol_route(route_id: int, payload: PatrolRouteUpdate):
     fields = payload.dict(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=400, detail="변경할 내용이 없습니다")
-    if "steps" in fields:
-        fields["steps"] = psycopg2.extras.Json(fields["steps"])
-
-    sets = ", ".join(f"{key} = %s" for key in fields)
-    params = list(fields.values()) + [route_id]
 
     with db.get_connection() as conn, conn.cursor() as cur:
+        if "steps" in fields:
+            _reject_non_patrol_steps(cur, fields["steps"])
+            fields["steps"] = psycopg2.extras.Json(fields["steps"])
+
+        sets = ", ".join(f"{key} = %s" for key in fields)
+        params = list(fields.values()) + [route_id]
+
         cur.execute(
             f"""
             UPDATE patrol_route SET {sets}

@@ -153,7 +153,7 @@ private:
     void movePopoverNear(const QPoint& anchor);
     void handleCanvasDeleteRequested(const QString& id);
     void handleCanvasMoved(const QString& id, QPointF pos, qreal headingDeg);
-    void handlePopoverSave(const QString& id, const QString& name, bool charging, qreal yaw, QPointF pos);
+    void handlePopoverSave(const QString& id, const QString& name, const QString& kind, qreal yaw, QPointF pos);
 
     void enterRouteEditMode(const QString& routeName);
     void exitRouteEditMode(bool save);

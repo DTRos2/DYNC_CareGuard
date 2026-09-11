@@ -106,9 +106,11 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
             [this] { poseCaptureBtn_->setChecked(false); });
     connect(canvas_, &WaypointCanvas::routeWaypointClicked, this, &P6PatrolPage::handleRouteWaypointClicked);
-    connect(canvas_, &WaypointCanvas::chargingClickBlocked, this, [this] {
-        QMessageBox::information(this, QStringLiteral("충전 스테이션"),
-                                  QStringLiteral("충전 스테이션은 경로 순서에 포함할 수 없습니다 (자동 출발·복귀)."));
+    connect(canvas_, &WaypointCanvas::nonPatrolClickBlocked, this, [this] {
+        QMessageBox::information(
+            this, QStringLiteral("경로에 포함할 수 없음"),
+            QStringLiteral("충전 스테이션·긴급 버튼은 경로 순서에 포함할 수 없습니다 "
+                            "(각각 자동 출발·복귀 / 즉시 단독 이동 전용)."));
     });
     // 창 크기 변경으로 캔버스가 웨이포인트 좌표를 다시 배치했다 — 이 페이지가 들고
     // 있는 사본과 현재 맵 데이터도 같이 갱신해야 다음 편집에서 되돌아가지 않는다.
@@ -776,7 +778,7 @@ QString P6PatrolPage::nextWaypointId() const {
 
 QString P6PatrolPage::chargingWaypointId() const {
     for (const WaypointCanvas::Waypoint& w : waypoints_) {
-        if (w.charging) return w.id;
+        if (w.kind == QStringLiteral("charge")) return w.id;
     }
     return QString();
 }
@@ -901,10 +903,10 @@ void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos, qreal headi
         [](bool, const ApiClient::WaypointInfo&, const QString&) {});
 }
 
-void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, bool charging, qreal yaw,
+void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, const QString& kind, qreal yaw,
                                       QPointF pos) {
     QString oldChargingCode;  // 교체되어 'patrol'로 내려야 할 예전 충전 웨이포인트(있으면)
-    if (charging) {
+    if (kind == QStringLiteral("charge")) {
         const QString existing = chargingWaypointId();
         if (!existing.isEmpty() && existing != id) {
             const auto reply = QMessageBox::question(
@@ -915,16 +917,19 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
             if (reply != QMessageBox::Yes) return;
             for (WaypointCanvas::Waypoint& w : waypoints_) {
-                if (w.id == existing) w.charging = false;
+                if (w.id == existing) w.kind = QStringLiteral("patrol");
             }
             oldChargingCode = existing;
         }
     }
+    // emergency는 charge와 달리 맵당 여러 개 허용되므로(요청 사양) 여기서는 아무런
+    // 유니크 검사도 하지 않는다 — 서버도 kind=='charge'일 때만 맵당 1개 제약을 검사한다
+    // (api/v1/map.py::create_waypoint/update_waypoint).
 
     QString code = id;
     if (id.isEmpty()) {
         code = nextWaypointId();
-        WaypointCanvas::Waypoint wp{code, name, charging, pos, yaw};
+        WaypointCanvas::Waypoint wp{code, name, kind, pos, yaw};
         // handleCanvasMoved와 같은 이유 — 로컬에서 새로 만든 웨이포인트는 metersPos가
         // 기본값(0,0)인 채로 남아서, 다음 리사이즈(예: "경로 편집" 모드 진입) 때
         // requestMetersResync()가 지도 원점(0,0m)으로 순간이동시켜버리는 버그가 있었다
@@ -936,7 +941,7 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
         for (WaypointCanvas::Waypoint& w : waypoints_) {
             if (w.id == code) {
                 w.name = name;
-                w.charging = charging;
+                w.kind = kind;
                 w.yawDeg = yaw;
                 break;
             }
@@ -953,13 +958,12 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
     // 서버 waypoint.kind='charge' 유니크 제약(맵당 1개, api/v1/map.py 확인) 때문에,
     // 충전 스테이션을 교체하는 경우 예전 웨이포인트를 먼저 'patrol'로 내려야 한다 —
     // 순서를 안 지키고 새 걸 먼저 저장하면 409로 거부된다.
-    auto saveThisWaypoint = [this, code, name, charging, pos, yaw]() {
+    auto saveThisWaypoint = [this, code, name, kind, pos, yaw]() {
         if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
         MapData& current = maps_[currentMapIndex_];
         const int existingServerId = current.waypointServerIds.value(code, -1);
         const QPointF meters = canvas_->canvasToMapMeters(pos);
         const double yawRad = CanvasGeometry::canvasYawDegToMapYawRad(yaw);
-        const QString kind = charging ? QStringLiteral("charge") : QStringLiteral("patrol");
         if (existingServerId > 0) {
             apiClient_->updateWaypoint(existingServerId,
                                         QJsonObject{{"name", name},
@@ -1038,12 +1042,17 @@ void P6PatrolPage::rebuildWpList() {
         rowLayout->setContentsMargins(8, 5, 8, 5);
         rowLayout->setSpacing(6);
 
+        const bool isCharge = w.kind == QStringLiteral("charge");
+        const bool isEmergency = w.kind == QStringLiteral("emergency");
+
         auto* idLabel = new QLabel(w.id, row);
         idLabel->setStyleSheet(
-            w.charging ? QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
-                                         "color:#0B7A6E; font-size:11px; font-weight:500;")
-                       : QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
-                                        "color:#5A6774; font-size:11px;"));
+            isCharge ? QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
+                                       "color:#0B7A6E; font-size:11px; font-weight:500;")
+            : isEmergency ? QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
+                                            "color:#D93B47; font-size:11px; font-weight:500;")
+                          : QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
+                                           "color:#5A6774; font-size:11px;"));
         rowLayout->addWidget(idLabel);
 
         auto* nameLabel = new QLabel(w.name, row);
@@ -1058,12 +1067,18 @@ void P6PatrolPage::rebuildWpList() {
         }
         rowLayout->addStretch();
 
-        if (w.charging) {
+        if (isCharge) {
             auto* badge = new QLabel(QStringLiteral("초기 위치"), row);
             badge->setStyleSheet(QStringLiteral(
                 "color:#0B7A6E; background:#E0F5F2; font-size:10px; padding:1px 5px; border-radius:3px;"));
             rowLayout->addWidget(badge);
         } else {
+            if (isEmergency) {
+                auto* badge = new QLabel(QStringLiteral("긴급 버튼"), row);
+                badge->setStyleSheet(QStringLiteral(
+                    "color:#D93B47; background:#FDECEE; font-size:10px; padding:1px 5px; border-radius:3px;"));
+                rowLayout->addWidget(badge);
+            }
             const QPointF meters = canvas_->canvasToMapMeters(w.pos);
             auto* coordLabel = new QLabel(
                 QStringLiteral("%1, %2, %3°")
@@ -2058,7 +2073,8 @@ void P6PatrolPage::upsertMap(const QImage& mapImage, const QString& mapName, con
         m.resolution = resolution;
         m.originMeters = originMeters;
         m.waypoints = {
-            {QStringLiteral("WP_01"), QStringLiteral("충전 스테이션"), true, QPointF(90, 260), 0}};
+            {QStringLiteral("WP_01"), QStringLiteral("충전 스테이션"), QStringLiteral("charge"),
+             QPointF(90, 260), 0}};
         m.nextWpSeq = 2;
         maps_.append(m);
         foundIndex = maps_.size() - 1;
@@ -2168,10 +2184,9 @@ void P6PatrolPage::loadServerMapImageDone(std::shared_ptr<QVector<MapData>> maps
             QMap<int, QString> codeById;  // 순찰 경로 steps(웨이포인트 id)를 code로 옮기는 데 필요
             int nextSeq = 1;
             for (const ApiClient::WaypointInfo& w : serverWaypoints) {
-                const bool charging = w.kind == QStringLiteral("charge");
                 const QPointF meters(w.posX, w.posY);
                 md.waypoints.append(WaypointCanvas::Waypoint{
-                    w.code, w.name, charging, designMapMetersToCanvas(md, meters),
+                    w.code, w.name, w.kind, designMapMetersToCanvas(md, meters),
                     CanvasGeometry::mapYawRadToCanvasYawDeg(w.yaw),
                     // metersPos: canvas_->showEvent()가 이 위젯이 처음으로 유효한 실제
                     // 크기를 갖게 되는 시점에 pos를 이 값으로부터 정확히 다시 계산한다
