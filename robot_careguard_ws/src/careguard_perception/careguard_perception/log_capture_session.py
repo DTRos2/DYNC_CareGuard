@@ -55,7 +55,7 @@ def append_log_row(log_path: Path, row: dict):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--person', required=True, help='예: person_A')
-    parser.add_argument('--time-of-day', required=True, choices=['morning', 'evening'])
+    parser.add_argument('--time-of-day', required=True, choices=['morning', 'afternoon', 'evening'])
     parser.add_argument('--location', required=True, help='예: white_bg, wp1, wp2, wp3')
     parser.add_argument('--light', required=True, choices=['on', 'off'])
     parser.add_argument('--window', required=True, choices=['facing', 'away'],
