@@ -498,8 +498,10 @@ void ApiClient::fetchPatrolRuns(int robotId, const QString& status, ListCallback
     });
 }
 
-void ApiClient::startMedicationMission(const QString& robotCode, ItemCallback<MissionInfo> callback) {
-    QJsonObject body{{"robot_code", robotCode}, {"kind", QStringLiteral("medication")}};
+void ApiClient::startMedicationMission(const QString& robotCode, int slotNo,
+                                        ItemCallback<MissionInfo> callback) {
+    QJsonObject body{
+        {"robot_code", robotCode}, {"kind", QStringLiteral("medication")}, {"slot_no", slotNo}};
     postJson(QStringLiteral("/missions"), body,
              [callback](bool ok, const QByteArray& respBody, const QString& err) {
                  if (!ok) {

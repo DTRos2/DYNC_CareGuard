@@ -208,7 +208,7 @@ QPushButton* makeActionButton(const QString& text, const QString& variant, QWidg
 // 없어 제거했다.
 QWidget* makeCardActions(const RecipientCard& rc, QWidget* parent,
                           const std::function<void(const QString&)>& onEventCheck,
-                          const std::function<void(const QString&, const QString&)>& onMedReannounce) {
+                          const std::function<void(const QString&, const QString&, int)>& onMedReannounce) {
     auto* row = new QWidget(parent);
     auto* layout = new QHBoxLayout(row);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -223,11 +223,22 @@ QWidget* makeCardActions(const RecipientCard& rc, QWidget* parent,
             break;
         }
         case Tokens::Level::Attention: {
+            // meds[0..2]가 slot_no 1~2~3 순서(applyMedsToday 참고) — 그중 첫 번째
+            // Missed를 "지금 재안내할 슬롯"으로 삼는다. 하나만 미수령이면 그게 곧
+            // 정답이고, 여러 개면 가장 이른 슬롯(대개 아침)부터 처리한다는 뜻이다.
+            int missedSlotNo = 0;
+            for (int i = 0; i < 3; ++i) {
+                if (rc.meds[i] == MedSlotState::Missed) {
+                    missedSlotNo = i + 1;
+                    break;
+                }
+            }
             auto* btn = makeActionButton(QStringLiteral("복약 재안내"), "primary", row);
-            QObject::connect(btn, &QPushButton::clicked, row,
-                              [onMedReannounce, robotCode = rc.robotCode, name = rc.name] {
-                                  onMedReannounce(robotCode, name);
-                              });
+            QObject::connect(
+                btn, &QPushButton::clicked, row,
+                [onMedReannounce, robotCode = rc.robotCode, name = rc.name, missedSlotNo] {
+                    onMedReannounce(robotCode, name, missedSlotNo);
+                });
             layout->addWidget(btn);
             break;
         }
@@ -737,8 +748,8 @@ void P3RecipientPage::rebuildGrid() {
         if (rc.level != Tokens::Level::Normal && rc.level != Tokens::Level::Offline) {
             cardLayout->addWidget(makeCardActions(
                 rc, card, [this](const QString& name) { emit eventCheckRequested(name); },
-                [this](const QString& robotCode, const QString& name) {
-                    requestMedicationReannounce(robotCode, name);
+                [this](const QString& robotCode, const QString& name, int slotNo) {
+                    requestMedicationReannounce(robotCode, name, slotNo);
                 }));
         }
 
@@ -776,13 +787,17 @@ void P3RecipientPage::resizeEvent(QResizeEvent* event) {
     }
 }
 
-void P3RecipientPage::requestMedicationReannounce(const QString& robotCode, const QString& recipientName) {
+void P3RecipientPage::requestMedicationReannounce(const QString& robotCode, const QString& recipientName,
+                                                   int slotNo) {
     // medication_scheduler가 없어(스케줄러는 patrol_schedule만 폴링) 스케줄을 거치지 않고
     // 버튼 클릭 즉시 POST /missions로 mission을 만들고 로봇에 바로 다운링크를 보낸다.
-    // 로봇(downlink_node)은 아직 이 명령 타입을 몰라 조용히 무시한다 — 실제 주행·음성
-    // 안내·약통 개방은 로봇 쪽 구현이 붙기 전까지는 일어나지 않는다.
+    // slotNo는 makeCardActions가 이미 카드에 표시돼 있던 미수령 슬롯에서 찾아온 값 —
+    // 0이면(이론상 안 나와야 함, Attention인데 meds에 Missed가 없는 방어적 경우) 서버가
+    // 그대로 0을 실어 보내고, 로봇(downlink_node._start_medication)이 "유효한 slot_no
+    // 없음"으로 보고 무시한다.
     apiClient_->startMedicationMission(
-        robotCode, [this, recipientName](bool ok, const ApiClient::MissionInfo& mission, const QString& err) {
+        robotCode, slotNo,
+        [this, recipientName](bool ok, const ApiClient::MissionInfo& mission, const QString& err) {
             if (!ok) {
                 QMessageBox::warning(this, QStringLiteral("복약 재안내 실패"),
                                       QStringLiteral("서버에 명령을 전달하지 못했습니다: %1").arg(err));
