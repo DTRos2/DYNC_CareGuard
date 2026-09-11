@@ -273,9 +273,13 @@ void LoginWindow::handleLoginReply(QNetworkReply* reply, const QString& id) {
     }
 
     if (statusCode == 200) {
+        const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
+        const QString role = body.value(QStringLiteral("role")).toString();
+        const QString token = body.value(QStringLiteral("token")).toString();
+
         failCount_ = 0;
         setState(State::Idle);
-        emit loginSucceeded(id);
+        emit loginSucceeded(id, role, token);
         return;
     }
 

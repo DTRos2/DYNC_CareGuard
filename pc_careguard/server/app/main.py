@@ -1,7 +1,7 @@
 import asyncio
 
 import bcrypt
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 
 from .core import db
 from .core.accounts import router as accounts_router
@@ -19,6 +19,7 @@ from .api.v1.robots import router as robots_router
 from .schemas import LoginRequest, LoginResponse
 from .services.scheduler import run_scheduler_loop
 from .ws import dashboard_ws, robot_ws
+from .core.auth import create_session, delete_session
 
 app = FastAPI(title="CareGuard Server")
 app.include_router(media_router)
@@ -81,6 +82,14 @@ def login(payload: LoginRequest):
             "UPDATE careguard_user SET last_login_at = NOW() WHERE id = %s",
             (user["id"],),
         )
+        token = create_session(cur, user["id"])
         conn.commit()
 
-    return LoginResponse(id=user["id"], login_id=user["login_id"], role=user["role"])
+    return LoginResponse(id=user["id"], login_id=user["login_id"], role=user["role"], token=token)
+
+@app.post("/auth/logout", status_code=204)
+def logout(authorization: str = Header(default=None)):
+    if authorization and authorization.startswith("Bearer "):
+        with db.get_connection() as conn, conn.cursor() as cur:
+            delete_session(cur, authorization.removeprefix("Bearer "))
+            conn.commit()

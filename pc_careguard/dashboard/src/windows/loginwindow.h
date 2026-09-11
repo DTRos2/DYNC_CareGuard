@@ -21,7 +21,7 @@ public:
     explicit LoginWindow(QWidget* parent = nullptr);
 
 signals:
-    void loginSucceeded(const QString& username);
+    void loginSucceeded(const QString& username, const QString& role, const QString& token);
 
 private slots:
     void onSubmit();

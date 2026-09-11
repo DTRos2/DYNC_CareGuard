@@ -1551,7 +1551,8 @@ void P7SettingsPage::registerAccount(const AccountDialog::AccountData& data) {
         {"is_active", data.active},
     };
     QNetworkReply* reply = netManager_->post(request, QJsonDocument(body).toJson());
-    connect(reply, &QNetworkReply::finished, this, [this, reply, assignedRecipientIds = data.assignedRecipientIds] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, role = data.role, assignedRecipientIds = data.assignedRecipientIds] {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (statusCode != 200 && statusCode != 201) {
             const QJsonObject err = QJsonDocument::fromJson(reply->readAll()).object();
@@ -1568,7 +1569,7 @@ void P7SettingsPage::registerAccount(const AccountDialog::AccountData& data) {
         } else {
             // 등록과 동시에 담당 대상자를 골랐으면 이어서 배정한다. assignRecipients()가
             // 성공 시 fetchAccounts()/fetchRecipients()까지 처리한다.
-            assignRecipients(created.value("id").toInt(), assignedRecipientIds);
+            assignRecipients(created.value("id").toInt(), assignedRecipientIds, role);
         }
     });
 }
@@ -1585,7 +1586,8 @@ void P7SettingsPage::updateAccount(int rowIndex, const AccountDialog::AccountDat
     };
     QNetworkReply* reply = netManager_->sendCustomRequest(request, "PATCH", QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, dbId, isActive = data.active, assignedRecipientIds = data.assignedRecipientIds] {
+            [this, reply, dbId, isActive = data.active, role = data.role,
+             assignedRecipientIds = data.assignedRecipientIds] {
                 const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 if (statusCode != 200) {
                     const QJsonObject err = QJsonDocument::fromJson(reply->readAll()).object();
@@ -1604,7 +1606,7 @@ void P7SettingsPage::updateAccount(int rowIndex, const AccountDialog::AccountDat
                     return;
                 }
                 // assignRecipients()가 성공 시 fetchAccounts()까지 다시 불러와 반영한다.
-                assignRecipients(dbId, assignedRecipientIds);
+                assignRecipients(dbId, assignedRecipientIds, role);
             });
 }
 
@@ -1737,14 +1739,19 @@ void P7SettingsPage::handleRecipientsReply(QNetworkReply* reply) {
                         ? QStringLiteral("%1 (%2)").arg(obj.value("name").toString(), obj.value("code").toString())
                         : QStringLiteral("%1 (%2) · %3")
                               .arg(obj.value("name").toString(), obj.value("code").toString(), robotCode);
+        row.guardianUserId = obj.value("guardian_user_id").isNull() ? -1 : obj.value("guardian_user_id").toInt();
         row.operatorId = obj.value("operator_id").isNull() ? -1 : obj.value("operator_id").toInt();
         rows.push_back(row);
     }
     recipients_ = rows;
 }
 
-void P7SettingsPage::assignRecipients(int userId, const QVector<int>& recipientIds) {
-    QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2/recipients").arg(serverUrl_).arg(userId)));
+void P7SettingsPage::assignRecipients(int userId, const QVector<int>& recipientIds, AccountDialog::Role role) {
+    const QString path = (role == AccountDialog::Role::Guardian)
+    ? QStringLiteral("/accounts/%1/guardian-recipients").arg(userId)
+    : QStringLiteral("/accounts/%1/recipients").arg(userId);
+    QNetworkRequest request(QUrl(serverUrl_ + path));
+    //하드코딩 QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2/recipients").arg(serverUrl_).arg(userId)));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     QJsonArray idsArray;
@@ -1791,6 +1798,8 @@ void P7SettingsPage::openAccountDialog(int rowIndex) {
         option.assigned = !isNew && rc.operatorId == accounts_[static_cast<size_t>(rowIndex)].dbId;
         option.currentOperatorId = rc.operatorId;
         option.currentOperatorName = rc.operatorId == -1 ? QString() : operatorName(rc.operatorId);
+        option.currentGuardianId = rc.guardianUserId;
+        option.currentGuardianName = rc.guardianUserId == -1 ? QString() : operatorName(rc.guardianUserId);
         recipientOptions.push_back(option);
     }
 

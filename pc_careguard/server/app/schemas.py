@@ -13,6 +13,7 @@ class LoginResponse(BaseModel):
     id: int
     login_id: str
     role: str
+    token: str
 
 
 class AccountItem(BaseModel):
@@ -66,7 +67,7 @@ class RecipientOption(BaseModel):
     name: str
     robot_code: Optional[str] = None
     operator_id: Optional[int] = None  # 현재 담당 계정 id. 계정 수정 모달의 담당 배정 체크리스트용
-
+    guardian_user_id: Optional[int] = None  # 추가 — 현재 담당 보호자 계정 id
 
 class AssignRecipientsRequest(BaseModel):
     recipient_ids: List[int]  # 이 계정이 담당할 대상자 id 전체 목록(교체 방식)

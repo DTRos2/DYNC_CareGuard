@@ -279,6 +279,8 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
     }
 
     buildRoleSelector(body, data.role);
+    connect(roleOperatorBtn_, &QPushButton::toggled, this, &AccountDialog::refreshRecipientTable);
+    connect(roleGuardianBtn_, &QPushButton::toggled, this, &AccountDialog::refreshRecipientTable);
 
     // 계정 상태 — 등록 모드는 항상 활성으로 등록되므로 이 섹션을 노출하지 않는다.
     activeCheck_ = new QCheckBox(QStringLiteral("활성"), this);
@@ -317,12 +319,13 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
                                         .arg(Tokens::TEXT_PRIMARY.name(), Tokens::BORDER.name()));
         body->addWidget(chargeLabel);
 
-        auto* chargeHint = new QLabel(QStringLiteral("대상자 1명당 담당자 1명 — 다른 담당자에게 배정된 "
-                                                       "대상자를 선택하면 그 담당자에게서 해제됩니다"),
-                                       this);
-        chargeHint->setWordWrap(true);
-        chargeHint->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
-        body->addWidget(chargeHint);
+        // auto* chargeHint = new QLabel(QStringLiteral("대상자 1명당 담당자 1명 — 다른 담당자에게 배정된 "
+        //                                                "대상자를 선택하면 그 담당자에게서 해제됩니다"),
+        //                                this);
+        chargeHint_ = new QLabel(this);
+        chargeHint_->setWordWrap(true);
+        chargeHint_->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
+        body->addWidget(chargeHint_);
 
         recipientSearchEdit_ = new LiveSearchLineEdit(this);
         recipientSearchEdit_->setPlaceholderText(QStringLiteral("이름 또는 코드로 검색"));
@@ -354,56 +357,8 @@ AccountDialog::AccountDialog(Mode mode, const AccountData& data, const QStringLi
         recipientTable_->setColumnWidth(0, 48);
         recipientTable_->setColumnWidth(2, 90);
 
-        recipientTable_->setRowCount(recipients.size());
-        for (int r = 0; r < recipients.size(); ++r) {
-            const RecipientOption& option = recipients.at(r);
+        refreshRecipientTable();
 
-            // 현재 담당 상태를 "현재 담당" 칸에 보여준다 — 미지정은 주의색, 본인 담당은
-            // 강조(행 배경까지), 다른 계정 담당은 그 계정 이름을 보여줘 재배정 여부를
-            // 판단할 수 있게 한다.
-            QString statusText;
-            QColor statusColor = Tokens::TEXT_SECONDARY;
-            bool highlightSelf = false;
-            if (option.currentOperatorId == -1) {
-                statusText = QStringLiteral("미지정");
-                statusColor = Tokens::ATTENTION.main;
-            } else if (option.currentOperatorId == data_.dbId) {
-                statusText = QStringLiteral("본인");
-                statusColor = Tokens::OK.main;
-                highlightSelf = true;
-            } else {
-                statusText = option.currentOperatorName;
-            }
-            const QColor rowBg = highlightSelf ? Tokens::OK.soft : Tokens::BG_SURFACE;
-
-            auto* nameItem = new QTableWidgetItem(option.label);
-            nameItem->setBackground(rowBg);
-            nameItem->setForeground(Tokens::TEXT_PRIMARY);
-            recipientTable_->setItem(r, 1, nameItem);
-
-            auto* statusItem = new QTableWidgetItem(statusText);
-            statusItem->setBackground(rowBg);
-            statusItem->setForeground(statusColor);
-            if (highlightSelf) {
-                QFont statusFont = statusItem->font();
-                statusFont.setWeight(QFont::DemiBold);
-                statusItem->setFont(statusFont);
-            }
-            recipientTable_->setItem(r, 2, statusItem);
-
-            auto* checkbox = new QCheckBox();
-            checkbox->setChecked(option.assigned);
-            recipientTable_->setCellWidget(r, 0, wrapCheckboxCell(checkbox, rowBg));
-
-            // id는 "대상자" 칸의 아이템에 실어둔다 — 검색 필터·저장 시 이 아이템의 텍스트/데이터로 조회한다.
-            nameItem->setData(Qt::UserRole, option.id);
-
-            // 이미 다른 계정이 담당 중인 대상자를 체크하면 재배정 확인 팝업을 띄운다.
-            const int recipientId = option.id;
-            connect(checkbox, &QCheckBox::toggled, this, [this, checkbox, recipientId](bool checked) {
-                handleRecipientReassignCheck(checkbox, recipientId, checked);
-            });
-        }
         // "대상자" 칸(1열)은 어디를 클릭해도 그 행 체크박스가 토글되게 한다 — 체크박스
         // 자체는 좁아서 정확히 맞히기 번거롭다. 체크박스 칸(0열)은 이미 위젯이 클릭을
         // 직접 받아 처리하므로 여기서는 1열만 다룬다.
@@ -513,7 +468,6 @@ void AccountDialog::buildRoleSelector(QVBoxLayout* body, Role initial) {
     }
     roleAdminBtn_->setProperty("pos", "first");
     roleGuardianBtn_->setProperty("pos", "last");
-    roleGuardianBtn_->setEnabled(false);  // role.is_active = FALSE — 선택 불가
 
     switch (initial) {
         case Role::Admin: roleAdminBtn_->setChecked(true); break;
@@ -522,15 +476,6 @@ void AccountDialog::buildRoleSelector(QVBoxLayout* body, Role initial) {
     }
     connect(group, &QButtonGroup::idClicked, this, [this](int) { updateAdminBanners(); });
     col->addLayout(row);
-
-    auto* hint = new QLabel(
-        QStringLiteral("보호자 역할은 <span style=\"font-family:'JetBrains Mono'\">role.is_active = "
-                        "FALSE</span> — 선택 불가"),
-        this);
-    hint->setTextFormat(Qt::RichText);
-    hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
-    col->addWidget(hint);
     body->addLayout(col);
 }
 
@@ -578,6 +523,69 @@ void AccountDialog::applyRecipientFilter(const QString& query) {
     }
 }
 
+void AccountDialog::refreshRecipientTable() {
+    const bool isGuardianRole = roleGuardianBtn_->isChecked();
+
+    if (chargeHint_ != nullptr) {
+        chargeHint_->setText(isGuardianRole
+            ? QStringLiteral("대상자 1명당 보호자 1명 — 다른 보호자에게 배정된 "
+                              "대상자를 선택하면 그 보호자에게서 해제됩니다")
+            : QStringLiteral("대상자 1명당 담당자 1명 — 다른 담당자에게 배정된 "
+                              "대상자를 선택하면 그 담당자에게서 해제됩니다"));
+    }
+
+    recipientTable_->setRowCount(recipients_.size());
+    for (int r = 0; r < recipients_.size(); ++r) {
+        const RecipientOption& option = recipients_.at(r);
+
+        const int currentAssigneeId = isGuardianRole ? option.currentGuardianId : option.currentOperatorId;
+        const QString currentAssigneeName =
+            isGuardianRole ? option.currentGuardianName : option.currentOperatorName;
+        const bool assigned = (data_.dbId != -1) && (currentAssigneeId == data_.dbId);
+
+        QString statusText;
+        QColor statusColor = Tokens::TEXT_SECONDARY;
+        bool highlightSelf = false;
+        if (currentAssigneeId == -1) {
+            statusText = QStringLiteral("미지정");
+            statusColor = Tokens::ATTENTION.main;
+        } else if (currentAssigneeId == data_.dbId) {
+            statusText = QStringLiteral("본인");
+            statusColor = Tokens::OK.main;
+            highlightSelf = true;
+        } else {
+            statusText = currentAssigneeName;
+        }
+        const QColor rowBg = highlightSelf ? Tokens::OK.soft : Tokens::BG_SURFACE;
+
+        auto* nameItem = new QTableWidgetItem(option.label);
+        nameItem->setBackground(rowBg);
+        nameItem->setForeground(Tokens::TEXT_PRIMARY);
+        recipientTable_->setItem(r, 1, nameItem);
+
+        auto* statusItem = new QTableWidgetItem(statusText);
+        statusItem->setBackground(rowBg);
+        statusItem->setForeground(statusColor);
+        if (highlightSelf) {
+            QFont statusFont = statusItem->font();
+            statusFont.setWeight(QFont::DemiBold);
+            statusItem->setFont(statusFont);
+        }
+        recipientTable_->setItem(r, 2, statusItem);
+
+        auto* checkbox = new QCheckBox();
+        checkbox->setChecked(assigned);
+        recipientTable_->setCellWidget(r, 0, wrapCheckboxCell(checkbox, rowBg));
+
+        nameItem->setData(Qt::UserRole, option.id);
+
+        const int recipientId = option.id;
+        connect(checkbox, &QCheckBox::toggled, this, [this, checkbox, recipientId](bool checked) {
+            handleRecipientReassignCheck(checkbox, recipientId, checked);
+        });
+    }
+}
+
 void AccountDialog::handleRecipientReassignCheck(QCheckBox* checkbox, int recipientId, bool checked) {
     if (recipientReassignGuard_) return;
     if (!checked) return;  // 해제는 확인 없이 허용
@@ -590,12 +598,19 @@ void AccountDialog::handleRecipientReassignCheck(QCheckBox* checkbox, int recipi
         }
     }
     if (option == nullptr) return;
+
+    const bool isGuardianRole = roleGuardianBtn_->isChecked();
+    const int currentAssigneeId = isGuardianRole ? option->currentGuardianId : option->currentOperatorId;
+    const QString currentAssigneeName =
+        isGuardianRole ? option->currentGuardianName : option->currentOperatorName;
+
     // 미배정이었거나 이미 본인 담당이던 대상자는 재배정이 아니므로 확인이 필요 없다.
-    if (option->currentOperatorId == -1 || option->currentOperatorId == data_.dbId) return;
+    if (currentAssigneeId == -1 || currentAssigneeId == data_.dbId) return;
 
     int otherCount = 0;
     for (const RecipientOption& opt : recipients_) {
-        if (opt.currentOperatorId == option->currentOperatorId) ++otherCount;
+        const int otherAssigneeId = isGuardianRole ? opt.currentGuardianId : opt.currentOperatorId;
+        if (otherAssigneeId == currentAssigneeId) ++otherCount;
     }
 
     const QString typedName = nameEdit_->text().trimmed();
@@ -605,9 +620,9 @@ void AccountDialog::handleRecipientReassignCheck(QCheckBox* checkbox, int recipi
     box.setWindowTitle(QStringLiteral("담당자 재배정"));
     box.setIcon(QMessageBox::Question);
     box.setText(QStringLiteral("%1(%2)는 현재 %3 담당입니다.\n%4에게 재배정할까요?")
-                    .arg(option->name, option->code, option->currentOperatorName, newOwnerName));
+                    .arg(option->name, option->code, currentAssigneeName, newOwnerName));
     box.setInformativeText(QStringLiteral("%1의 담당은 %2명 → %3명이 됩니다")
-                                .arg(option->currentOperatorName)
+                                .arg(currentAssigneeName)
                                 .arg(otherCount)
                                 .arg(otherCount - 1));
     box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
@@ -729,9 +744,11 @@ void AccountDialog::handleSaveClicked() {
     // 활성 계정을 비활성화하려는데 본인 담당 대상자가 남아 있으면, 그 대상자들이
     // 미지정 상태가 된다는 것을 알리고 확인을 받는다(취소하면 저장 자체를 취소).
     if (isEdit && data_.active && !activeCheck_->isChecked()) {
+        const bool isGuardianRole = roleGuardianBtn_->isChecked();
         QStringList affected;
         for (const RecipientOption& opt : recipients_) {
-            if (opt.currentOperatorId == data_.dbId) affected << QStringLiteral("%1 %2").arg(opt.name, opt.code);
+            const int assigneeId = isGuardianRole ? opt.currentGuardianId : opt.currentOperatorId;
+            if (assigneeId == data_.dbId) affected << QStringLiteral("%1 %2").arg(opt.name, opt.code);
         }
         if (!affected.isEmpty()) {
             QMessageBox box(this);

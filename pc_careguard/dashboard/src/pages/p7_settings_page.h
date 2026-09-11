@@ -69,6 +69,7 @@ private:
 
     // /accounts/recipients 응답 한 줄. 계정 수정 모달의 담당 배정 체크리스트 원본.
     struct RecipientRow {
+        int guardianUserId = -1;
         int id = -1;
         QString code;         // "C-001" — 담당 대상자 입력창에서 타이핑으로 지정하는 값
         QString name;          // "김순자" — 재배정/비활성화 경고 메시지 조립용
@@ -163,7 +164,7 @@ private:
 
     void fetchRecipients();  // GET /accounts/recipients — 담당 배정 체크리스트 원본
     void handleRecipientsReply(QNetworkReply* reply);
-    void assignRecipients(int userId, const QVector<int>& recipientIds);  // PUT /accounts/{id}/recipients
+    void assignRecipients(int userId, const QVector<int>& recipientIds, AccountDialog::Role role);  // PUT /accounts/{id}/recipients
 
     void refreshThresholdRobotCombo();  // robots_ 갱신될 때마다 콤보 항목도 다시 채운다
     void fetchRobotThresholds(int robotDbId);  // GET /robots/{id}/thresholds — 콤보 선택 바뀔 때

@@ -370,6 +370,11 @@ public:
     // POST /teleop/{robot_code} — 방향키 패널이 계산한 목표 속도를 로봇에 그대로 전달한다.
     void sendTeleop(const QString& robotCode, double linearMps, double angularRadps);
 
+    // 로그인 성공 시 받은 세션 토큰을 보관한다. 이후 모든 요청에 Authorization 헤더로
+    // 실어 보낸다(실제 헤더 부착은 다음 단계에서 getJsonArray/postJson/putJson/sendDelete/
+    // uploadMapFile 5곳에 추가).
+    void setAuthToken(const QString& token) { authToken_ = token; }
+
 private:
     void getJsonArray(const QString& path, std::function<void(bool, const QByteArray&)> callback);
     void postJson(const QString& path, const QJsonObject& body,
@@ -391,4 +396,5 @@ private:
 
     QNetworkAccessManager* netManager_;
     QString serverUrl_;
+    QString authToken_;
 };

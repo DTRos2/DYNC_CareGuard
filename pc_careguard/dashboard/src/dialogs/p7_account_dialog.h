@@ -31,6 +31,8 @@ public:
         bool assigned = false;  // 이 계정이 현재 담당 중인지 (목록 초기 체크 상태에 반영)
         int currentOperatorId = -1;    // 현재 담당 계정 id (이 다이얼로그를 연 시점 기준). 미배정이면 -1
         QString currentOperatorName;   // 위 계정의 표시 이름. 미배정이면 빈 문자열
+        int currentGuardianId = -1;    // 현재 담당 보호자 계정 id. 미배정이면 -1
+        QString currentGuardianName;   // 위 보호자의 표시 이름. 미배정이면 빈 문자열
     };
 
     struct AccountData {
@@ -66,6 +68,8 @@ private:
     void togglePasswordVisibility();
     void togglePasswordConfirmVisibility();
     void applyRecipientFilter(const QString& query);
+    // 역할(운영자/보호자) 라디오 선택에 맞춰 담당 대상자 표를 다시 그린다.
+    void refreshRecipientTable();
     // 다른 계정이 이미 담당 중인 대상자를 체크하면 재배정 확인 팝업을 띄운다.
     // 취소하면 체크를 되돌린다(중복 배정 방지).
     void handleRecipientReassignCheck(QCheckBox* checkbox, int recipientId, bool checked);
@@ -80,6 +84,7 @@ private:
 
     QLineEdit* loginIdEdit_;
     QLabel* loginIdErrorHint_;
+    QLabel* chargeHint_ = nullptr;
     QLineEdit* nameEdit_;
     QPushButton* roleAdminBtn_;
     QPushButton* roleOperatorBtn_;

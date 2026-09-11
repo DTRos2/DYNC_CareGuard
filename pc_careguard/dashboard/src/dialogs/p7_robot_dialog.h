@@ -23,6 +23,8 @@ public:
     struct RecipientOption {
         int id = -1;
         QString label;  // "김순자 (C-001)" 또는 이미 다른 로봇 담당 중이면 "김순자 (C-001) · R-01"
+        int currentGuardianId = -1;
+        QString currentGuardianName;
     };
 
     struct RobotData {

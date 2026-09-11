@@ -92,7 +92,7 @@ def list_assignable_recipients():
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT rc.id, rc.code, rc.name, rb.code AS robot_code, rc.operator_id
+            SELECT rc.id, rc.code, rc.name, rb.code AS robot_code, rc.operator_id, rc.guardian_user_id
             FROM recipient rc
             LEFT JOIN robot rb ON rb.id = rc.robot_id
             WHERE rc.deregistered_at IS NULL
@@ -123,6 +123,25 @@ def assign_recipients(user_id: int, payload: AssignRecipientsRequest):
         if payload.recipient_ids:
             cur.execute(
                 "UPDATE recipient SET operator_id = %s WHERE id = ANY(%s) AND deregistered_at IS NULL",
+                (user_id, payload.recipient_ids),
+            )
+        conn.commit()
+
+@router.put("/{user_id}/guardian-recipients", status_code=204)
+def assign_guardian_recipients(user_id: int, payload: AssignRecipientsRequest):
+    """이 보호자 계정이 볼 대상자 목록을 통째로 교체한다. assign_recipients(operator)와 동일 패턴."""
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM careguard_user WHERE id = %s AND deleted_at IS NULL", (user_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="계정을 찾을 수 없습니다")
+
+        cur.execute(
+            "UPDATE recipient SET guardian_user_id = NULL WHERE guardian_user_id = %s AND deregistered_at IS NULL",
+            (user_id,),
+        )
+        if payload.recipient_ids:
+            cur.execute(
+                "UPDATE recipient SET guardian_user_id = %s WHERE id = ANY(%s) AND deregistered_at IS NULL",
                 (user_id, payload.recipient_ids),
             )
         conn.commit()
