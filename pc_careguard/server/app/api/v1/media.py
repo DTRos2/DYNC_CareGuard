@@ -31,6 +31,67 @@ video_events_router = APIRouter(prefix="/video-events", tags=["video-events"])
 VIDEO_DIR = config.STORAGE_DIR / "videos"
 MAP_DIR = config.STORAGE_DIR / "maps"
 
+
+def _relative_storage_path(absolute_path: Path) -> str:
+    """DB에 저장할 경로를 STORAGE_DIR 기준 상대경로 문자열로 만든다.
+
+    예전엔 절대경로(str(storage_path))를 그대로 저장했는데, 이 서버를 clone한
+    계정/경로가 사람마다 달라서(예: /home/ktel/... vs /home/coc/...) 다른 사람
+    PC에서 같은 DB를 보면 그 절대경로가 존재하지 않아 파일을 못 찾는 문제가 있었다.
+    STORAGE_DIR 기준 상대경로만 저장해두면 어느 머신에서 서버를 띄우든
+    config.STORAGE_DIR와 조합해서 항상 올바른 실제 경로를 얻을 수 있다.
+    """
+    return str(absolute_path.relative_to(config.STORAGE_DIR))
+
+
+def resolve_storage_path(stored_value: str) -> Path:
+    """DB의 files.storage_path 값을 이 머신에서 실제로 열 수 있는 Path로 바꾼다.
+
+    - 상대경로(이 수정 이후 새로 저장된 값)면 그냥 STORAGE_DIR과 합친다.
+    - 절대경로(이 수정 전에 다른 머신/계정에서 저장된 레거시 값)면, 그 경로가 이
+      머신에도 우연히 그대로 존재하는 경우가 아닌 한 STORAGE_DIR 폴더 이름(기본
+      "storage", STORAGE_DIR 환경변수로 다른 이름을 쓰면 그 이름)이 나오는 지점
+      다음 부분(예: "maps/R-01/xxx.pgm")만 뽑아 이 머신의 STORAGE_DIR과 다시
+      조합해본다 — 폴더 구조(STORAGE_DIR 아래)는 어느 머신이든 동일하므로 이렇게
+      복구하면 clone 계정/경로만 다른 레거시 데이터도 코드 수정만으로 다시
+      읽힌다. 그래도 못 찾으면(예: 폴더 구조 자체가 다르거나 파일이 진짜 없어진
+      경우) 원래 값을 그대로 돌려줘 호출부가 "파일 없음"으로 처리하게 둔다.
+    """
+    p = Path(stored_value)
+    if not p.is_absolute():
+        return config.STORAGE_DIR / p
+    if p.is_file():
+        return p
+
+    marker = config.STORAGE_DIR.name
+    parts = p.parts
+    if marker in parts:
+        idx = len(parts) - 1 - parts[::-1].index(marker)
+        candidate = config.STORAGE_DIR.joinpath(*parts[idx + 1 :])
+        if candidate.is_file():
+            return candidate
+    return p
+
+
+def _heal_legacy_path(file_id: int, stored_value: str, resolved_path: Path) -> None:
+    """레거시 절대경로를 성공적으로 찾아낸 김에 DB 값을 상대경로로 정리해둔다.
+
+    팀원마다 자기 컴퓨터에서 서버를 띄우고 있어서 앞으로도 "폴더 구조는 같은데
+    계정 홈 디렉터리만 다른" 절대경로가 새로 생길 수 있다. 파일을 실제로 서빙할
+    때마다 이렇게 조용히 상대경로로 고쳐두면, 그 이후로는 어느 컴퓨터에서 읽어도
+    다시는 이 파일을 위해 resolve_storage_path의 레거시 경로 추정을 안 타도 된다.
+    """
+    if not Path(stored_value).is_absolute():
+        return
+    try:
+        relative = resolved_path.relative_to(config.STORAGE_DIR)
+    except ValueError:
+        return
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE files SET storage_path = %s WHERE id = %s", (str(relative), file_id))
+        conn.commit()
+
+
 # 한 번에 메모리에 올릴 최대 청크 크기. 영상 파일이 커도 통째로 읽지 않고 이 크기씩 나눠 쓴다.
 CHUNK_SIZE = 1024 * 1024
 
@@ -104,7 +165,7 @@ def upload_video(
             VALUES ('event_clip', %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (entity_id, str(storage_path), file.filename, duration_sec, retention_until),
+            (entity_id, _relative_storage_path(storage_path), file.filename, duration_sec, retention_until),
         )
         file_id = cur.fetchone()["id"]
 
@@ -193,7 +254,7 @@ def upload_map_image(
             VALUES ('map_image', %s, %s, %s)
             RETURNING id
             """,
-            (str(robot_id), str(storage_path), file.filename),
+            (str(robot_id), _relative_storage_path(storage_path), file.filename),
         )
         file_id = cur.fetchone()["id"]
         conn.commit()
@@ -224,7 +285,9 @@ def write_map_yaml_sidecar(file_id: int, raw_yaml: Dict[str, Any]) -> None:
     if row is None:
         return
 
-    pgm_path = Path(row["storage_path"])
+    pgm_path = resolve_storage_path(row["storage_path"])
+    if pgm_path.is_file():
+        _heal_legacy_path(file_id, row["storage_path"], pgm_path)
     yaml_path = pgm_path.with_suffix(".yaml")
     content = dict(raw_yaml)
     content["image"] = pgm_path.name
@@ -254,9 +317,11 @@ def get_media_file(file_id: int):
     if row is None:
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
 
-    path = Path(row["storage_path"])
+    path = resolve_storage_path(row["storage_path"])
     if not path.is_file():
         raise HTTPException(status_code=404, detail="저장된 파일이 디스크에 없습니다")
+
+    _heal_legacy_path(file_id, row["storage_path"], path)
 
     return FileResponse(
         path,
