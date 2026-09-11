@@ -17,6 +17,7 @@ from .api.v1.media import router as media_router
 from .api.v1.media import video_events_router
 from .api.v1.robots import router as robots_router
 from .schemas import LoginRequest, LoginResponse
+from .services.mqtt_listener import start_mqtt_listener
 from .services.scheduler import run_scheduler_loop
 from .ws import dashboard_ws, robot_ws
 
@@ -47,6 +48,10 @@ INVALID_CREDENTIALS = "아이디 또는 비밀번호가 올바르지 않습니�
 async def start_background_tasks():
     # patrol_schedule을 주기적으로 확인해 시각이 되면 자동으로 순찰을 시작한다.
     asyncio.create_task(run_scheduler_loop())
+    # ESP32 응급 호출 버튼 MQTT 구독 시작 (services/mqtt_listener.py). paho-mqtt는
+    # 자체 스레드로 돌아서 asyncio.create_task가 아니라 현재 실행 중인 이벤트
+    # 루프를 직접 넘겨줘야 한다(콜백 스레드 -> 메인 루프 브리지).
+    start_mqtt_listener(asyncio.get_running_loop())
 
 
 @app.get("/health")
