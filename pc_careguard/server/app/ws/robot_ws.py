@@ -1,5 +1,6 @@
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 import psycopg2.extras
@@ -253,6 +254,23 @@ async def _handle_message(robot_code: str, message: dict) -> None:
             {"type": "patrol_done", "robot_code": robot_code, "run_id": message.get("run_id"), "status": status}
         )
 
+    elif msg_type == "medication_done":
+        # careguard_mission/medication_task.py가 DeliverMedication 액션이 끝날
+        # 때마다(patrol_task.py를 거친 자동 경로든, P3 수동 재안내든) 보낸다 —
+        # patrol_done과 같은 토픽(/careguard/patrol_status)을 relay한 것뿐이라
+        # 여기 patrol_done 바로 아래 둔다. scheduler.py::_medication_tick()이
+        # 'delivered' medication_log를 찾아 "미수령"을 걸러내는데, 지금까지는
+        # 이걸 남기는 프로덕션 코드가 하나도 없었다 — 이 핸들러가 그 첫 writer다.
+        row = _handle_medication_done(
+            robot_code, message.get("schedule_id", 0), message.get("slot_no", 0), message.get("status", "hw_error")
+        )
+        if row is not None:
+            await dashboard_ws.broadcast({
+                "type": "medication_done", "robot_code": robot_code,
+                "schedule_id": message.get("schedule_id"), "slot_no": message.get("slot_no"),
+                "status": message.get("status"),
+            })
+
 
 def _save_slam_result(message: dict) -> Optional[int]:
     """slam_job을 saved로 표시하고 map 행을 새로 만든다.
@@ -407,6 +425,98 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
         )
         active_map = cur.fetchone()
         return active_map["id"] if active_map else None
+
+
+# 로봇이 보내는 DeliverMedication 결과("delivered"/"timeout"/"jammed"/"hw_error"/
+# "cancelled" — careguard_msgs/action/DeliverMedication.action 참고)를
+# medication_log.result CHECK 제약(schema v1: 'delivered'/'missed'/'not_found'/
+# 'error'/'skipped')으로 옮긴다. "timeout"(사람을 못 찾음)은 의미상 not_found가
+# 가장 가깝고, "jammed"/"hw_error"는 둘 다 하드웨어 이상이라 error로 뭉뚱그린다
+# (둘을 구분해야 할 만큼 운영 절차가 달라지면 그때 CHECK 제약을 늘린다).
+# "cancelled"는 사람이 껐거나 순찰이 취소된 경우라 미수령과는 다르므로 skipped.
+_MEDICATION_STATUS_TO_RESULT = {
+    "delivered": "delivered",
+    "timeout": "not_found",
+    "jammed": "error",
+    "hw_error": "error",
+    "cancelled": "skipped",
+}
+
+
+def _handle_medication_done(robot_code: str, schedule_id: int, slot_no: int, status: str) -> Optional[dict]:
+    """medication_log에 결과를 남긴다. scheduler.py::_medication_tick()이 오늘자
+    'delivered' 기록 유무로 "미수령"을 판단하는데, 지금까지 이걸 실제로 남기는
+    프로덕션 코드가 없었다 — 여기가 그 자리다.
+
+    recipient_id는 로봇이 모르므로(액션 goal엔 schedule_id/slot_no만 있음) 여기서
+    schedule_id로 medication_schedule을 거꾸로 조회해 채운다. schedule_id가
+    0(P3 수동 재안내처럼 특정 회차와 안 묶인 즉시 호출)이면 patrol.py::
+    start_patrol_run의 recipient 조회와 같은 방식(로봇에 배정된 대상자 1명)으로
+    대체한다 — 그마저 없으면(대상자 미배정 로봇) 기록을 포기한다(로그만 남김).
+    """
+    result = _MEDICATION_STATUS_TO_RESULT.get(status, "error")
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
+        robot = cur.fetchone()
+        if robot is None:
+            return None
+        robot_id = robot["id"]
+
+        recipient_id = None
+        if schedule_id:
+            cur.execute("SELECT recipient_id FROM medication_schedule WHERE id = %s", (schedule_id,))
+            medication = cur.fetchone()
+            if medication is not None:
+                recipient_id = medication["recipient_id"]
+        if recipient_id is None:
+            cur.execute(
+                "SELECT id FROM recipient WHERE robot_id = %s AND deregistered_at IS NULL LIMIT 1",
+                (robot_id,),
+            )
+            recipient = cur.fetchone()
+            recipient_id = recipient["id"] if recipient else None
+        if recipient_id is None:
+            return None
+
+        # P3 "복약 재안내" 버튼 경로는 schedule_id를 아예 모른 채 온다(mission.py 주석
+        # 참고 — 특정 회차와 안 묶인 즉시 호출이라 downlink_node.py가 0을 그대로 흘려보냄).
+        # 그대로 두면 medication_log.schedule_id가 NULL로 남아, scheduler.py::
+        # _medication_tick()의 미수령 판정 쿼리(WHERE schedule_id = %s)가 절대 이 행을
+        # 못 찾는다 — 재안내로 실제 배출에 성공해도 원래 놓친 스케줄의 MED_MISSED 경보가
+        # 계속 안 풀리는 버그였다. slot_no는 이미 있으니(P3 카드가 화면에 표시 중이던
+        # 그 슬롯) recipient_id+slot_no로 활성 medication_schedule을 역으로 찾아 채운다 —
+        # 대시보드/로봇 쪽을 안 건드리고 서버 안에서만 고칠 수 있는 지점이라 여기서 처리.
+        if not schedule_id and slot_no:
+            cur.execute(
+                """
+                SELECT id FROM medication_schedule
+                WHERE recipient_id = %s AND slot_no = %s AND deregistered_at IS NULL
+                """,
+                (recipient_id, slot_no),
+            )
+            medication = cur.fetchone()
+            if medication is not None:
+                schedule_id = medication["id"]
+
+        cur.execute(
+            """
+            INSERT INTO medication_log (schedule_id, recipient_id, robot_id, slot_no, result, delivered_at, confirmed_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                schedule_id or None, recipient_id, robot_id, slot_no or None, result,
+                # IR 센서로 "회수"를 직접 확인해야만 delivered로 오므로(medication_task.py
+                # _execute 참고 — waiting_retrieval을 통과해야 closing까지 감), 이 결과는
+                # 항상 센서 근거다. 사람이 대시보드에서 수기로 남기는 경로가 생기면 그때
+                # confirmed_by='operator'를 쓰는 자리가 따로 필요하다.
+                datetime.now(timezone.utc) if result == "delivered" else None,
+                "sensor" if result == "delivered" else None,
+            ),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    return row
 
 
 def _update_patrol_run(run_id, **fields) -> None:
