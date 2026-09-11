@@ -353,8 +353,8 @@ void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
 
     if (routeEditMode_) {
         if (idx >= 0) {
-            if (waypoints_[idx].kind != QStringLiteral("patrol")) {
-                emit nonPatrolClickBlocked();
+            if (waypoints_[idx].kind == QStringLiteral("charge")) {
+                emit chargeClickBlocked();
             } else {
                 emit routeWaypointClicked(waypoints_[idx].id);
             }
@@ -643,7 +643,6 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
 
         const bool isCharge = w.kind == QStringLiteral("charge");
         const bool isEmergency = w.kind == QStringLiteral("emergency");
-        const bool isPatrol = !isCharge && !isEmergency;
 
         QColor ring = Tokens::TEXT_SECONDARY;
         QColor fill = Tokens::BG_SURFACE;
@@ -661,20 +660,10 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
                 fill = Tokens::ACCENT_SOFT;
                 textColor = Tokens::ACCENT_HOVER;
             }
-        } else if (isEmergency) {
-            // 긴급 버튼도 charge와 같은 이유로 경로 편집 중엔 흐리게(클릭 불가) 표시하고,
-            // 평소엔 눈에 띄어야 하니 EMERGENCY 상태색(빨강)을 쓴다 — charge의 청록과
-            // 확실히 구분된다.
-            if (routeEditMode_) {
-                ring = Tokens::BORDER_STRONG;
-                fill = Tokens::BG_SUNKEN;
-                textColor = Tokens::TEXT_MUTED;
-            } else {
-                ring = Tokens::EMERGENCY.main;
-                fill = Tokens::EMERGENCY.soft;
-                textColor = Tokens::EMERGENCY.main;
-            }
         } else if (routeEditMode_) {
+            // emergency도 patrol과 똑같이 경로에 포함할 수 있으므로(요청 사양), 편집
+            // 모드에서의 선택/미선택 표시는 kind와 무관하게 patrol과 동일하게 그린다 —
+            // 평소(비편집)의 빨간 "긴급 버튼" 색은 아래 else if(isEmergency)에서만 쓴다.
             if (selected) {
                 ring = Tokens::INFO.main;
                 fill = Tokens::INFO.main;
@@ -684,6 +673,11 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
                 fill = Tokens::BG_SURFACE;
                 textColor = Tokens::TEXT_MUTED;
             }
+        } else if (isEmergency) {
+            // charge와 확실히 구분되도록 EMERGENCY 상태색(빨강)을 쓴다.
+            ring = Tokens::EMERGENCY.main;
+            fill = Tokens::EMERGENCY.soft;
+            textColor = Tokens::EMERGENCY.main;
         } else if (routePreview_.contains(w.id)) {
             ring = Tokens::ACCENT;
             fill = Tokens::BG_SURFACE;
@@ -721,21 +715,24 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
 
         p.setFont(labelFont);
         p.setPen(textColor);
+        // routeEditMode_에서는 kind와 무관하게(charge 제외) 선택 순번이 최우선 —
+        // emergency의 "!"는 편집 모드가 아닐 때만 보인다.
         const QString marker = isCharge ? QStringLiteral("C")
+                                : routeEditMode_ ? (editOrder >= 0 ? QString::number(editOrder + 1) : QString())
                                 : isEmergency ? QStringLiteral("!")
-                                : editOrder >= 0 ? QString::number(editOrder + 1)
-                                                  : QString();
+                                              : QString();
         if (!marker.isEmpty()) p.drawText(QRectF(-r, -r, r * 2, r * 2), Qt::AlignCenter, marker);
 
         p.setFont(captionFont);
-        p.setPen(routeEditMode_ && !selected && isPatrol ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
+        p.setPen(routeEditMode_ && !selected && !isCharge ? Tokens::TEXT_MUTED : Tokens::TEXT_SECONDARY);
         const QString caption = isCharge
             ? (routeEditMode_ ? QStringLiteral("%1 — 클릭 불가 (자동 출발·복귀)").arg(w.name)
                                : QStringLiteral("%1 (초기 위치)").arg(w.name))
+            : routeEditMode_
+            ? (selected ? w.name : QStringLiteral("%1 — 미선택").arg(w.name))
             : isEmergency
-            ? (routeEditMode_ ? QStringLiteral("%1 — 클릭 불가 (즉시 단독 이동)").arg(w.name)
-                               : QStringLiteral("%1 (긴급 버튼)").arg(w.name))
-            : (routeEditMode_ && !selected ? QStringLiteral("%1 — 미선택").arg(w.name) : w.name);
+            ? QStringLiteral("%1 (긴급 버튼)").arg(w.name)
+            : w.name;
         // 원 바로 아래, 가운데 정렬로 딱 붙여서 그린다 (AlignVCenter+큰 박스 조합은
         // 여백이 생겨 원과 이름이 멀어 보였다).
         p.drawText(QRectF(-75, r + 2, 150, 14), Qt::AlignHCenter | Qt::AlignTop, caption);
