@@ -102,7 +102,7 @@ COMMENT ON COLUMN robot.deregistered_at IS '로봇 등록 해제 시간. NULL이
 CREATE TABLE robot_threshold (
     robot_id              INTEGER PRIMARY KEY,
     battery_attention_pct SMALLINT NOT NULL DEFAULT 30,
-    battery_return_pct    SMALLINT NOT NULL DEFAULT 20,
+    battery_return_pct    SMALLINT NOT NULL DEFAULT 28,
     voice_wait_sec        SMALLINT NOT NULL DEFAULT 8,
     reconnect_retry_sec   SMALLINT NOT NULL DEFAULT 30,
     med_missed_wait_min   SMALLINT NOT NULL DEFAULT 10,
