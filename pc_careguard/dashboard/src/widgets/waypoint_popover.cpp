@@ -13,14 +13,16 @@
 
 #include "theme/tokens.h"
 
-WaypointPopover::WaypointPopover(QWidget* parent) : QFrame(parent), isCharging_(false) {
+WaypointPopover::WaypointPopover(QWidget* parent) : QFrame(parent), kind_(QStringLiteral("patrol")) {
     setObjectName("mappingStatusPanel");  // 흰 카드 + 테두리 재사용
     // 주의: 여기서 setFixedWidth()로 즉시 resize()하면 그 시점엔 자식이 하나도 없어
     // 높이가 기본값(작은 값)으로 굳어버리고(WA_Resized), 이후 레이아웃이 실제 내용에
     // 맞춰 다시 키워주지 않아 팝오버가 납작하게 보인다. min/max만 지정하고 실제 크기는
     // 아래에서 자식 구성을 마친 뒤 adjustSize()로 정한다.
-    setMinimumWidth(210);
-    setMaximumWidth(210);
+    // 유형 버튼이 2개("순찰 지점"/"충전 스테이션")에서 3개(+"긴급 버튼")로 늘어나
+    // 210px로는 한 줄에 눌러 담기 좁아 240px로 넓혔다.
+    setMinimumWidth(240);
+    setMaximumWidth(240);
     hide();
 
     auto* shadow = new QGraphicsDropShadowEffect(this);
@@ -51,16 +53,18 @@ WaypointPopover::WaypointPopover(QWidget* parent) : QFrame(parent), isCharging_(
     auto* typeRow = new QHBoxLayout();
     typeRow->setSpacing(4);
     typePatrolBtn_ = new QPushButton(QStringLiteral("순찰 지점"), this);
-    typeChargingBtn_ = new QPushButton(QStringLiteral("충전 스테이션"), this);
-    for (auto* btn : {typePatrolBtn_, typeChargingBtn_}) {
+    typeChargingBtn_ = new QPushButton(QStringLiteral("충전"), this);
+    typeEmergencyBtn_ = new QPushButton(QStringLiteral("긴급 버튼"), this);
+    for (auto* btn : {typePatrolBtn_, typeChargingBtn_, typeEmergencyBtn_}) {
         btn->setObjectName("segBtn");
         btn->setCheckable(true);
         typeRow->addWidget(btn);
     }
     typePatrolBtn_->setProperty("pos", "first");
-    typeChargingBtn_->setProperty("pos", "last");
-    connect(typePatrolBtn_, &QPushButton::clicked, this, [this] { setType(false); });
-    connect(typeChargingBtn_, &QPushButton::clicked, this, [this] { setType(true); });
+    typeEmergencyBtn_->setProperty("pos", "last");
+    connect(typePatrolBtn_, &QPushButton::clicked, this, [this] { setType(QStringLiteral("patrol")); });
+    connect(typeChargingBtn_, &QPushButton::clicked, this, [this] { setType(QStringLiteral("charge")); });
+    connect(typeEmergencyBtn_, &QPushButton::clicked, this, [this] { setType(QStringLiteral("emergency")); });
     layout->addLayout(typeRow);
     layout->addSpacing(5);
 
@@ -129,14 +133,15 @@ WaypointPopover::WaypointPopover(QWidget* parent) : QFrame(parent), isCharging_(
     });
     layout->addWidget(deleteBtn_);
 
-    setType(false);
+    setType(QStringLiteral("patrol"));
     adjustSize();
 }
 
-void WaypointPopover::setType(bool charging) {
-    isCharging_ = charging;
-    typePatrolBtn_->setChecked(!charging);
-    typeChargingBtn_->setChecked(charging);
+void WaypointPopover::setType(const QString& kind) {
+    kind_ = kind;
+    typePatrolBtn_->setChecked(kind == QStringLiteral("patrol"));
+    typeChargingBtn_->setChecked(kind == QStringLiteral("charge"));
+    typeEmergencyBtn_->setChecked(kind == QStringLiteral("emergency"));
 }
 
 void WaypointPopover::setForNewWaypoint(QPointF canvasPos, QPointF meters, qreal yawDeg) {
@@ -147,7 +152,7 @@ void WaypointPopover::setForNewWaypoint(QPointF canvasPos, QPointF meters, qreal
                               .arg(meters.y(), 0, 'f', 1));
     nameEdit_->setText(QString());
     nameEdit_->setFocus();
-    setType(false);
+    setType(QStringLiteral("patrol"));
     // yawDeg는 atan2 결과라 (-180, 180] 범위 — 다이얼/스핀박스는 [0, 359]라 감아준다.
     const int deg = ((static_cast<int>(std::lround(yawDeg)) % 360) + 360) % 360;
     yawSpin_->setValue(deg);
@@ -161,7 +166,7 @@ void WaypointPopover::setForEditWaypoint(const WaypointCanvas::Waypoint& wp) {
     canvasPos_ = wp.pos;
     titleLabel_->setText(QStringLiteral("웨이포인트 편집  %1").arg(wp.id));
     nameEdit_->setText(wp.name);
-    setType(wp.charging);
+    setType(wp.kind);
     // wp.yawDeg는 드래그(atan2)로 잡혔으면 (-180, 180] 범위일 수 있다 — 스핀박스
     // range(0, 359)에 그냥 넣으면 음수가 0으로 clamp돼 버려(감아주지 않고 잘림)
     // 실제 방향과 다르게 보인다. setForNewWaypoint와 같은 방식으로 감아준다.
@@ -206,5 +211,5 @@ void WaypointPopover::emitSave() {
         return;
     }
     hide();
-    emit saveRequested(editingId_, name, isCharging_, yawSpin_->value(), canvasPos_);
+    emit saveRequested(editingId_, name, kind_, yawSpin_->value(), canvasPos_);
 }
