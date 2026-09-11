@@ -1,5 +1,6 @@
 # 2026-09-07 트러블슈팅 — P5 SLAM 매핑 / P6 순찰 실 로봇 연동
 
+> 작성자: 강유나
 > `feature/p5-p6-map-patrol-pages` 브랜치, 실제 LIMO 로봇으로 SLAM 저장·매핑 취소·웨이포인트 이동·순찰 위치 표시를 검증하던 중 나온 문제들의 증상·원인·해결을 정리한 기록.
 > 대상 파일: `robot_careguard_ws/src/careguard_agent/careguard_agent/{downlink_node.py, uplink_node.py}`, `robot_careguard_ws/src/careguard_mission/careguard_mission/{slam_progress_publisher.py, patrol_task.py}`, `robot_careguard_ws/src/careguard_bringup/launch/navigation_diff_launch.py`, `pc_careguard/server/app/ws/{robot_ws.py, dashboard_ws.py}`, `pc_careguard/server/app/api/v1/{map.py, patrol.py}`, `pc_careguard/dashboard/src/{widgets/waypoint_canvas.*, pages/p6_patrol_page.*}`
 

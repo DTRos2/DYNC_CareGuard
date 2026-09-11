@@ -1,5 +1,6 @@
 # 2026-09-06 트러블슈팅 — 시스템 설정 > 계정 관리 페이지
 
+> 작성자: 최치언
 > `feature/p7-settings-page` 브랜치 작업 중 발생한 문제들의 증상·원인·해결을 정리한 기록.
 > 대상 파일: `pc_careguard/dashboard/src/{pages/p7_settings_page.*, dialogs/p7_account_dialog.*, windows/{main.cpp,mainwindow.*}}`, `pc_careguard/server/app/accounts.py`
 
