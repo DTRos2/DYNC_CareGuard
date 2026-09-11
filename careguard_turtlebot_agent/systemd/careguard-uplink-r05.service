@@ -11,6 +11,8 @@ Environment=ROS_DOMAIN_ID=50
 Environment=TURTLEBOT3_MODEL=burger
 Environment=CAREGUARD_ROBOT_CODE=R-05
 Environment=CAREGUARD_SERVER_URL=http://100.107.185.97:8000
+# 카메라가 물리적으로 뒤집혀 마운트되어 있어 소프트웨어(uplink_node.py)에서 상하반전한다.
+Environment=CAREGUARD_CAMERA_FLIP_VERTICAL=1
 ExecStartPre=/bin/sleep 1
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/turtlebot_ws/install/setup.bash && exec ros2 run careguard_turtlebot_agent uplink_node'
 Restart=on-failure
