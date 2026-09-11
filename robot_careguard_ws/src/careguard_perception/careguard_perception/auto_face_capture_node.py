@@ -10,6 +10,11 @@ from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
 
 
+class CaptureComplete(Exception):
+    """max_images에 도달해서 정상 종료할 때 쓰는 신호용 예외."""
+    pass
+
+
 class AutoFaceCaptureNode(Node):
     def __init__(self):
         super().__init__('auto_face_capture_node')
@@ -20,12 +25,17 @@ class AutoFaceCaptureNode(Node):
         self.declare_parameter('save_dir', '/home/wego/careguard_data/face_dataset/')
         self.declare_parameter('capture_interval', 0.7)       # 저장 간격(초)
         self.declare_parameter('val_ratio', 0.2)
+        # 이번 세션에서 몇 장 찍으면 자동 종료할지. 0이면 무제한(기존 동작 그대로).
+        # 촬영 대상자는 화면을 못 보니, 목표 장수+여유분을 넣어두고 노드가
+        # 알아서 멈추게 하는 용도 (예: 목표 11장이면 21로 잡고 나중에 골라내기).
+        self.declare_parameter('max_images', 0)
 
         self.person_label = self.get_parameter('person_label').value
         self.class_id = self.get_parameter('class_id').value
         self.save_dir = self.get_parameter('save_dir').value
         self.interval = self.get_parameter('capture_interval').value
         self.val_ratio = self.get_parameter('val_ratio').value
+        self.max_images = self.get_parameter('max_images').value
 
         for split in ['train', 'val']:
             os.makedirs(f'{self.save_dir}/images/{split}', exist_ok=True)
@@ -37,7 +47,10 @@ class AutoFaceCaptureNode(Node):
         )
 
         self.last_saved_time = self.get_clock().now()
-        self.saved_count = 0
+        # 재시작해도 0번부터 다시 찍지 않도록, 기존 파일 중 가장 큰 번호 다음부터 이어서 저장.
+        # (0번부터 다시 찍으면 이전 세션 파일을 같은 이름으로 덮어써버림)
+        self.saved_count = self._next_start_index()
+        self.session_start_count = self.saved_count
 
         self.sub = self.create_subscription(
             CompressedImage,
@@ -46,9 +59,24 @@ class AutoFaceCaptureNode(Node):
             10
         )
 
+        max_note = f', 이번 세션 목표 {self.max_images}장' if self.max_images else ''
         self.get_logger().info(
-            f'[{self.person_label}] 자동 촬영 시작 (class_id={self.class_id})'
+            f'[{self.person_label}] 자동 촬영 시작 (class_id={self.class_id}, '
+            f'{self.saved_count}번부터 이어서 저장{max_note})'
         )
+
+    def _next_start_index(self):
+        max_idx = -1
+        for split in ['train', 'val']:
+            d = f'{self.save_dir}/images/{split}'
+            if not os.path.isdir(d):
+                continue
+            for fname in os.listdir(d):
+                if fname.startswith(f'{self.person_label}_') and fname.endswith('.jpg'):
+                    stem = fname[len(self.person_label) + 1:-4]
+                    if stem.isdigit():
+                        max_idx = max(max_idx, int(stem))
+        return max_idx + 1
 
     def image_callback(self, msg):
         now = self.get_clock().now()
@@ -98,7 +126,14 @@ class AutoFaceCaptureNode(Node):
 
         self.saved_count += 1
         self.last_saved_time = now
-        self.get_logger().info(f'저장됨: {filename} ({split}) — 총 {self.saved_count}장')
+        session_saved = self.saved_count - self.session_start_count
+        self.get_logger().info(
+            f'저장됨: {filename} ({split}) — 이번 세션 {session_saved}장 (전체 누적 {self.saved_count}장)'
+        )
+
+        if self.max_images and session_saved >= self.max_images:
+            self.get_logger().info(f'목표 {self.max_images}장 도달 — 자동 종료합니다.')
+            raise CaptureComplete()
 
 
 def main(args=None):
@@ -106,7 +141,7 @@ def main(args=None):
     node = AutoFaceCaptureNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, CaptureComplete):
         pass
     node.destroy_node()
     rclpy.shutdown()
