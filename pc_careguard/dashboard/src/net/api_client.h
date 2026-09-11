@@ -376,6 +376,10 @@ public:
     void setAuthToken(const QString& token) { authToken_ = token; }
 
 private:
+    // authToken_이 있으면 Authorization: Bearer 헤더를 붙인다. getJsonArray/postJson/
+    // putJson/sendDelete/uploadMapFile 5곳에서 요청 직전에 호출한다.
+    void applyAuthHeader(QNetworkRequest& request) const;
+
     void getJsonArray(const QString& path, std::function<void(bool, const QByteArray&)> callback);
     void postJson(const QString& path, const QJsonObject& body,
                   std::function<void(bool, const QByteArray&, const QString&)> callback);

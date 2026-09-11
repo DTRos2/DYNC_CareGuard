@@ -26,6 +26,7 @@ class ApiClient;
 class P2EventPage : public QWidget {
     Q_OBJECT
 public:
+    void setAuthToken(const QString& token) { apiClient_->setAuthToken(token); }
     explicit P2EventPage(QWidget* parent = nullptr);
 
     // P3 대상자 카드의 "이벤트 확인" 클릭 진입점. 검색창에 대상자 이름을 채워 그 대상자의
