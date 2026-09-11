@@ -2,13 +2,12 @@
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QAction>
 #include <QImage>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -47,10 +46,6 @@ namespace {
 // 해상도(대개 0.05m/px=20px/m)와 달라 "이동" 목표가 화면에서 클릭한 지점과 실제
 // 로봇이 가는 곳이 어긋나는 원인이었다(2026-09-08 실 로봇 테스트로 확인).
 constexpr qreal kPxPerMeter = 40.0;
-
-// "복약 전달 경로" 체크박스가 켜진 경로의 patrol_route.name 리터럴. "주행 스케줄"
-// 추가 폼이 경로를 이 이름과 비교해 복약 스케줄 콤보를 보일지 판단한다(요청 사양).
-const QString kMedicineRouteName = QStringLiteral("medicine");
 
 // 웨이포인트 목록 카드 — 5줄까지만 보이고 그 이상은 스크롤(요청 사양, 2026-09-10).
 // 한 행의 실제 렌더링 높이 — 실 데이터(웨이포인트 6개)로 스크린샷을 찍어 정확히
@@ -665,10 +660,6 @@ QWidget* P6PatrolPage::buildRouteCard() {
     editLayout->addWidget(nameLabel);
     routeEditNameEdit_ = new QLineEdit(editPage);
     editLayout->addWidget(routeEditNameEdit_);
-
-    routeMedicineCheckbox_ = new QCheckBox(QStringLiteral("복약 전달 경로"), editPage);
-    connect(routeMedicineCheckbox_, &QCheckBox::toggled, this, &P6PatrolPage::onRouteMedicineToggled);
-    editLayout->addWidget(routeMedicineCheckbox_);
     editLayout->addSpacing(5);
 
     auto* orderLabel = new QLabel(QStringLiteral("순서 — 지도에서 순서대로 클릭"), editPage);
@@ -732,13 +723,19 @@ QWidget* P6PatrolPage::buildScheduleCard() {
     routeLabel->setProperty("role", "secondary");
     formLayout->addWidget(routeLabel);
     scheduleRouteCombo_ = new QComboBox(scheduleForm_);
-    connect(scheduleRouteCombo_, &QComboBox::currentTextChanged, this,
-            &P6PatrolPage::onScheduleRouteComboChanged);
     formLayout->addWidget(scheduleRouteCombo_);
     formLayout->addSpacing(5);
 
-    // 경로가 "medicine"(복약 전달 경로)일 때만 나타난다 — onScheduleRouteComboChanged 참고.
-    scheduleMedLabel_ = new QLabel(QStringLiteral("복약 스케줄"), scheduleForm_);
+    // "이 스케줄이 복약 전달용인지" — 예전엔 경로 이름이 "medicine"인지로 판별했는데,
+    // 경로 하나당 여부가 고정돼버려 "같은 경로의 스케줄 중 일부만 복약용" 같은 조합이
+    // 안 됐다. 스케줄(patrol_schedule) 하나하나의 속성으로 옮겼다(요청 사양).
+    scheduleMedicineCheckbox_ = new QCheckBox(QStringLiteral("복약 스케줄"), scheduleForm_);
+    connect(scheduleMedicineCheckbox_, &QCheckBox::toggled, this, &P6PatrolPage::onScheduleMedicineToggled);
+    formLayout->addWidget(scheduleMedicineCheckbox_);
+    formLayout->addSpacing(5);
+
+    // 체크박스가 켜져 있을 때만 나타난다 — onScheduleMedicineToggled 참고.
+    scheduleMedLabel_ = new QLabel(QStringLiteral("복약 스케줄 선택"), scheduleForm_);
     scheduleMedLabel_->setProperty("role", "secondary");
     formLayout->addWidget(scheduleMedLabel_);
     scheduleMedCombo_ = new QComboBox(scheduleForm_);
@@ -1381,14 +1378,6 @@ void P6PatrolPage::enterRouteEditMode(const QString& routeName) {
     routeEditTargetName_ = routeName;
     routeEditSelection_ = routes_.value(routeName);
     routeEditNameEdit_->setText(routeName);
-    // 기존 "medicine" 경로를 다시 열면 체크박스도 그 상태로 맞춰야 하는데,
-    // setChecked가 onRouteMedicineToggled를 그대로 다시 태우면 방금 세팅한
-    // 이름을 자기가 되돌리려 들 수 있어 시그널을 잠깐 막는다.
-    const bool isMedicineRoute = (routeName == kMedicineRouteName);
-    routeMedicineCheckbox_->blockSignals(true);
-    routeMedicineCheckbox_->setChecked(isMedicineRoute);
-    routeMedicineCheckbox_->blockSignals(false);
-    routeEditNameEdit_->setReadOnly(isMedicineRoute);
     canvas_->setRouteEditMode(true);
     canvas_->setRouteEditSelection(routeEditSelection_);
     routeStack_->setCurrentIndex(1);
@@ -1460,17 +1449,6 @@ void P6PatrolPage::exitRouteEditMode(bool save) {
     refreshCanvasPreview();
 }
 
-void P6PatrolPage::onRouteMedicineToggled(bool checked) {
-    if (checked) {
-        routeNameBeforeMedicineCheck_ = routeEditNameEdit_->text();
-        routeEditNameEdit_->setText(kMedicineRouteName);
-        routeEditNameEdit_->setReadOnly(true);
-    } else {
-        routeEditNameEdit_->setReadOnly(false);
-        routeEditNameEdit_->setText(routeNameBeforeMedicineCheck_);
-    }
-}
-
 void P6PatrolPage::handleRouteWaypointClicked(const QString& id) {
     // "편집"(routeOrderList_ 기반) 화면이 지금 열려 있으면 여기서 routes_[currentRoute_]를
     // 직접 토글한다 — routeEditSelection_/rebuildRouteEditList()는 "새 경로"(캔버스
@@ -1503,45 +1481,15 @@ void P6PatrolPage::handleRouteWaypointClicked(const QString& id) {
 }
 
 void P6PatrolPage::startNewRoute() {
-    // 예전엔 QInputDialog::getText 하나로 이름만 받았는데, "복약 전달 경로" 체크박스를
-    // 이름 칸 바로 밑에 두려면(요청 사양) QInputDialog에는 필드를 추가할 수 없어 직접
-    // QDialog를 만든다 — Ok/Cancel 버튼은 QDialogButtonBox 표준 버튼을 그대로 써서
-    // QInputDialog와 같은 플랫폼 아이콘이 그대로 나오게 한다.
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("새 경로"));
-    auto* layout = new QVBoxLayout(&dialog);
-
-    auto* nameLabel = new QLabel(QStringLiteral("경로 이름"), &dialog);
-    layout->addWidget(nameLabel);
-    auto* nameEdit = new QLineEdit(QStringLiteral("새 경로"), &dialog);
-    layout->addWidget(nameEdit);
-
-    auto* medicineCheckbox = new QCheckBox(QStringLiteral("복약 전달 경로"), &dialog);
-    layout->addWidget(medicineCheckbox);
-
-    auto nameBeforeCheck = std::make_shared<QString>(nameEdit->text());
-    connect(medicineCheckbox, &QCheckBox::toggled, &dialog, [nameEdit, nameBeforeCheck](bool checked) {
-        if (checked) {
-            *nameBeforeCheck = nameEdit->text();
-            nameEdit->setText(kMedicineRouteName);
-            nameEdit->setReadOnly(true);
-        } else {
-            nameEdit->setReadOnly(false);
-            nameEdit->setText(*nameBeforeCheck);
-        }
-    });
-
-    auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(buttonBox);
-
-    nameEdit->selectAll();
-    nameEdit->setFocus();
-
-    if (dialog.exec() != QDialog::Accepted) return;
-    const QString name = nameEdit->text().trimmed();
-    if (name.isEmpty()) return;
+    // "복약 전달 경로" 체크박스가 있던 시절엔 QInputDialog에 필드를 추가할 수 없어
+    // 직접 QDialog를 만들었는데, 그 체크박스가 "주행 스케줄" 쪽으로 옮겨가면서
+    // (onScheduleMedicineToggled 참고) 이름 하나만 받으면 되니 다시 QInputDialog로
+    // 되돌린다.
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, QStringLiteral("새 경로"), QStringLiteral("경로 이름"),
+                                                QLineEdit::Normal, QStringLiteral("새 경로"), &ok)
+                              .trimmed();
+    if (!ok || name.isEmpty()) return;
     enterRouteEditMode(name);
 }
 
@@ -1901,6 +1849,14 @@ void P6PatrolPage::toggleScheduleForm(bool show) {
         scheduleRouteCombo_->clear();
         scheduleRouteCombo_->addItems(routes_.keys());
         scheduleRouteCombo_->setEnabled(true);
+        // 새로 여는 폼은 항상 "복약 아님"에서 시작한다 — setChecked(false)가 이미
+        // false인 상태로도 조용히 넘어가므로, 방금 닫은 폼이 체크돼 있었어도 안전하다.
+        scheduleMedicineCheckbox_->blockSignals(true);
+        scheduleMedicineCheckbox_->setChecked(false);
+        scheduleMedicineCheckbox_->blockSignals(false);
+        scheduleMedLabel_->hide();
+        scheduleMedCombo_->hide();
+        currentRobotMedSchedules_.clear();
         scheduleTimeEdit_->setTime(QTime(10, 0));
         for (int i = 0; i < scheduleDayChips_.size(); ++i) scheduleDayChips_[i]->setChecked(i < 5);
         scheduleSaveBtn_->setText(QStringLiteral("저장"));
@@ -1919,30 +1875,36 @@ void P6PatrolPage::startEditSchedule(int index) {
     toggleScheduleForm(true);  // scheduleEditIndex_가 이미 설정돼 있어 위 기본값 리셋은 건너뛴다
 
     const Schedule& sched = schedules_[index];
-    // addItems()가 첫 항목에서 한 번, 아래 setCurrentIndex가 실제 목표 경로로 또 한 번
-    // currentTextChanged를 태운다 — 그대로 두면 onScheduleRouteComboChanged가 엉뚱한
-    // 경로 이름으로 한 번 먼저(불필요한 네트워크 조회) 불렸다가 곧바로 다시 불린다.
-    // 시그널을 막아뒀다가 목표 경로로 정확히 세팅된 뒤 한 번만 직접 호출한다.
-    scheduleRouteCombo_->blockSignals(true);
     scheduleRouteCombo_->clear();
     scheduleRouteCombo_->addItems(routes_.keys());
     const int routeIdx = scheduleRouteCombo_->findText(sched.routeName);
     if (routeIdx >= 0) scheduleRouteCombo_->setCurrentIndex(routeIdx);
-    scheduleRouteCombo_->blockSignals(false);
     // PUT /patrol-schedules는 route_id 변경을 지원하지 않아 편집 중엔 경로를 고정한다.
     scheduleRouteCombo_->setEnabled(false);
     const QTime t = QTime::fromString(sched.timeText, QStringLiteral("HH:mm"));
     scheduleTimeEdit_->setTime(t.isValid() ? t : QTime(10, 0));
     for (int i = 0; i < scheduleDayChips_.size(); ++i) scheduleDayChips_[i]->setChecked(sched.days.contains(i));
     scheduleSaveBtn_->setText(QStringLiteral("수정 저장"));
-    onScheduleRouteComboChanged(scheduleRouteCombo_->currentText());
+
+    // 체크박스가 onScheduleMedicineToggled를 그대로 다시 태우면 scheduleEditIndex_
+    // 기준 매칭 대신 "선택 안 함"부터 다시 조회하게 되므로, 세팅만 하고 로딩은 아래에서
+    // 직접(수정 모드용 matchId를 넘겨) 한 번만 한다.
+    scheduleMedicineCheckbox_->blockSignals(true);
+    scheduleMedicineCheckbox_->setChecked(sched.medicationScheduleId > 0);
+    scheduleMedicineCheckbox_->blockSignals(false);
+    scheduleMedLabel_->setVisible(sched.medicationScheduleId > 0);
+    scheduleMedCombo_->setVisible(sched.medicationScheduleId > 0);
+    if (sched.medicationScheduleId > 0) {
+        loadMedicationSchedulesForCurrentRobot(sched.medicationScheduleId);
+    } else {
+        currentRobotMedSchedules_.clear();
+    }
 }
 
-void P6PatrolPage::onScheduleRouteComboChanged(const QString& routeName) {
-    const bool isMedicineRoute = (routeName == kMedicineRouteName);
-    scheduleMedLabel_->setVisible(isMedicineRoute);
-    scheduleMedCombo_->setVisible(isMedicineRoute);
-    if (!isMedicineRoute) {
+void P6PatrolPage::onScheduleMedicineToggled(bool checked) {
+    scheduleMedLabel_->setVisible(checked);
+    scheduleMedCombo_->setVisible(checked);
+    if (!checked) {
         currentRobotMedSchedules_.clear();
         return;
     }
@@ -2050,12 +2012,12 @@ void P6PatrolPage::saveScheduleFromForm() {
     int daysBitmask = 0;
     for (int d : days) daysBitmask |= (1 << d);
 
-    // 경로가 "medicine"이면 지금 콤보 선택 상태가 그대로 매칭 결과다 — "선택 안 함"이면
-    // 매칭 해제(0/null), 실제 항목이면 그 medication_schedule.id. 추가·수정 둘 다 이 값
-    // 그대로를 저장한다(요청 사양 — patrol_schedule.medication_schedule_id, 경로가 아니라
-    // 이 회차 자체의 속성).
+    // "복약 스케줄" 체크박스가 켜져 있으면 지금 콤보 선택 상태가 그대로 매칭 결과다 —
+    // "선택 안 함"이면 매칭 해제(0/null), 실제 항목이면 그 medication_schedule.id.
+    // 추가·수정 둘 다 이 값 그대로를 저장한다(patrol_schedule.medication_schedule_id,
+    // 경로가 아니라 이 회차 자체의 속성).
     int medicationScheduleId = 0;
-    if (routeName == kMedicineRouteName) {
+    if (scheduleMedicineCheckbox_->isChecked()) {
         const int medIndex = scheduleMedCombo_->currentIndex() - 1;  // 0번 = "선택 안 함"
         if (medIndex >= 0 && medIndex < currentRobotMedSchedules_.size()) {
             medicationScheduleId = currentRobotMedSchedules_[medIndex].id;
@@ -2073,11 +2035,13 @@ void P6PatrolPage::saveScheduleFromForm() {
         toggleScheduleForm(false);
 
         if (serverId > 0) {
+            // medication_schedule_id는 체크박스를 끈 경우(0)에도 항상 같이 보내야
+            // 서버에 남아있던 이전 매칭이 null로 지워진다 — 예전엔 경로 이름이
+            // 고정돼 있어 체크박스를 편집 중 끌 수 없었지만, 지금은 스케줄 하나하나의
+            // 속성이라 편집 중에도 켰다 끌 수 있다.
             QJsonObject fields{{"run_time", timeText + QStringLiteral(":00")}, {"days_of_week", daysBitmask}};
-            if (routeName == kMedicineRouteName) {
-                fields["medication_schedule_id"] =
-                    medicationScheduleId > 0 ? QJsonValue(medicationScheduleId) : QJsonValue();
-            }
+            fields["medication_schedule_id"] =
+                medicationScheduleId > 0 ? QJsonValue(medicationScheduleId) : QJsonValue();
             apiClient_->updatePatrolSchedule(serverId, fields,
                                               [](bool, const ApiClient::PatrolScheduleInfo&, const QString&) {});
         }

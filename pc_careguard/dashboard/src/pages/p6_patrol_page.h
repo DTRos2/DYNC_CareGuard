@@ -74,7 +74,8 @@ private:
         QVector<int> days;  // 0=월 .. 6=일
         bool enabled;
         int serverId = -1;  // POST /patrol-schedules로 만든 서버 행 id. 로컬 전용이면 -1
-        // routeName이 "medicine"일 때, 이 회차가 매칭된 medication_schedule.id. 0=매칭 안 함.
+        // 이 스케줄이 "복약 스케줄" 체크박스로 매칭된 medication_schedule.id.
+        // 0=복약 스케줄이 아니거나 매칭 안 함(경로 이름과는 무관하다).
         int medicationScheduleId = 0;
     };
 
@@ -193,18 +194,17 @@ private:
     // 연다. 저장 시 saveScheduleFromForm()이 scheduleEditIndex_로 추가/수정을 구분한다.
     // 경로(route_id)는 PUT /patrol-schedules가 지원하지 않아 편집 중엔 콤보를 잠근다.
     void startEditSchedule(int index);
-    // "복약 전달 경로" 체크박스 — 켜면 routeEditNameEdit_를 "medicine"으로 고정하고
-    // 잠근다(끄면 체크 전 입력값으로 되돌림). "주행 스케줄" 추가 폼이 경로 이름으로
-    // 복약 경로 여부를 판별하므로(onScheduleRouteComboChanged), 이 리터럴이 곧 그 판별
-    // 기준이 된다.
-    void onRouteMedicineToggled(bool checked);
-    // "주행 스케줄" 폼(추가·수정 둘 다)의 경로 콤보가 바뀌거나(추가) startEditSchedule이
-    // 프로그램적으로 세팅할 때(수정) 뜬다 — 선택된 경로가 "medicine"이면 복약 스케줄
-    // 콤보(scheduleMedCombo_)를 보이고 채운다. 수정 모드일 땐 지금 편집 중인
-    // schedules_[scheduleEditIndex_].medicationScheduleId를 loadMedicationSchedulesForCurrentRobot에
-    // 넘겨 그 id 그대로 자동 선택시킨다(patrol_schedule.medication_schedule_id — 값 비교가
-    // 아니라 id 매칭이라 이름·시각이 같은 다른 스케줄과 혼동될 일이 없다).
-    void onScheduleRouteComboChanged(const QString& routeName);
+    // "주행 스케줄" 폼의 "복약 스케줄" 체크박스 — 추가 폼에서 사용자가 직접 클릭하거나,
+    // startEditSchedule이 프로그램적으로 세팅할 때(수정, schedules_[i].medicationScheduleId>0
+    // 이면 체크된 것으로 간주) 뜬다. 켜면 복약 스케줄 콤보(scheduleMedCombo_)를 보이고
+    // 채운다. 수정 모드일 땐 지금 편집 중인 schedules_[scheduleEditIndex_].medicationScheduleId를
+    // loadMedicationSchedulesForCurrentRobot에 넘겨 그 id 그대로 자동 선택시킨다
+    // (patrol_schedule.medication_schedule_id — 값 비교가 아니라 id 매칭이라 이름·시각이
+    // 같은 다른 스케줄과 혼동될 일이 없다). 예전엔 경로 이름이 "medicine"인지로 복약
+    // 여부를 판별했는데(routeMedicineCheckbox_), 그러면 경로 하나당 복약 여부가
+    // 고정돼버려 "이 경로의 이 시각 스케줄만 복약용" 같은 조합이 안 됐다 — 요청 사양대로
+    // 스케줄(patrol_schedule) 하나하나의 속성으로 옮겼다.
+    void onScheduleMedicineToggled(bool checked);
     // 지금 맵(currentMapIndex_)의 로봇에 배정된 대상자를 찾아 그 복약 스케줄로
     // scheduleMedCombo_를 채운다. GET /recipients로 로봇코드 매칭 -> GET /recipients/{id}로
     // schedules 조회, 둘 다 이미 있는 API를 재사용한다(서버 변경 없음). 콤보 0번은
@@ -326,14 +326,14 @@ private:
     QVector<QString> routeOrderEditSnapshot_;
     QLabel* routeStatsLabel_;
     QLineEdit* routeEditNameEdit_;
-    QCheckBox* routeMedicineCheckbox_;
-    // 체크박스를 켜기 직전 routeEditNameEdit_ 내용 — 끄면 이걸로 되돌린다.
-    QString routeNameBeforeMedicineCheck_;
     QVBoxLayout* routeEditListLayout_;
 
     QVBoxLayout* scheduleListLayout_;
     QWidget* scheduleForm_;
     QComboBox* scheduleRouteCombo_;
+    // "복약 스케줄" 체크박스 — 켜면 scheduleMedLabel_/scheduleMedCombo_가 나타난다
+    // (onScheduleMedicineToggled 참고).
+    QCheckBox* scheduleMedicineCheckbox_;
     QLabel* scheduleMedLabel_;
     QComboBox* scheduleMedCombo_;
     // scheduleMedCombo_의 각 항목이 어느 복약 스케줄인지 — applyMedicationScheduleSelection이
