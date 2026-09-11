@@ -1,0 +1,21 @@
+[Unit]
+Description=CareGuard R-06 camera (camera_ros/libcamera — 대시보드 카메라 미리보기용)
+After=careguard-bringup-r06.service network-online.target
+Wants=network-online.target
+BindsTo=careguard-bringup-r06.service
+
+[Service]
+Type=simple
+User=yeyu
+Environment=ROS_DOMAIN_ID=40
+ExecStartPre=/bin/sleep 1
+# format:=RGB888 필수 — 기본값(파라미터 미지정)이면 이 카메라(imx219)는 NV12 미지원이라
+# NV21로 자동 선택되는데, compressed_image_transport의 JPEG 인코더가 NV21을 인식하지
+# 못해 "Unrecognized image encoding [nv21]" 에러와 함께 매 프레임 빈 CompressedImage만
+# 발행한다(2026-09-11 실제로 확인·재현). RGB888로 지정하면 정상적으로 JPEG 압축된다.
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && exec ros2 launch camera_ros camera.launch.py camera:=0 format:=RGB888'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
