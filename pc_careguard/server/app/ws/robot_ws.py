@@ -368,7 +368,7 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
         )
         thresholds = cur.fetchone()
         attention_pct = thresholds["battery_attention_pct"] if thresholds else 30
-        return_pct = thresholds["battery_return_pct"] if thresholds else 20
+        return_pct = thresholds["battery_return_pct"] if thresholds else 28
 
         if percentage <= return_pct:
             new_state = "return_needed"

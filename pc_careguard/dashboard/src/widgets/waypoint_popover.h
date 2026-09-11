@@ -32,8 +32,9 @@ public:
     QString editingWaypointId() const { return editingId_; }
 
 signals:
-    // id가 비어 있으면 신규 생성.
-    void saveRequested(const QString& id, const QString& name, bool charging, qreal yawDeg,
+    // id가 비어 있으면 신규 생성. kind는 "patrol"/"charge"/"emergency" (WaypointCanvas::
+    // Waypoint::kind와 같은 값).
+    void saveRequested(const QString& id, const QString& name, const QString& kind, qreal yawDeg,
                         QPointF canvasPos);
     void deleteRequested(const QString& id);
     void cancelled();
@@ -45,13 +46,14 @@ signals:
     void cancelDriveRequested(const QString& id);
 
 private:
-    void setType(bool charging);
+    void setType(const QString& kind);
     void emitSave();
 
     QLabel* titleLabel_;
     QLineEdit* nameEdit_;
     QPushButton* typePatrolBtn_;
     QPushButton* typeChargingBtn_;
+    QPushButton* typeEmergencyBtn_;
     YawDial* yawDial_;
     QSpinBox* yawSpin_;
     QPushButton* saveBtn_;
@@ -61,6 +63,6 @@ private:
 
     QString editingId_;
     QPointF canvasPos_;
-    bool isCharging_;
+    QString kind_;
     bool drivingThis_ = false;
 };

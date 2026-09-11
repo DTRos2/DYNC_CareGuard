@@ -57,7 +57,7 @@ public:
         int mapId = 0;
         QString code;  // 예: WP_01, CHARGE
         QString name;
-        QString kind;  // "patrol" / "charge"
+        QString kind;  // "patrol" / "charge" / "emergency"
         double posX = 0.0;  // 미터 단위
         double posY = 0.0;
         double yaw = 0.0;   // 라디안

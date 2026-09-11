@@ -434,7 +434,7 @@ QWidget* P7SettingsPage::buildThresholdTab() {
     robotLayout->setSpacing(8);
     robotLayout->addWidget(sectionLabel(QStringLiteral("로봇 공통")));
     batteryAttentionEdit_ = thresholdField("30");
-    batteryReturnEdit_ = thresholdField("20");
+    batteryReturnEdit_ = thresholdField("28");
     robotLayout->addWidget(thresholdRow(QStringLiteral("배터리 주의 / 복귀"), batteryAttentionEdit_,
                                          QStringLiteral("%"), batteryReturnEdit_));
     voiceWaitEdit_ = thresholdField("8");
@@ -1854,7 +1854,7 @@ void P7SettingsPage::fetchRobotThresholds(int robotDbId) {
         if (statusCode == 200) {
             const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
             batteryAttentionEdit_->setText(QString::number(body.value("battery_attention_pct").toInt(30)));
-            batteryReturnEdit_->setText(QString::number(body.value("battery_return_pct").toInt(20)));
+            batteryReturnEdit_->setText(QString::number(body.value("battery_return_pct").toInt(28)));
             voiceWaitEdit_->setText(QString::number(body.value("voice_wait_sec").toInt(8)));
             reconnectRetryEdit_->setText(QString::number(body.value("reconnect_retry_sec").toInt(30)));
             medMissedWaitEdit_->setText(QString::number(body.value("med_missed_wait_min").toInt(10)));
