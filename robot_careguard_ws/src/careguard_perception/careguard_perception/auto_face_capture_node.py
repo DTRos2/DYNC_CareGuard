@@ -10,11 +10,6 @@ from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
 
 
-class CaptureComplete(Exception):
-    """max_images에 도달해서 정상 종료할 때 쓰는 신호용 예외."""
-    pass
-
-
 class AutoFaceCaptureNode(Node):
     def __init__(self):
         super().__init__('auto_face_capture_node')
@@ -51,6 +46,7 @@ class AutoFaceCaptureNode(Node):
         # (0번부터 다시 찍으면 이전 세션 파일을 같은 이름으로 덮어써버림)
         self.saved_count = self._next_start_index()
         self.session_start_count = self.saved_count
+        self.done = False
 
         self.sub = self.create_subscription(
             CompressedImage,
@@ -133,18 +129,20 @@ class AutoFaceCaptureNode(Node):
 
         if self.max_images and session_saved >= self.max_images:
             self.get_logger().info(f'목표 {self.max_images}장 도달 — 자동 종료합니다.')
-            raise CaptureComplete()
+            self.done = True
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = AutoFaceCaptureNode()
     try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, CaptureComplete):
+        while rclpy.ok() and not node.done:
+            rclpy.spin_once(node, timeout_sec=0.5)
+    except KeyboardInterrupt:
         pass
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
