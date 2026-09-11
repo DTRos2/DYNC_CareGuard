@@ -225,7 +225,7 @@ def test_get_robot_thresholds_returns_defaults_when_never_saved(client, cleanup_
     assert response.status_code == 200
     assert response.json() == {
         "battery_attention_pct": 30,
-        "battery_return_pct": 20,
+        "battery_return_pct": 28,
         "voice_wait_sec": 8,
         "reconnect_retry_sec": 30,
         "med_missed_wait_min": 10,
