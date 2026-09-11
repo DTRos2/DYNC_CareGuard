@@ -10,6 +10,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/RobotState.msg"
   "msg/Waypoint.msg"
   "action/Patrol.action"
+  "action/DeliverMedication.action"
+  "srv/PillboxSlot.srv"
   DEPENDENCIES std_msgs geometry_msgs
 )
 
