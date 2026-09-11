@@ -25,11 +25,13 @@ from ...schemas import (
 )
 from ...ws import robot_ws
 
-def _reject_non_patrol_steps(cur, steps: List[int]) -> None:
-    """patrol_route.steps에는 kind='patrol' 웨이포인트만 넣을 수 있다 — charge(자동
-    출발·복귀)와 emergency(즉시 단독 이동 전용, 경로 불필요)는 DB CHECK로는 막을 수
-    없어(steps는 그냥 정수 배열) 여기서 저장 시점에 막는다. 프런트가 이미 charge를
-    클릭 못 하게 막고 있지만(WaypointCanvas), API를 직접 호출하면 우회할 수 있었다.
+
+def _reject_charge_in_steps(cur, steps: List[int]) -> None:
+    """patrol_route.steps에는 charge(충전 스테이션, 자동 출발·복귀 전용) 웨이포인트를
+    넣을 수 없다 — DB CHECK로는 막을 수 없어(steps는 그냥 정수 배열) 여기서 저장
+    시점에 막는다. 프런트가 이미 charge를 클릭 못 하게 막고 있지만(WaypointCanvas),
+    API를 직접 호출하면 우회할 수 있었다. patrol/emergency는 둘 다 경로에 넣을 수
+    있다(emergency도 순서대로 순찰 도는 지점 중 하나로 취급 — 요청 사양).
     """
     if not steps:
         return
@@ -39,10 +41,10 @@ def _reject_non_patrol_steps(cur, steps: List[int]) -> None:
         kind = kind_by_id.get(step_id)
         if kind is None:
             raise HTTPException(status_code=400, detail=f"존재하지 않는 웨이포인트입니다: {step_id}")
-        if kind != "patrol":
+        if kind == "charge":
             raise HTTPException(
                 status_code=400,
-                detail=f"경로에는 순찰 지점(kind=patrol)만 넣을 수 있습니다: waypoint {step_id}(kind={kind})",
+                detail=f"충전 스테이션은 경로에 넣을 수 없습니다: waypoint {step_id}",
             )
 
 
@@ -82,7 +84,7 @@ def create_patrol_route(payload: PatrolRouteCreate):
         if cur.fetchone():
             raise HTTPException(status_code=409, detail="이미 같은 이름의 경로가 있습니다")
 
-        _reject_non_patrol_steps(cur, payload.steps)
+        _reject_charge_in_steps(cur, payload.steps)
 
         cur.execute(
             """
@@ -112,7 +114,7 @@ def update_patrol_route(route_id: int, payload: PatrolRouteUpdate):
 
     with db.get_connection() as conn, conn.cursor() as cur:
         if "steps" in fields:
-            _reject_non_patrol_steps(cur, fields["steps"])
+            _reject_charge_in_steps(cur, fields["steps"])
             fields["steps"] = psycopg2.extras.Json(fields["steps"])
 
         sets = ", ".join(f"{key} = %s" for key in fields)

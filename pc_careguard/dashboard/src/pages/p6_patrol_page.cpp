@@ -106,11 +106,9 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
             [this] { poseCaptureBtn_->setChecked(false); });
     connect(canvas_, &WaypointCanvas::routeWaypointClicked, this, &P6PatrolPage::handleRouteWaypointClicked);
-    connect(canvas_, &WaypointCanvas::nonPatrolClickBlocked, this, [this] {
-        QMessageBox::information(
-            this, QStringLiteral("경로에 포함할 수 없음"),
-            QStringLiteral("충전 스테이션·긴급 버튼은 경로 순서에 포함할 수 없습니다 "
-                            "(각각 자동 출발·복귀 / 즉시 단독 이동 전용)."));
+    connect(canvas_, &WaypointCanvas::chargeClickBlocked, this, [this] {
+        QMessageBox::information(this, QStringLiteral("충전 스테이션"),
+                                  QStringLiteral("충전 스테이션은 경로 순서에 포함할 수 없습니다 (자동 출발·복귀)."));
     });
     // 창 크기 변경으로 캔버스가 웨이포인트 좌표를 다시 배치했다 — 이 페이지가 들고
     // 있는 사본과 현재 맵 데이터도 같이 갱신해야 다음 편집에서 되돌아가지 않는다.
@@ -592,18 +590,29 @@ QWidget* P6PatrolPage::buildRouteCard() {
     });
     routeSelectRow->addWidget(routeSelectCombo_, /*stretch=*/1);
 
-    // "편집"/"저장" — 편집으로 켜야만 아래 목록을 드래그로 재정렬할 수 있고, 저장으로
-    // 끄면 그 순서를 PUT /patrol-routes/{id}로 서버에 반영한다(toggleRouteOrderEditMode).
+    // "편집" — 누르면 enterRouteOrderEdit()로 진입한다. 편집 중엔 이 버튼이 숨고
+    // 대신 routeOrderSaveBtn_/routeOrderCancelBtn_ 쌍이 보인다(resetRouteOrderEditUi 참고).
     routeOrderEditToggleBtn_ = new QPushButton(QStringLiteral("편집"), normalPage);
     routeOrderEditToggleBtn_->setProperty("variant", "secondary");
-    routeOrderEditToggleBtn_->setCheckable(true);
-    connect(routeOrderEditToggleBtn_, &QPushButton::clicked, this, &P6PatrolPage::toggleRouteOrderEditMode);
+    connect(routeOrderEditToggleBtn_, &QPushButton::clicked, this, &P6PatrolPage::enterRouteOrderEdit);
     routeSelectRow->addWidget(routeOrderEditToggleBtn_);
+
+    routeOrderSaveBtn_ = new QPushButton(QStringLiteral("저장"), normalPage);
+    routeOrderSaveBtn_->setProperty("variant", "primary");
+    connect(routeOrderSaveBtn_, &QPushButton::clicked, this, &P6PatrolPage::saveRouteOrderEdit);
+    routeOrderSaveBtn_->hide();
+    routeSelectRow->addWidget(routeOrderSaveBtn_);
+
+    routeOrderCancelBtn_ = new QPushButton(QStringLiteral("취소"), normalPage);
+    routeOrderCancelBtn_->setProperty("variant", "secondary");
+    connect(routeOrderCancelBtn_, &QPushButton::clicked, this, &P6PatrolPage::cancelRouteOrderEdit);
+    routeOrderCancelBtn_->hide();
+    routeSelectRow->addWidget(routeOrderCancelBtn_);
     normalLayout->addLayout(routeSelectRow);
 
     routeOrderList_ = new QListWidget(normalPage);
     routeOrderList_->setObjectName("routeOrderList");
-    // 기본은 드래그 잠금 — "편집"을 눌러야 재정렬할 수 있다(toggleRouteOrderEditMode).
+    // 기본은 드래그 잠금 — "편집"을 눌러야 재정렬할 수 있다(enterRouteOrderEdit).
     routeOrderList_->setDragDropMode(QAbstractItemView::NoDragDrop);
     routeOrderList_->setFixedHeight(120);
     connect(routeOrderList_->model(), &QAbstractItemModel::rowsMoved, this, [this] {
@@ -615,6 +624,20 @@ QWidget* P6PatrolPage::buildRouteCard() {
         refreshCanvasPreview();
     });
     normalLayout->addWidget(routeOrderList_);
+
+    // 편집 중에만 보이는 "+ 추가" 행 — refreshRouteOrderAddCombo()가 콤보를 채운다.
+    routeOrderAddRow_ = new QWidget(normalPage);
+    auto* addRowLayout = new QHBoxLayout(routeOrderAddRow_);
+    addRowLayout->setContentsMargins(0, 0, 0, 0);
+    addRowLayout->setSpacing(4);
+    routeOrderAddCombo_ = new QComboBox(routeOrderAddRow_);
+    addRowLayout->addWidget(routeOrderAddCombo_, /*stretch=*/1);
+    routeOrderAddBtn_ = new QPushButton(QStringLiteral("+ 추가"), routeOrderAddRow_);
+    routeOrderAddBtn_->setProperty("variant", "secondary");
+    connect(routeOrderAddBtn_, &QPushButton::clicked, this, &P6PatrolPage::addWaypointToCurrentRouteOrder);
+    addRowLayout->addWidget(routeOrderAddBtn_);
+    routeOrderAddRow_->hide();
+    normalLayout->addWidget(routeOrderAddRow_);
 
     routeStatsLabel_ = new QLabel(normalPage);
     routeStatsLabel_->setProperty("role", "muted");
@@ -1146,11 +1169,15 @@ void P6PatrolPage::rebuildRouteSelector() {
 }
 
 void P6PatrolPage::rebuildRouteOrderList() {
-    // 목록을 통째로 다시 그리는 시점엔 편집 중이던 드래그 순서가 이미 routes_에
-    // 반영돼 있거나(rowsMoved) 무의미해진(맵/경로 전환, 웨이포인트 삭제) 상태다 —
-    // 매번 안전하게 "편집 꺼짐"으로 되돌려 다음에 다시 "편집"을 눌러야 재정렬할 수
-    // 있게 한다(서버 저장은 하지 않음 — resetRouteOrderEditUi 참고).
+    // 목록을 통째로 다시 그리는 시점엔 편집 중이던 드래그/추가/삭제가 이미 routes_에
+    // 반영돼 있거나(rowsMoved 등) 무의미해진(맵/경로 전환, 웨이포인트 삭제) 상태다 —
+    // 매번 안전하게 "편집 꺼짐"으로 되돌려 다음에 다시 "편집"을 눌러야 고칠 수 있게
+    // 한다(서버 저장·취소 스냅샷 복원 둘 다 하지 않음 — resetRouteOrderEditUi 참고).
     resetRouteOrderEditUi();
+    populateRouteOrderListItems();
+}
+
+void P6PatrolPage::populateRouteOrderListItems() {
     routeOrderList_->clear();
 
     if (currentRoute_.isEmpty()) {
@@ -1161,8 +1188,31 @@ void P6PatrolPage::rebuildRouteOrderList() {
     for (const QString& id : routes_.value(currentRoute_)) {
         const WaypointCanvas::Waypoint* wp = canvas_->findWaypoint(id);
         const QString text = wp ? QStringLiteral("%1 %2").arg(id, wp->name) : id;
-        auto* listItem = new QListWidgetItem(text, routeOrderList_);
+        auto* listItem = new QListWidgetItem(routeOrderList_);
         listItem->setData(Qt::UserRole, id);
+
+        if (!routeOrderEditing_) {
+            listItem->setText(text);
+            continue;
+        }
+
+        // 편집 중엔 텍스트 대신 "이름 + 삭제(×)" 위젯을 붙인다 — rebuildRouteEditList()의
+        // 삭제 버튼과 같은 패턴(SimpleIcons::x).
+        auto* rowWidget = new QWidget(routeOrderList_);
+        auto* rowLayout = new QHBoxLayout(rowWidget);
+        rowLayout->setContentsMargins(4, 2, 4, 2);
+        rowLayout->setSpacing(4);
+        auto* nameLabel = new QLabel(text, rowWidget);
+        nameLabel->setStyleSheet(QStringLiteral("font-size:11px;"));
+        rowLayout->addWidget(nameLabel, /*stretch=*/1);
+        auto* removeBtn = new QPushButton(SimpleIcons::x(Tokens::TEXT_MUTED, 10), QString(), rowWidget);
+        removeBtn->setProperty("variant", "ghost");
+        removeBtn->setFixedSize(18, 18);
+        removeBtn->setIconSize(QSize(10, 10));
+        connect(removeBtn, &QPushButton::clicked, this, [this, id] { removeWaypointFromCurrentRouteOrder(id); });
+        rowLayout->addWidget(removeBtn);
+        listItem->setSizeHint(rowWidget->sizeHint());
+        routeOrderList_->setItemWidget(listItem, rowWidget);
     }
 
     qreal distM = 0.0;
@@ -1422,6 +1472,27 @@ void P6PatrolPage::onRouteMedicineToggled(bool checked) {
 }
 
 void P6PatrolPage::handleRouteWaypointClicked(const QString& id) {
+    // "편집"(routeOrderList_ 기반) 화면이 지금 열려 있으면 여기서 routes_[currentRoute_]를
+    // 직접 토글한다 — routeEditSelection_/rebuildRouteEditList()는 "새 경로"(캔버스
+    // 클릭으로 처음부터 순서를 고르는 화면) 전용이라 이쪽에서는 건드리지 않는다.
+    // 이 분기가 없으면 canvas_->routeEditMode_가 꺼진 채로 남아(enterRouteOrderEdit
+    // 참고) 마커 클릭이 그냥 편집 팝오버(waypointEditRequested)로 새서 실제 웨이포인트가
+    // 수정돼버리는 문제가 있었다("경로 편집 중에 웨이포인트가 실제로 수정된다" 리포트).
+    if (routeOrderEditing_) {
+        QVector<QString> order = routes_.value(currentRoute_);
+        if (order.contains(id)) {
+            order.removeAll(id);
+        } else {
+            order.append(id);
+        }
+        routes_[currentRoute_] = order;
+        canvas_->setRouteEditSelection(order);
+        populateRouteOrderListItems();
+        refreshRouteOrderAddCombo();
+        refreshCanvasPreview();
+        return;
+    }
+
     if (routeEditSelection_.contains(id)) {
         routeEditSelection_.removeAll(id);
     } else {
@@ -1475,36 +1546,61 @@ void P6PatrolPage::startNewRoute() {
 }
 
 void P6PatrolPage::resetRouteOrderEditUi() {
-    routeOrderEditToggleBtn_->setChecked(false);
+    routeOrderEditing_ = false;
     routeOrderList_->setDragDropMode(QAbstractItemView::NoDragDrop);
-    routeOrderEditToggleBtn_->setText(QStringLiteral("편집"));
-    routeOrderEditToggleBtn_->setProperty("variant", "secondary");
-    routeOrderEditToggleBtn_->style()->unpolish(routeOrderEditToggleBtn_);
-    routeOrderEditToggleBtn_->style()->polish(routeOrderEditToggleBtn_);
+    routeOrderEditToggleBtn_->show();
+    routeOrderSaveBtn_->hide();
+    routeOrderCancelBtn_->hide();
+    routeOrderAddRow_->hide();
+    // "새 경로"(enterRouteEditMode, 캔버스 클릭으로 처음부터 순서를 고르는 화면)가
+    // 지금 따로 열려 있으면(routeEditMode_) 그쪽의 canvas_->setRouteEditMode(true)를
+    // 여기서 되돌리면 안 된다 — 이 함수는 이 리스트 편집(routeOrderEditing_) 쪽만
+    // 책임진다. 예: 새 경로 편집 중 마커 우클릭 삭제(handleCanvasDeleteRequested)가
+    // rebuildRouteOrderList()를 무조건 부르는데, 그때 이 함수가 새 경로 편집까지
+    // 꺼버리면 "삭제 한 번에 편집 화면이 튕긴다" 버그가 생긴다.
+    if (!routeEditMode_) canvas_->setRouteEditMode(false);
 }
 
-void P6PatrolPage::toggleRouteOrderEditMode(bool editing) {
-    if (!editing) {
-        resetRouteOrderEditUi();
-    } else {
-        routeOrderList_->setDragDropMode(QAbstractItemView::InternalMove);
-        routeOrderEditToggleBtn_->setText(QStringLiteral("저장"));
-        routeOrderEditToggleBtn_->setProperty("variant", "primary");
-        routeOrderEditToggleBtn_->style()->unpolish(routeOrderEditToggleBtn_);
-        routeOrderEditToggleBtn_->style()->polish(routeOrderEditToggleBtn_);
-        return;  // 편집 켜는 쪽은 저장할 게 없다 — 드래그 허용만 하면 끝.
-    }
+void P6PatrolPage::enterRouteOrderEdit() {
+    if (currentRoute_.isEmpty()) return;
+    routeOrderEditing_ = true;
+    // 취소 시 드래그·추가·삭제를 전부 무시하고 되돌릴 기준점.
+    routeOrderEditSnapshot_ = routes_.value(currentRoute_);
 
-    // "저장" — 지금 routeOrderList_ 순서를 서버(patrol_route.steps)에 반영한다.
-    // 예전엔 드래그로 순서를 바꿔도(rowsMoved) routes_(화면)에만 반영되고 서버에는
-    // 전혀 안 실렸다 — "경로 순서를 바꿔도 DB에 안 들어간다" 리포트(2026-09-10).
-    if (currentRoute_.isEmpty() || currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    routeOrderList_->setDragDropMode(QAbstractItemView::InternalMove);
+    routeOrderEditToggleBtn_->hide();
+    routeOrderSaveBtn_->show();
+    routeOrderCancelBtn_->show();
+    routeOrderAddRow_->show();
+
+    // 캔버스도 "경로 편집" 모드로 켠다 — 안 켜면 마커 클릭이 routeWaypointClicked가
+    // 아니라 waypointEditRequested로 새서 편집 팝오버가 뜨고, 거기서 저장하면 실제
+    // 웨이포인트가 수정돼버린다("경로 편집 중 웨이포인트가 실제로 수정된다" 리포트).
+    // 켜두면 마커 클릭이 handleRouteWaypointClicked(routeOrderEditing_ 분기)로 가서
+    // 추가/삭제로만 동작하고, charge는 chargeClickBlocked로 막힌다.
+    canvas_->setRouteEditMode(true);
+    canvas_->setRouteEditSelection(routes_.value(currentRoute_));
+
+    refreshRouteOrderAddCombo();
+    populateRouteOrderListItems();  // 편집 중 표시(삭제 버튼)로 다시 그린다.
+}
+
+void P6PatrolPage::saveRouteOrderEdit() {
+    // 지금 routeOrderList_/routes_[currentRoute_] 순서(드래그·추가·삭제가 이미 다
+    // 반영된 상태)를 서버(patrol_route.steps)에 반영한다. 예전엔 드래그로 순서를
+    // 바꿔도(rowsMoved) routes_(화면)에만 반영되고 서버에는 전혀 안 실렸다 —
+    // "경로 순서를 바꿔도 DB에 안 들어간다" 리포트(2026-09-10).
+    if (currentRoute_.isEmpty() || currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) {
+        resetRouteOrderEditUi();
+        populateRouteOrderListItems();
+        return;
+    }
     MapData& current = maps_[currentMapIndex_];
     const int routeId = current.routeServerIds.value(currentRoute_, -1);
     if (routeId <= 0) {
-        QMessageBox::warning(this, QStringLiteral("경로 순서 저장 실패"),
+        QMessageBox::warning(this, QStringLiteral("경로 저장 실패"),
                               QStringLiteral("이 경로가 아직 서버에 저장되지 않았습니다. \"+ 새 경로\"로 다시 "
-                                             "만들어 저장한 뒤 순서를 편집해 주세요."));
+                                             "만들어 저장한 뒤 편집해 주세요."));
         return;
     }
     QJsonArray stepsArray;
@@ -1516,10 +1612,71 @@ void P6PatrolPage::toggleRouteOrderEditMode(bool editing) {
                                    [this](bool ok, const ApiClient::PatrolRouteInfo&, const QString& err) {
                                        if (!ok) {
                                            QMessageBox::warning(
-                                               this, QStringLiteral("경로 순서 저장 실패"),
+                                               this, QStringLiteral("경로 저장 실패"),
                                                err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
                                        }
                                    });
+    resetRouteOrderEditUi();
+    populateRouteOrderListItems();  // 편집 표시(삭제 버튼) 없이 다시 그린다.
+}
+
+void P6PatrolPage::cancelRouteOrderEdit() {
+    // 드래그·추가·삭제를 전부 무시하고 편집 진입 시점 상태로 되돌린다 — 서버 호출 없음.
+    if (!currentRoute_.isEmpty()) {
+        routes_[currentRoute_] = routeOrderEditSnapshot_;
+    }
+    resetRouteOrderEditUi();
+    populateRouteOrderListItems();
+    refreshCanvasPreview();
+}
+
+void P6PatrolPage::addWaypointToCurrentRouteOrder() {
+    if (currentRoute_.isEmpty()) return;
+    const QString id = routeOrderAddCombo_->currentData().toString();
+    if (id.isEmpty()) return;
+
+    QVector<QString> order = routes_.value(currentRoute_);
+    if (order.contains(id)) return;  // 콤보가 이미 제외했어야 하지만 방어적으로.
+    order.append(id);
+    routes_[currentRoute_] = order;
+
+    // handleRouteWaypointClicked(routeOrderEditing_ 분기)와 같은 이유 — 캔버스가 들고
+    // 있는 선택 상태도 같이 갱신해야 지도 위 마커 색·순번 배지가 즉시 바뀐다. 이걸
+    // 빠뜨리면 리스트/콤보는 바뀌는데 지도는 그대로라 "추가/삭제가 지도에 안 보인다"
+    // 는 문제가 생긴다(2026-09-11 리포트).
+    canvas_->setRouteEditSelection(order);
+    populateRouteOrderListItems();
+    refreshRouteOrderAddCombo();  // 방금 추가한 항목을 후보에서 뺀다.
+    refreshCanvasPreview();
+}
+
+void P6PatrolPage::removeWaypointFromCurrentRouteOrder(const QString& id) {
+    if (currentRoute_.isEmpty()) return;
+    QVector<QString> order = routes_.value(currentRoute_);
+    order.removeAll(id);
+    routes_[currentRoute_] = order;
+
+    // addWaypointToCurrentRouteOrder와 같은 이유 — 캔버스 선택 상태 동기화.
+    canvas_->setRouteEditSelection(order);
+    populateRouteOrderListItems();
+    refreshRouteOrderAddCombo();  // 방금 뺀 항목을 다시 추가 후보에 올린다.
+    refreshCanvasPreview();
+}
+
+void P6PatrolPage::refreshRouteOrderAddCombo() {
+    routeOrderAddCombo_->clear();
+    if (!currentRoute_.isEmpty()) {
+        const QVector<QString> inRoute = routes_.value(currentRoute_);
+        for (const WaypointCanvas::Waypoint& w : waypoints_) {
+            // charge(충전 스테이션)는 자동 출발·복귀 전용이라 경로에 못 넣는다
+            // (server/app/api/v1/patrol.py::_reject_charge_in_steps와 같은 규칙).
+            // patrol/emergency는 둘 다 후보 — emergency도 patrol처럼 경로에 넣을 수 있다.
+            if (w.kind == QStringLiteral("charge")) continue;
+            if (inRoute.contains(w.id)) continue;
+            routeOrderAddCombo_->addItem(QStringLiteral("%1 %2").arg(w.id, w.name), w.id);
+        }
+    }
+    routeOrderAddBtn_->setEnabled(routeOrderAddCombo_->count() > 0);
 }
 
 void P6PatrolPage::deleteCurrentRoute() {

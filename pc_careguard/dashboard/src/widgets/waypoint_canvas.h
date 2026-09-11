@@ -19,9 +19,9 @@ class CameraLiveView;
 // 드래그 없이 클릭하면 편집 팝오버(WaypointPopover의 "경로 이동" 버튼이 실제
 // 주행 요청을 담당한다 — 이 캔버스 자신은 더 이상 클릭만으로 주행을 요청하지
 // 않는다)는 addWaypointMode()와 무관하게 항상 가능하다. 우클릭으로 삭제. 경로
-// 편집 모드에서는 클릭 순서대로 웨이포인트를 골라 경로를 구성한다(충전 스테이션·
-// 긴급 버튼은 클릭 불가 — 둘 다 경로 순서에 포함되지 않는다). 마우스 휠로
-// 확대/축소, 휠 버튼(가운데 클릭) 드래그로 화면 이동,
+// 편집 모드에서는 클릭 순서대로 웨이포인트를 골라 경로를 구성한다(충전 스테이션은
+// 클릭 불가 — 자동 출발·복귀 전용이라 경로 순서와 무관하다. 긴급 버튼은 patrol과
+// 동일하게 경로에 포함할 수 있다). 마우스 휠로 확대/축소, 휠 버튼(가운데 클릭) 드래그로 화면 이동,
 // 마커 밖 더블클릭으로 보기 초기화.
 class WaypointCanvas : public QFrame {
     Q_OBJECT
@@ -163,9 +163,10 @@ signals:
     // 떨림으로 방향이 바뀌지 않도록).
     void waypointMoved(const QString& id, QPointF newPos, qreal headingDeg);
     void routeWaypointClicked(const QString& id);
-    // 경로 편집 모드에서 kind != "patrol"인 마커(충전 스테이션·긴급 버튼)를 클릭했다 —
-    // 둘 다 경로 순서 개념과 무관해(자동 출발·복귀 / 즉시 단독 이동) 경로에 넣을 수 없다.
-    void nonPatrolClickBlocked();
+    // 경로 편집 모드에서 charge(충전 스테이션) 마커를 클릭했다 — 자동 출발·복귀
+    // 전용이라 경로 순서에 넣을 수 없다. emergency는 patrol과 동일하게 경로에
+    // 넣을 수 있어 여기서 막지 않는다(요청 사양).
+    void chargeClickBlocked();
     // 창 크기 변경으로 웨이포인트/로봇 위치를 지도에 맞춰 다시 배치했다 — 호출자가
     // 들고 있는 사본(P6PatrolPage::waypoints_)도 waypoints()로 다시 읽어 동기화해야 한다.
     void viewRescaled();
