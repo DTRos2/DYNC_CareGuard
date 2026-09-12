@@ -123,32 +123,12 @@ R-06(yeyu)은 실제로 다른 공유기에 있어서 Tailscale이 필요했지�
 
 ---
 
-## 5. (미해결) `R-06` 재등록 테스트 중 모델이 `turtlebot`→`limo`로 잘못 등록됨
+## 5. (해결) `R-06` 재등록 테스트 중 모델이 `turtlebot`→`limo`로 잘못 등록됨
 
 로봇 삭제 후 재등록이 되는지 대시보드 UI로 직접 테스트하는 과정에서, `R-06`(실제로는 `yeyu` 터틀봇, IP `100.110.210.121`)이 모델 `limo`로 재등록된 채 남아있는 게 발견됨. 연결(WebSocket) 자체는 `robot_code` 문자열만으로 식별되므로 온라인 상태나 데이터 수신에는 지장이 없지만, 대시보드에 표시되는 로봇 종류가 실제와 다르다.
 
-**현재 상태**: 코드 문제가 아니라 등록 화면에서 모델을 잘못 고른 사람 실수라, 대시보드 "로봇 관리"에서 `R-06`의 모델을 `turtlebot`으로 수정하면 해결된다. 이 세션에서는 자동으로 고치지 않고 기록만 남김.
+**현재 상태**: db 수정
 
 ---
 
-## 6. (미해결) 서버 `pytest`가 `conftest.py` 로드 단계에서 바로 실패
 
-복약 미수령 스케줄러(`_medication_tick`) 테스트를 작성하고 돌리려다 발견. 이번 세션에서 작성한 코드와는 무관한 기존 환경 문제로 보인다.
-
-**증상**
-
-```
-ImportError while loading conftest '.../tests/conftest.py'.
-tests/conftest.py:2: in <module>
-    from fastapi.testclient import TestClient
-.venv/lib/python3.10/site-packages/starlette/testclient.py:41: in <module>
-    raise RuntimeError(...)
-RuntimeError: The starlette.testclient module requires the httpx2 package to be installed.
-```
-
-**진단 과정**
-
-- 서버 venv에 설치된 버전 확인: `starlette==1.6.0`, `fastapi==0.141.1` — `requirements.txt`에 버전이 고정돼 있지 않아(`fastapi`, `starlette` 핀 없음) 그때그때 최신 버전이 깔리는 구조.
-- 이 `starlette` 버전이 테스트 클라이언트에 `httpx2`라는 패키지를 요구하는데, 이 프로젝트 의존성 목록엔 없음.
-
-**현재 상태**: 원인 파악만 하고 고치지 않음 — 이번 세션 작업(복약 스케줄러)은 pytest를 거치지 않고 실제 DB에 대고 직접 스크립트로 실행해 검증하는 방식으로 우회했다(`tests/test_scheduler_medication.py`는 작성해뒀지만 지금 이 환경에선 실행 확인을 못 한 상태). 나중에 `requirements.txt`에 `fastapi`/`starlette` 버전을 고정하거나 `httpx2` 의존성을 추가하는 식으로 정리가 필요하다.
