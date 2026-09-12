@@ -44,7 +44,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     body->addWidget(buildSidebar());
 
     pageStack_ = new QStackedWidget(central);
-    pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
+    auto* overviewPage = new P1OverviewPage(pageStack_);
+    pageStack_->addWidget(overviewPage);                     // idx 0
     auto* eventPage = new P2EventPage(pageStack_);
     pageStack_->addWidget(eventPage);                        // idx 1
     auto* recipientPage = new P3RecipientPage(pageStack_);
@@ -91,6 +92,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             [this, eventPage](const QString& eventUid) {
                 switchToPage(1);
                 eventPage->openEventByUid(eventUid);
+            });
+
+    // P1 로봇 상세 모달의 "이벤트로 이동" → P2로 전환하고 그 이벤트의 상세 모달을 바로 연다.
+    connect(overviewPage, &P1OverviewPage::eventNavigationRequested, this,
+            [this, eventPage](const QString& eventCode) {
+                switchToPage(1);
+                eventPage->openEventByUid(eventCode);
             });
 
     // 반대 방향 — P2 이벤트 상세 모달의 "사유 입력 후 열람" → 페이지 전환 없이 그 자리에
