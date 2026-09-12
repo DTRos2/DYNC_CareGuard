@@ -10,7 +10,9 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QDateEdit;
 class QEvent;
+class QJsonObject;
 class LiveSearchLineEdit;
+class WsClient;
 
 // P8 로그 조회 — 사용자 로그 / 임계값·알림 로그 / 경로순찰 로그 3탭.
 // 원래는 P7SettingsPage 안의 탭 3개였으나, 2026-09-11 사이드바 개편으로 "설정" 그룹
@@ -84,6 +86,14 @@ private:
     void fetchPatrolRunLog();  // GET /patrol-runs/log?start=&end=&q=
     void handlePatrolRunLogReply(QNetworkReply* reply);
     void refreshPatrolRunTable();
+
+    // 2026-09-12 추가 — 세 탭 다 원래는 페이지를 열거나 필터를 바꿀 때만 다시 불렀다
+    // (진짜 "실시간"은 아니었음). /ws/dashboard의 audit_log_created/system_event_created/
+    // patrol_run_created(및 이미 있던 patrol_progress/patrol_done)를 받으면 해당 탭의
+    // fetch*Log()를 다시 불러 지금 적용 중인 필터 그대로 최신 상태로 갱신한다.
+    void handleWsMessage(const QJsonObject& message);
+
+    WsClient* wsClient_ = nullptr;
 
     QTableWidget* auditTable_ = nullptr;
     QDateEdit* auditStartDateEdit_ = nullptr;

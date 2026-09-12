@@ -5,7 +5,9 @@ from datetime import datetime, time as time_cls
 from zoneinfo import ZoneInfo
 
 from ..core import db
+from ..api.v1.event import EVENT_TYPE_LABELS
 from ..api.v1.patrol import start_patrol_run
+from ..ws import dashboard_ws
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -113,7 +115,7 @@ async def _medication_tick() -> None:
         cur.execute(
             """
             SELECT ms.id AS schedule_id, ms.recipient_id, ms.slot_no, ms.drug_name, ms.dose_time,
-                   rc.robot_id, rb.code AS robot_code,
+                   rc.robot_id, rc.name AS recipient_name, rb.code AS robot_code,
                    COALESCE(rt.med_missed_wait_min, 10) AS wait_min,
                    COALESCE(rt.med_reannounce_count, 2) AS reannounce_count
             FROM medication_schedule ms
@@ -130,6 +132,12 @@ async def _medication_tick() -> None:
         due = [s for s in schedules if _med_is_due(s["dose_time"], now_time, s["wait_min"])]
         if not due:
             return
+
+        # P1 통합관제 "실시간 알림"이 이 함수가 만드는 care_event를 새로고침 없이
+        # 바로 보게 하려고 broadcast한다(2026-09-12 추가) — DB 커밋 전에 보내면 커밋이
+        # 실패했을 때 있지도 않은 이벤트를 대시보드가 먼저 알게 되므로, 커밋 뒤에
+        # 한꺼번에 보낸다.
+        created_events = []
 
         for s in due:
             cur.execute(
@@ -160,15 +168,16 @@ async def _medication_tick() -> None:
 
             missed_count = len(missed_logs) + 1
             event_uid = f"EV-{s['robot_code']}-{now:%y%m%d}-{uuid.uuid4().hex[:8]}"
+            summary = f"{s['drug_name']} 복약 미수령 ({missed_count}/{s['reannounce_count']}회 경보)"
             cur.execute(
                 """
                 INSERT INTO care_event (event_uid, recipient_id, robot_id, trigger_path, event_type,
                     severity, summary, evidence, occurred_at)
                 VALUES (%s, %s, %s, 'SYS', 'MED_MISSED', 'attention', %s, %s, NOW())
+                RETURNING occurred_at
                 """,
                 (
-                    event_uid, s["recipient_id"], s["robot_id"],
-                    f"{s['drug_name']} 복약 미수령 ({missed_count}/{s['reannounce_count']}회 경보)",
+                    event_uid, s["recipient_id"], s["robot_id"], summary,
                     json.dumps({
                         "schedule_id": s["schedule_id"],
                         "slot_no": s["slot_no"],
@@ -177,7 +186,23 @@ async def _medication_tick() -> None:
                     }),
                 ),
             )
+            occurred_at = cur.fetchone()["occurred_at"]
+            created_events.append({
+                "type": "event_created",
+                "event_uid": event_uid,
+                "severity": "attention",
+                "event_type": "MED_MISSED",
+                "event_type_label": EVENT_TYPE_LABELS["MED_MISSED"],
+                "summary": summary,
+                "occurred_at": occurred_at.isoformat(),
+                "resolved": False,
+                "robot_code": s["robot_code"],
+                "recipient_name": s["recipient_name"],
+            })
         conn.commit()
+
+    for event in created_events:
+        await dashboard_ws.broadcast(event)
 
 
 def _med_is_due(dose_time: time_cls, now_time: time_cls, wait_min: int) -> bool:

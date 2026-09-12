@@ -31,12 +31,21 @@ republish 노드 없이 자동으로 같이 발행해준다 — 그래서 LIMO�
 30Hz 발행을 확인했다(2026-09-11). camera_ros 노드 자체를 띄우는 건 이 파일이 아니라
 로봇 bringup(systemd) 쪽 책임이다.
 
-카메라 상하반전(CAREGUARD_CAMERA_FLIP_VERTICAL=1)도 2026-09-11에 추가했다 — R-05
-(aurix)는 카메라가 물리적으로 뒤집혀 마운트돼 있는데, 이 로봇의 libcamera 버전(0.1)은
+카메라 상하반전(CAREGUARD_CAMERA_FLIP_VERTICAL=1)도 2026-09-11에 추가했다 — R-05/R-06
+둘 다 카메라가 물리적으로 뒤집혀 마운트돼 있는데, 이 로봇들의 libcamera 버전(0.1)은
 camera_ros의 `orientation` 파라미터를 지원하지 않아("parameter 'orientation' not
 supported on libcamera 0.1", 실제로 확인) 드라이버 단에서 회전을 못 시킨다. 그래서
-여기(소프트웨어)에서 cv2로 디코딩 → 뒤집기 → 재인코딩한다 — R-06/LIMO는 이 환경변수를
-안 켜므로 이 로직을 아예 안 타고(패스스루) 완전히 무관하다.
+여기(소프트웨어)에서 뒤집는다 — R-06/LIMO는 이 환경변수를 안 켜므로 아래 로직을 아예
+안 타고(패스스루) 완전히 무관하다.
+
+뒤집기가 필요한 로봇(R-05/R-06)은 압축된 `/camera/image_raw/compressed`를 구독해
+JPEG 디코딩 -> 뒤집기 -> 재인코딩한다. 압축 해제+재압축이라 코덱을 두 번 돌리는
+셈이지만, 대신 비압축 원본 `/camera/image_raw`를 구독하는 방식은 실제로 더 느렸다
+— 640x480 RGB888 비압축 프레임은 30Hz로 초당 약 27MB인데, 우리는 그 중 5개만
+쓰고 나머지는 버려도 rclpy가 30Hz 전부를 매번 역직렬화해야 해서(DDS 수신 자체의
+비용), 그 비용이 JPEG 디코딩 비용보다 더 컸다(2026-09-11 실측: uplink_node CPU가
+33~40% -> 44~50%로 오히려 증가). 그래서 원본 구독 시도는 되돌리고 압축 토픽 +
+디코딩 방식을 유지한다 — "압축 해제를 없애서 가볍게"라는 직관이 이번엔 틀렸다.
 """
 import asyncio
 import base64
@@ -59,9 +68,12 @@ from . import ws_config
 
 DEFAULT_RECONNECT_DELAY_SEC = 3.0
 
-# 카메라 라이브 미리보기 전송 간격 — careguard_agent/uplink_node.py(LIMO)와 동일한 값.
-# 대시보드 우측 상단 작은 박스용이라 원본 프레임레이트(30Hz) 그대로 보낼 필요는 없다.
-CAMERA_SEND_INTERVAL_SEC = 0.2
+# 카메라 라이브 미리보기 전송 간격. 대시보드 우측 상단 작은 박스용이라 원본
+# 프레임레이트(30Hz) 그대로 보낼 필요는 없다. 온라인/오프라인 흔들림 조사 중
+# uplink_node CPU를 더 줄이기 위해 2026-09-12에 5Hz(0.2s) -> 3Hz(약 0.33s)로
+# 낮췄다 — 압축 프레임 구독 자체는 30Hz 그대로 들어와 역직렬화 비용은 그대로지만,
+# 디코딩(뒤집기 로봇만)·재인코딩·base64 인코딩·전송 비용은 이 값에 비례해 줄어든다.
+CAMERA_SEND_INTERVAL_SEC = 1.0 / 3.0
 
 # 이 로봇의 카메라가 물리적으로 뒤집혀 마운트된 경우에만(R-05) systemd Environment로 켠다.
 CAMERA_FLIP_VERTICAL = os.environ.get('CAREGUARD_CAMERA_FLIP_VERTICAL', '0') == '1'

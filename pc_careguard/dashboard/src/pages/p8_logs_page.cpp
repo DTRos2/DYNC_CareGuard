@@ -23,6 +23,7 @@
 #include <QUrlQuery>
 #include <QVBoxLayout>
 
+#include "net/ws_client.h"
 #include "theme/calendar_style.h"
 #include "theme/tokens.h"
 #include "widgets/careguard_date_edit.h"
@@ -85,6 +86,26 @@ P8LogsPage::P8LogsPage(QWidget* parent) : QWidget(parent) {
     fetchAuditLog();
     fetchSystemEventLog();
     fetchPatrolRunLog();
+
+    wsClient_ = new WsClient(this);
+    connect(wsClient_, &WsClient::messageReceived, this, &P8LogsPage::handleWsMessage);
+    wsClient_->connectToServer();
+}
+
+void P8LogsPage::handleWsMessage(const QJsonObject& message) {
+    const QString type = message.value(QStringLiteral("type")).toString();
+    // 지금 적용 중인 기간·검색 필터를 그대로 쓴 채로 다시 불러온다 — 각 fetch*Log()가
+    // 이미 그 필터를 querystring에 실어 보내므로, 여기서는 "다시 부르기"만 하면 된다.
+    // 새 항목이 지금 필터 범위 밖(예: 어제 날짜로 보고 있는데 방금 생긴 오늘 이벤트)이면
+    // 화면엔 안 나타나는데, 그건 필터가 의도한 정상 동작이다.
+    if (type == QStringLiteral("audit_log_created")) {
+        fetchAuditLog();
+    } else if (type == QStringLiteral("system_event_created")) {
+        fetchSystemEventLog();
+    } else if (type == QStringLiteral("patrol_run_created") || type == QStringLiteral("patrol_progress") ||
+               type == QStringLiteral("patrol_done")) {
+        fetchPatrolRunLog();
+    }
 }
 
 QWidget* P8LogsPage::buildAuditTab() {

@@ -23,7 +23,7 @@ from ...schemas import (
     SetInitialPoseRequest,
     ShutdownRobotRequest,
 )
-from ...ws import robot_ws
+from ...ws import dashboard_ws, robot_ws
 
 
 def _reject_charge_in_steps(cur, steps: List[int]) -> None:
@@ -314,6 +314,11 @@ async def start_patrol_run(
         )
         row = cur.fetchone()
         conn.commit()
+
+    # P8 통합 로그의 "순찰 기록" 탭이 새로고침 없이도 방금 시작된 실행을 바로 보게 한다
+    # (2026-09-12 추가) — patrol_progress/patrol_done은 이미 broadcast되고 있었지만
+    # "시작" 시점 자체를 알리는 메시지는 없었다.
+    await dashboard_ws.broadcast({"type": "patrol_run_created"})
 
     connected = await robot_ws.send_command(
         robot["code"],
