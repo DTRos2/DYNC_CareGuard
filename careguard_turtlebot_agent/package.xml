@@ -10,6 +10,9 @@
   <depend>rclpy</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
+  <!-- 카메라 상하반전(CAREGUARD_CAMERA_FLIP_VERTICAL=1)용 — uplink_node.py 참고 -->
+  <depend>python3-opencv</depend>
+  <depend>python3-numpy</depend>
 
   <test_depend>python3-pytest</test_depend>
 

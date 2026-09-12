@@ -74,7 +74,8 @@ private:
         QVector<int> days;  // 0=월 .. 6=일
         bool enabled;
         int serverId = -1;  // POST /patrol-schedules로 만든 서버 행 id. 로컬 전용이면 -1
-        // routeName이 "medicine"일 때, 이 회차가 매칭된 medication_schedule.id. 0=매칭 안 함.
+        // 이 스케줄이 "복약 스케줄" 체크박스로 매칭된 medication_schedule.id.
+        // 0=복약 스케줄이 아니거나 매칭 안 함(경로 이름과는 무관하다).
         int medicationScheduleId = 0;
     };
 
@@ -122,19 +123,36 @@ private:
     // "칩" 버튼 행이었다(콤보박스로 통일, 2026-09-10).
     void rebuildRouteSelector();
     void rebuildRouteOrderList();
+    // rebuildRouteOrderList()가 "편집 상태 초기화 + 목록 다시 그리기"를 한 번에 하던
+    // 것에서, 목록을 다시 그리는 부분만 떼어낸 것 — 추가/삭제(addWaypointToCurrentRouteOrder/
+    // removeWaypointFromCurrentRouteOrder)는 편집 상태를 유지한 채로 목록만 다시
+    // 그려야 하므로(resetRouteOrderEditUi를 부르면 편집 모드가 꺼져버린다) 이 함수를
+    // 직접 쓴다. routeOrderEditing_이 true면 각 행에 삭제 버튼을 붙인다.
+    void populateRouteOrderListItems();
     void rebuildRouteEditList();
     void rebuildScheduleList();
     void refreshCanvasPreview();
-    // routeOrderEditToggleBtn_("편집"/"저장") 클릭 — 편집으로 켜면 routeOrderList_의
-    // 드래그 재정렬을 허용하고, 저장으로 끄면 드래그를 다시 막고 지금 순서를
-    // PUT /patrol-routes/{id}로 서버에 반영한다. 예전엔 드래그가 항상 가능했지만
-    // 순서가 바뀌어도 화면(routes_)에만 반영되고 서버(patrol_route.steps)에는 전혀
-    // 안 실렸다 — "경로 순서를 바꿔도 DB에 안 들어간다" 리포트(2026-09-10).
-    void toggleRouteOrderEditMode(bool editing);
-    // 버튼·드래그 잠금 상태만 "편집 꺼짐"으로 되돌린다(서버 저장 없음) — 경로를
-    // 바꾸거나(routeSelectCombo_) 목록을 다시 그릴 때(rebuildRouteOrderList) 쓴다.
-    // toggleRouteOrderEditMode(false)를 그대로 쓰면 지금 막 전환된 새 경로 기준으로
-    // "저장"이 실행돼버린다 — 그건 사용자가 요청한 적 없는 동작이라 반드시 이걸 쓴다.
+    // "편집" 클릭 — 지금 routes_[currentRoute_]를 routeOrderEditSnapshot_에 스냅샷하고
+    // (취소용), 드래그 재정렬을 허용하고, 추가용 콤보(routeOrderAddCombo_)를 채우고,
+    // 버튼을 편집(저장/취소 표시)으로 전환한다.
+    void enterRouteOrderEdit();
+    // "저장" 클릭 — 지금 routes_[currentRoute_](드래그 재정렬·추가·삭제가 이미 다
+    // 반영된 상태) 순서를 PUT /patrol-routes/{id}로 서버에 반영하고 편집 UI를 끈다.
+    void saveRouteOrderEdit();
+    // "취소" 클릭 — routes_[currentRoute_]를 routeOrderEditSnapshot_으로 되돌리고
+    // (드래그·추가·삭제를 전부 무시) 서버 호출 없이 편집 UI를 끈다.
+    void cancelRouteOrderEdit();
+    // 편집 중 "+ 추가" — routeOrderAddCombo_에서 고른 웨이포인트를 routes_[currentRoute_]
+    // 끝에 추가한다. charge kind는애초에 콤보에 없다(refreshRouteOrderAddCombo 참고).
+    void addWaypointToCurrentRouteOrder();
+    // 편집 중 각 행의 삭제(×) 버튼 — routes_[currentRoute_]에서 이 id를 제거한다.
+    void removeWaypointFromCurrentRouteOrder(const QString& id);
+    // routeOrderAddCombo_를 "현재 맵의 patrol/emergency 웨이포인트 중 이 경로에 아직
+    // 없는 것"으로 채운다 — 편집 진입 시, 그리고 추가/삭제로 그 집합이 바뀔 때마다 부른다.
+    void refreshRouteOrderAddCombo();
+    // 버튼·드래그 잠금 상태만 "편집 꺼짐"으로 되돌린다(서버 반영 여부는 호출자가 이미
+    // 결정한 뒤다) — 경로를 바꾸거나(routeSelectCombo_) 목록을 다시 그릴 때
+    // (rebuildRouteOrderList) 쓴다.
     void resetRouteOrderEditUi();
 
     QString nextWaypointId() const;
@@ -153,7 +171,7 @@ private:
     void movePopoverNear(const QPoint& anchor);
     void handleCanvasDeleteRequested(const QString& id);
     void handleCanvasMoved(const QString& id, QPointF pos, qreal headingDeg);
-    void handlePopoverSave(const QString& id, const QString& name, bool charging, qreal yaw, QPointF pos);
+    void handlePopoverSave(const QString& id, const QString& name, const QString& kind, qreal yaw, QPointF pos);
 
     void enterRouteEditMode(const QString& routeName);
     void exitRouteEditMode(bool save);
@@ -176,18 +194,17 @@ private:
     // 연다. 저장 시 saveScheduleFromForm()이 scheduleEditIndex_로 추가/수정을 구분한다.
     // 경로(route_id)는 PUT /patrol-schedules가 지원하지 않아 편집 중엔 콤보를 잠근다.
     void startEditSchedule(int index);
-    // "복약 전달 경로" 체크박스 — 켜면 routeEditNameEdit_를 "medicine"으로 고정하고
-    // 잠근다(끄면 체크 전 입력값으로 되돌림). "주행 스케줄" 추가 폼이 경로 이름으로
-    // 복약 경로 여부를 판별하므로(onScheduleRouteComboChanged), 이 리터럴이 곧 그 판별
-    // 기준이 된다.
-    void onRouteMedicineToggled(bool checked);
-    // "주행 스케줄" 폼(추가·수정 둘 다)의 경로 콤보가 바뀌거나(추가) startEditSchedule이
-    // 프로그램적으로 세팅할 때(수정) 뜬다 — 선택된 경로가 "medicine"이면 복약 스케줄
-    // 콤보(scheduleMedCombo_)를 보이고 채운다. 수정 모드일 땐 지금 편집 중인
-    // schedules_[scheduleEditIndex_].medicationScheduleId를 loadMedicationSchedulesForCurrentRobot에
-    // 넘겨 그 id 그대로 자동 선택시킨다(patrol_schedule.medication_schedule_id — 값 비교가
-    // 아니라 id 매칭이라 이름·시각이 같은 다른 스케줄과 혼동될 일이 없다).
-    void onScheduleRouteComboChanged(const QString& routeName);
+    // "주행 스케줄" 폼의 "복약 스케줄" 체크박스 — 추가 폼에서 사용자가 직접 클릭하거나,
+    // startEditSchedule이 프로그램적으로 세팅할 때(수정, schedules_[i].medicationScheduleId>0
+    // 이면 체크된 것으로 간주) 뜬다. 켜면 복약 스케줄 콤보(scheduleMedCombo_)를 보이고
+    // 채운다. 수정 모드일 땐 지금 편집 중인 schedules_[scheduleEditIndex_].medicationScheduleId를
+    // loadMedicationSchedulesForCurrentRobot에 넘겨 그 id 그대로 자동 선택시킨다
+    // (patrol_schedule.medication_schedule_id — 값 비교가 아니라 id 매칭이라 이름·시각이
+    // 같은 다른 스케줄과 혼동될 일이 없다). 예전엔 경로 이름이 "medicine"인지로 복약
+    // 여부를 판별했는데(routeMedicineCheckbox_), 그러면 경로 하나당 복약 여부가
+    // 고정돼버려 "이 경로의 이 시각 스케줄만 복약용" 같은 조합이 안 됐다 — 요청 사양대로
+    // 스케줄(patrol_schedule) 하나하나의 속성으로 옮겼다.
+    void onScheduleMedicineToggled(bool checked);
     // 지금 맵(currentMapIndex_)의 로봇에 배정된 대상자를 찾아 그 복약 스케줄로
     // scheduleMedCombo_를 채운다. GET /recipients로 로봇코드 매칭 -> GET /recipients/{id}로
     // schedules 조회, 둘 다 이미 있는 API를 재사용한다(서버 변경 없음). 콤보 0번은
@@ -291,20 +308,32 @@ private:
     // 저장된 경로 선택 — 예전엔 체크 가능한 "칩" 버튼 행(routeChipsLayout_)이었다.
     // 대상자 페이지 모달·P5 로봇 선택과 같은 CareGuardComboBox로 통일했다.
     CareGuardComboBox* routeSelectCombo_;
-    // "편집"/"저장" 토글 — routeOrderList_의 드래그 재정렬 가능 여부와 서버 반영
-    // 시점을 가른다(toggleRouteOrderEditMode 주석 참고).
+    // "편집" — 클릭하면 enterRouteOrderEdit()로 진입, 편집 중엔 숨고 대신 아래
+    // routeOrderSaveBtn_/routeOrderCancelBtn_ 쌍이 보인다.
     QPushButton* routeOrderEditToggleBtn_;
+    QPushButton* routeOrderSaveBtn_;
+    QPushButton* routeOrderCancelBtn_;
     QListWidget* routeOrderList_;
+    // 편집 중에만 보이는 "+ 추가" 행(콤보 + 버튼) — refreshRouteOrderAddCombo()가 채운다.
+    QWidget* routeOrderAddRow_;
+    QComboBox* routeOrderAddCombo_;
+    QPushButton* routeOrderAddBtn_;
+    // routeOrderList_가 지금 편집 가능(드래그+추가+삭제) 상태인지 — populateRouteOrderListItems()가
+    // 이 값을 보고 각 행에 삭제 버튼을 붙일지 정한다.
+    bool routeOrderEditing_ = false;
+    // enterRouteOrderEdit()가 찍어두는 스냅샷 — cancelRouteOrderEdit()가 드래그·추가·
+    // 삭제를 전부 무시하고 여기로 되돌린다.
+    QVector<QString> routeOrderEditSnapshot_;
     QLabel* routeStatsLabel_;
     QLineEdit* routeEditNameEdit_;
-    QCheckBox* routeMedicineCheckbox_;
-    // 체크박스를 켜기 직전 routeEditNameEdit_ 내용 — 끄면 이걸로 되돌린다.
-    QString routeNameBeforeMedicineCheck_;
     QVBoxLayout* routeEditListLayout_;
 
     QVBoxLayout* scheduleListLayout_;
     QWidget* scheduleForm_;
     QComboBox* scheduleRouteCombo_;
+    // "복약 스케줄" 체크박스 — 켜면 scheduleMedLabel_/scheduleMedCombo_가 나타난다
+    // (onScheduleMedicineToggled 참고).
+    QCheckBox* scheduleMedicineCheckbox_;
     QLabel* scheduleMedLabel_;
     QComboBox* scheduleMedCombo_;
     // scheduleMedCombo_의 각 항목이 어느 복약 스케줄인지 — applyMedicationScheduleSelection이

@@ -96,6 +96,8 @@ add_executable(careguard_dashboard
     src/pages/p6_patrol_page.cpp
     src/pages/p7_settings_page.h
     src/pages/p7_settings_page.cpp
+    src/pages/p8_logs_page.h
+    src/pages/p8_logs_page.cpp
     resources/resources.qrc
 )
 

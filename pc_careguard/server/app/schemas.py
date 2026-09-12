@@ -412,7 +412,7 @@ class AssignRobotRecipientRequest(BaseModel):
 
 class RobotThresholds(BaseModel):
     battery_attention_pct: int = Field(default=30, ge=0, le=100)
-    battery_return_pct: int = Field(default=20, ge=0, le=100)
+    battery_return_pct: int = Field(default=28, ge=0, le=100)
     voice_wait_sec: int = Field(default=8, ge=1, le=120)
     reconnect_retry_sec: int = Field(default=30, ge=1, le=600)
     med_missed_wait_min: int = Field(default=10, ge=1, le=1440)

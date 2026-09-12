@@ -2,13 +2,12 @@
 
 #include <QCheckBox>
 #include <QComboBox>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QAction>
 #include <QImage>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -47,10 +46,6 @@ namespace {
 // 해상도(대개 0.05m/px=20px/m)와 달라 "이동" 목표가 화면에서 클릭한 지점과 실제
 // 로봇이 가는 곳이 어긋나는 원인이었다(2026-09-08 실 로봇 테스트로 확인).
 constexpr qreal kPxPerMeter = 40.0;
-
-// "복약 전달 경로" 체크박스가 켜진 경로의 patrol_route.name 리터럴. "주행 스케줄"
-// 추가 폼이 경로를 이 이름과 비교해 복약 스케줄 콤보를 보일지 판단한다(요청 사양).
-const QString kMedicineRouteName = QStringLiteral("medicine");
 
 // 웨이포인트 목록 카드 — 5줄까지만 보이고 그 이상은 스크롤(요청 사양, 2026-09-10).
 // 한 행의 실제 렌더링 높이 — 실 데이터(웨이포인트 6개)로 스크린샷을 찍어 정확히
@@ -106,7 +101,7 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
             [this] { poseCaptureBtn_->setChecked(false); });
     connect(canvas_, &WaypointCanvas::routeWaypointClicked, this, &P6PatrolPage::handleRouteWaypointClicked);
-    connect(canvas_, &WaypointCanvas::chargingClickBlocked, this, [this] {
+    connect(canvas_, &WaypointCanvas::chargeClickBlocked, this, [this] {
         QMessageBox::information(this, QStringLiteral("충전 스테이션"),
                                   QStringLiteral("충전 스테이션은 경로 순서에 포함할 수 없습니다 (자동 출발·복귀)."));
     });
@@ -590,18 +585,29 @@ QWidget* P6PatrolPage::buildRouteCard() {
     });
     routeSelectRow->addWidget(routeSelectCombo_, /*stretch=*/1);
 
-    // "편집"/"저장" — 편집으로 켜야만 아래 목록을 드래그로 재정렬할 수 있고, 저장으로
-    // 끄면 그 순서를 PUT /patrol-routes/{id}로 서버에 반영한다(toggleRouteOrderEditMode).
+    // "편집" — 누르면 enterRouteOrderEdit()로 진입한다. 편집 중엔 이 버튼이 숨고
+    // 대신 routeOrderSaveBtn_/routeOrderCancelBtn_ 쌍이 보인다(resetRouteOrderEditUi 참고).
     routeOrderEditToggleBtn_ = new QPushButton(QStringLiteral("편집"), normalPage);
     routeOrderEditToggleBtn_->setProperty("variant", "secondary");
-    routeOrderEditToggleBtn_->setCheckable(true);
-    connect(routeOrderEditToggleBtn_, &QPushButton::clicked, this, &P6PatrolPage::toggleRouteOrderEditMode);
+    connect(routeOrderEditToggleBtn_, &QPushButton::clicked, this, &P6PatrolPage::enterRouteOrderEdit);
     routeSelectRow->addWidget(routeOrderEditToggleBtn_);
+
+    routeOrderSaveBtn_ = new QPushButton(QStringLiteral("저장"), normalPage);
+    routeOrderSaveBtn_->setProperty("variant", "primary");
+    connect(routeOrderSaveBtn_, &QPushButton::clicked, this, &P6PatrolPage::saveRouteOrderEdit);
+    routeOrderSaveBtn_->hide();
+    routeSelectRow->addWidget(routeOrderSaveBtn_);
+
+    routeOrderCancelBtn_ = new QPushButton(QStringLiteral("취소"), normalPage);
+    routeOrderCancelBtn_->setProperty("variant", "secondary");
+    connect(routeOrderCancelBtn_, &QPushButton::clicked, this, &P6PatrolPage::cancelRouteOrderEdit);
+    routeOrderCancelBtn_->hide();
+    routeSelectRow->addWidget(routeOrderCancelBtn_);
     normalLayout->addLayout(routeSelectRow);
 
     routeOrderList_ = new QListWidget(normalPage);
     routeOrderList_->setObjectName("routeOrderList");
-    // 기본은 드래그 잠금 — "편집"을 눌러야 재정렬할 수 있다(toggleRouteOrderEditMode).
+    // 기본은 드래그 잠금 — "편집"을 눌러야 재정렬할 수 있다(enterRouteOrderEdit).
     routeOrderList_->setDragDropMode(QAbstractItemView::NoDragDrop);
     routeOrderList_->setFixedHeight(120);
     connect(routeOrderList_->model(), &QAbstractItemModel::rowsMoved, this, [this] {
@@ -613,6 +619,20 @@ QWidget* P6PatrolPage::buildRouteCard() {
         refreshCanvasPreview();
     });
     normalLayout->addWidget(routeOrderList_);
+
+    // 편집 중에만 보이는 "+ 추가" 행 — refreshRouteOrderAddCombo()가 콤보를 채운다.
+    routeOrderAddRow_ = new QWidget(normalPage);
+    auto* addRowLayout = new QHBoxLayout(routeOrderAddRow_);
+    addRowLayout->setContentsMargins(0, 0, 0, 0);
+    addRowLayout->setSpacing(4);
+    routeOrderAddCombo_ = new QComboBox(routeOrderAddRow_);
+    addRowLayout->addWidget(routeOrderAddCombo_, /*stretch=*/1);
+    routeOrderAddBtn_ = new QPushButton(QStringLiteral("+ 추가"), routeOrderAddRow_);
+    routeOrderAddBtn_->setProperty("variant", "secondary");
+    connect(routeOrderAddBtn_, &QPushButton::clicked, this, &P6PatrolPage::addWaypointToCurrentRouteOrder);
+    addRowLayout->addWidget(routeOrderAddBtn_);
+    routeOrderAddRow_->hide();
+    normalLayout->addWidget(routeOrderAddRow_);
 
     routeStatsLabel_ = new QLabel(normalPage);
     routeStatsLabel_->setProperty("role", "muted");
@@ -640,10 +660,6 @@ QWidget* P6PatrolPage::buildRouteCard() {
     editLayout->addWidget(nameLabel);
     routeEditNameEdit_ = new QLineEdit(editPage);
     editLayout->addWidget(routeEditNameEdit_);
-
-    routeMedicineCheckbox_ = new QCheckBox(QStringLiteral("복약 전달 경로"), editPage);
-    connect(routeMedicineCheckbox_, &QCheckBox::toggled, this, &P6PatrolPage::onRouteMedicineToggled);
-    editLayout->addWidget(routeMedicineCheckbox_);
     editLayout->addSpacing(5);
 
     auto* orderLabel = new QLabel(QStringLiteral("순서 — 지도에서 순서대로 클릭"), editPage);
@@ -707,13 +723,19 @@ QWidget* P6PatrolPage::buildScheduleCard() {
     routeLabel->setProperty("role", "secondary");
     formLayout->addWidget(routeLabel);
     scheduleRouteCombo_ = new QComboBox(scheduleForm_);
-    connect(scheduleRouteCombo_, &QComboBox::currentTextChanged, this,
-            &P6PatrolPage::onScheduleRouteComboChanged);
     formLayout->addWidget(scheduleRouteCombo_);
     formLayout->addSpacing(5);
 
-    // 경로가 "medicine"(복약 전달 경로)일 때만 나타난다 — onScheduleRouteComboChanged 참고.
-    scheduleMedLabel_ = new QLabel(QStringLiteral("복약 스케줄"), scheduleForm_);
+    // "이 스케줄이 복약 전달용인지" — 예전엔 경로 이름이 "medicine"인지로 판별했는데,
+    // 경로 하나당 여부가 고정돼버려 "같은 경로의 스케줄 중 일부만 복약용" 같은 조합이
+    // 안 됐다. 스케줄(patrol_schedule) 하나하나의 속성으로 옮겼다(요청 사양).
+    scheduleMedicineCheckbox_ = new QCheckBox(QStringLiteral("복약 스케줄"), scheduleForm_);
+    connect(scheduleMedicineCheckbox_, &QCheckBox::toggled, this, &P6PatrolPage::onScheduleMedicineToggled);
+    formLayout->addWidget(scheduleMedicineCheckbox_);
+    formLayout->addSpacing(5);
+
+    // 체크박스가 켜져 있을 때만 나타난다 — onScheduleMedicineToggled 참고.
+    scheduleMedLabel_ = new QLabel(QStringLiteral("복약 스케줄 선택"), scheduleForm_);
     scheduleMedLabel_->setProperty("role", "secondary");
     formLayout->addWidget(scheduleMedLabel_);
     scheduleMedCombo_ = new QComboBox(scheduleForm_);
@@ -776,7 +798,7 @@ QString P6PatrolPage::nextWaypointId() const {
 
 QString P6PatrolPage::chargingWaypointId() const {
     for (const WaypointCanvas::Waypoint& w : waypoints_) {
-        if (w.charging) return w.id;
+        if (w.kind == QStringLiteral("charge")) return w.id;
     }
     return QString();
 }
@@ -901,10 +923,10 @@ void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos, qreal headi
         [](bool, const ApiClient::WaypointInfo&, const QString&) {});
 }
 
-void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, bool charging, qreal yaw,
+void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, const QString& kind, qreal yaw,
                                       QPointF pos) {
     QString oldChargingCode;  // 교체되어 'patrol'로 내려야 할 예전 충전 웨이포인트(있으면)
-    if (charging) {
+    if (kind == QStringLiteral("charge")) {
         const QString existing = chargingWaypointId();
         if (!existing.isEmpty() && existing != id) {
             const auto reply = QMessageBox::question(
@@ -915,16 +937,19 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
             if (reply != QMessageBox::Yes) return;
             for (WaypointCanvas::Waypoint& w : waypoints_) {
-                if (w.id == existing) w.charging = false;
+                if (w.id == existing) w.kind = QStringLiteral("patrol");
             }
             oldChargingCode = existing;
         }
     }
+    // emergency는 charge와 달리 맵당 여러 개 허용되므로(요청 사양) 여기서는 아무런
+    // 유니크 검사도 하지 않는다 — 서버도 kind=='charge'일 때만 맵당 1개 제약을 검사한다
+    // (api/v1/map.py::create_waypoint/update_waypoint).
 
     QString code = id;
     if (id.isEmpty()) {
         code = nextWaypointId();
-        WaypointCanvas::Waypoint wp{code, name, charging, pos, yaw};
+        WaypointCanvas::Waypoint wp{code, name, kind, pos, yaw};
         // handleCanvasMoved와 같은 이유 — 로컬에서 새로 만든 웨이포인트는 metersPos가
         // 기본값(0,0)인 채로 남아서, 다음 리사이즈(예: "경로 편집" 모드 진입) 때
         // requestMetersResync()가 지도 원점(0,0m)으로 순간이동시켜버리는 버그가 있었다
@@ -936,7 +961,7 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
         for (WaypointCanvas::Waypoint& w : waypoints_) {
             if (w.id == code) {
                 w.name = name;
-                w.charging = charging;
+                w.kind = kind;
                 w.yawDeg = yaw;
                 break;
             }
@@ -953,13 +978,12 @@ void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, boo
     // 서버 waypoint.kind='charge' 유니크 제약(맵당 1개, api/v1/map.py 확인) 때문에,
     // 충전 스테이션을 교체하는 경우 예전 웨이포인트를 먼저 'patrol'로 내려야 한다 —
     // 순서를 안 지키고 새 걸 먼저 저장하면 409로 거부된다.
-    auto saveThisWaypoint = [this, code, name, charging, pos, yaw]() {
+    auto saveThisWaypoint = [this, code, name, kind, pos, yaw]() {
         if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
         MapData& current = maps_[currentMapIndex_];
         const int existingServerId = current.waypointServerIds.value(code, -1);
         const QPointF meters = canvas_->canvasToMapMeters(pos);
         const double yawRad = CanvasGeometry::canvasYawDegToMapYawRad(yaw);
-        const QString kind = charging ? QStringLiteral("charge") : QStringLiteral("patrol");
         if (existingServerId > 0) {
             apiClient_->updateWaypoint(existingServerId,
                                         QJsonObject{{"name", name},
@@ -1038,12 +1062,17 @@ void P6PatrolPage::rebuildWpList() {
         rowLayout->setContentsMargins(8, 5, 8, 5);
         rowLayout->setSpacing(6);
 
+        const bool isCharge = w.kind == QStringLiteral("charge");
+        const bool isEmergency = w.kind == QStringLiteral("emergency");
+
         auto* idLabel = new QLabel(w.id, row);
         idLabel->setStyleSheet(
-            w.charging ? QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
-                                         "color:#0B7A6E; font-size:11px; font-weight:500;")
-                       : QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
-                                        "color:#5A6774; font-size:11px;"));
+            isCharge ? QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
+                                       "color:#0B7A6E; font-size:11px; font-weight:500;")
+            : isEmergency ? QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
+                                            "color:#D93B47; font-size:11px; font-weight:500;")
+                          : QStringLiteral("font-family:'JetBrains Mono','D2Coding',monospace; "
+                                           "color:#5A6774; font-size:11px;"));
         rowLayout->addWidget(idLabel);
 
         auto* nameLabel = new QLabel(w.name, row);
@@ -1058,12 +1087,18 @@ void P6PatrolPage::rebuildWpList() {
         }
         rowLayout->addStretch();
 
-        if (w.charging) {
+        if (isCharge) {
             auto* badge = new QLabel(QStringLiteral("초기 위치"), row);
             badge->setStyleSheet(QStringLiteral(
                 "color:#0B7A6E; background:#E0F5F2; font-size:10px; padding:1px 5px; border-radius:3px;"));
             rowLayout->addWidget(badge);
         } else {
+            if (isEmergency) {
+                auto* badge = new QLabel(QStringLiteral("긴급 버튼"), row);
+                badge->setStyleSheet(QStringLiteral(
+                    "color:#D93B47; background:#FDECEE; font-size:10px; padding:1px 5px; border-radius:3px;"));
+                rowLayout->addWidget(badge);
+            }
             const QPointF meters = canvas_->canvasToMapMeters(w.pos);
             auto* coordLabel = new QLabel(
                 QStringLiteral("%1, %2, %3°")
@@ -1131,11 +1166,15 @@ void P6PatrolPage::rebuildRouteSelector() {
 }
 
 void P6PatrolPage::rebuildRouteOrderList() {
-    // 목록을 통째로 다시 그리는 시점엔 편집 중이던 드래그 순서가 이미 routes_에
-    // 반영돼 있거나(rowsMoved) 무의미해진(맵/경로 전환, 웨이포인트 삭제) 상태다 —
-    // 매번 안전하게 "편집 꺼짐"으로 되돌려 다음에 다시 "편집"을 눌러야 재정렬할 수
-    // 있게 한다(서버 저장은 하지 않음 — resetRouteOrderEditUi 참고).
+    // 목록을 통째로 다시 그리는 시점엔 편집 중이던 드래그/추가/삭제가 이미 routes_에
+    // 반영돼 있거나(rowsMoved 등) 무의미해진(맵/경로 전환, 웨이포인트 삭제) 상태다 —
+    // 매번 안전하게 "편집 꺼짐"으로 되돌려 다음에 다시 "편집"을 눌러야 고칠 수 있게
+    // 한다(서버 저장·취소 스냅샷 복원 둘 다 하지 않음 — resetRouteOrderEditUi 참고).
     resetRouteOrderEditUi();
+    populateRouteOrderListItems();
+}
+
+void P6PatrolPage::populateRouteOrderListItems() {
     routeOrderList_->clear();
 
     if (currentRoute_.isEmpty()) {
@@ -1146,8 +1185,31 @@ void P6PatrolPage::rebuildRouteOrderList() {
     for (const QString& id : routes_.value(currentRoute_)) {
         const WaypointCanvas::Waypoint* wp = canvas_->findWaypoint(id);
         const QString text = wp ? QStringLiteral("%1 %2").arg(id, wp->name) : id;
-        auto* listItem = new QListWidgetItem(text, routeOrderList_);
+        auto* listItem = new QListWidgetItem(routeOrderList_);
         listItem->setData(Qt::UserRole, id);
+
+        if (!routeOrderEditing_) {
+            listItem->setText(text);
+            continue;
+        }
+
+        // 편집 중엔 텍스트 대신 "이름 + 삭제(×)" 위젯을 붙인다 — rebuildRouteEditList()의
+        // 삭제 버튼과 같은 패턴(SimpleIcons::x).
+        auto* rowWidget = new QWidget(routeOrderList_);
+        auto* rowLayout = new QHBoxLayout(rowWidget);
+        rowLayout->setContentsMargins(4, 2, 4, 2);
+        rowLayout->setSpacing(4);
+        auto* nameLabel = new QLabel(text, rowWidget);
+        nameLabel->setStyleSheet(QStringLiteral("font-size:11px;"));
+        rowLayout->addWidget(nameLabel, /*stretch=*/1);
+        auto* removeBtn = new QPushButton(SimpleIcons::x(Tokens::TEXT_MUTED, 10), QString(), rowWidget);
+        removeBtn->setProperty("variant", "ghost");
+        removeBtn->setFixedSize(18, 18);
+        removeBtn->setIconSize(QSize(10, 10));
+        connect(removeBtn, &QPushButton::clicked, this, [this, id] { removeWaypointFromCurrentRouteOrder(id); });
+        rowLayout->addWidget(removeBtn);
+        listItem->setSizeHint(rowWidget->sizeHint());
+        routeOrderList_->setItemWidget(listItem, rowWidget);
     }
 
     qreal distM = 0.0;
@@ -1316,14 +1378,6 @@ void P6PatrolPage::enterRouteEditMode(const QString& routeName) {
     routeEditTargetName_ = routeName;
     routeEditSelection_ = routes_.value(routeName);
     routeEditNameEdit_->setText(routeName);
-    // 기존 "medicine" 경로를 다시 열면 체크박스도 그 상태로 맞춰야 하는데,
-    // setChecked가 onRouteMedicineToggled를 그대로 다시 태우면 방금 세팅한
-    // 이름을 자기가 되돌리려 들 수 있어 시그널을 잠깐 막는다.
-    const bool isMedicineRoute = (routeName == kMedicineRouteName);
-    routeMedicineCheckbox_->blockSignals(true);
-    routeMedicineCheckbox_->setChecked(isMedicineRoute);
-    routeMedicineCheckbox_->blockSignals(false);
-    routeEditNameEdit_->setReadOnly(isMedicineRoute);
     canvas_->setRouteEditMode(true);
     canvas_->setRouteEditSelection(routeEditSelection_);
     routeStack_->setCurrentIndex(1);
@@ -1395,18 +1449,28 @@ void P6PatrolPage::exitRouteEditMode(bool save) {
     refreshCanvasPreview();
 }
 
-void P6PatrolPage::onRouteMedicineToggled(bool checked) {
-    if (checked) {
-        routeNameBeforeMedicineCheck_ = routeEditNameEdit_->text();
-        routeEditNameEdit_->setText(kMedicineRouteName);
-        routeEditNameEdit_->setReadOnly(true);
-    } else {
-        routeEditNameEdit_->setReadOnly(false);
-        routeEditNameEdit_->setText(routeNameBeforeMedicineCheck_);
-    }
-}
-
 void P6PatrolPage::handleRouteWaypointClicked(const QString& id) {
+    // "편집"(routeOrderList_ 기반) 화면이 지금 열려 있으면 여기서 routes_[currentRoute_]를
+    // 직접 토글한다 — routeEditSelection_/rebuildRouteEditList()는 "새 경로"(캔버스
+    // 클릭으로 처음부터 순서를 고르는 화면) 전용이라 이쪽에서는 건드리지 않는다.
+    // 이 분기가 없으면 canvas_->routeEditMode_가 꺼진 채로 남아(enterRouteOrderEdit
+    // 참고) 마커 클릭이 그냥 편집 팝오버(waypointEditRequested)로 새서 실제 웨이포인트가
+    // 수정돼버리는 문제가 있었다("경로 편집 중에 웨이포인트가 실제로 수정된다" 리포트).
+    if (routeOrderEditing_) {
+        QVector<QString> order = routes_.value(currentRoute_);
+        if (order.contains(id)) {
+            order.removeAll(id);
+        } else {
+            order.append(id);
+        }
+        routes_[currentRoute_] = order;
+        canvas_->setRouteEditSelection(order);
+        populateRouteOrderListItems();
+        refreshRouteOrderAddCombo();
+        refreshCanvasPreview();
+        return;
+    }
+
     if (routeEditSelection_.contains(id)) {
         routeEditSelection_.removeAll(id);
     } else {
@@ -1417,79 +1481,74 @@ void P6PatrolPage::handleRouteWaypointClicked(const QString& id) {
 }
 
 void P6PatrolPage::startNewRoute() {
-    // 예전엔 QInputDialog::getText 하나로 이름만 받았는데, "복약 전달 경로" 체크박스를
-    // 이름 칸 바로 밑에 두려면(요청 사양) QInputDialog에는 필드를 추가할 수 없어 직접
-    // QDialog를 만든다 — Ok/Cancel 버튼은 QDialogButtonBox 표준 버튼을 그대로 써서
-    // QInputDialog와 같은 플랫폼 아이콘이 그대로 나오게 한다.
-    QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("새 경로"));
-    auto* layout = new QVBoxLayout(&dialog);
-
-    auto* nameLabel = new QLabel(QStringLiteral("경로 이름"), &dialog);
-    layout->addWidget(nameLabel);
-    auto* nameEdit = new QLineEdit(QStringLiteral("새 경로"), &dialog);
-    layout->addWidget(nameEdit);
-
-    auto* medicineCheckbox = new QCheckBox(QStringLiteral("복약 전달 경로"), &dialog);
-    layout->addWidget(medicineCheckbox);
-
-    auto nameBeforeCheck = std::make_shared<QString>(nameEdit->text());
-    connect(medicineCheckbox, &QCheckBox::toggled, &dialog, [nameEdit, nameBeforeCheck](bool checked) {
-        if (checked) {
-            *nameBeforeCheck = nameEdit->text();
-            nameEdit->setText(kMedicineRouteName);
-            nameEdit->setReadOnly(true);
-        } else {
-            nameEdit->setReadOnly(false);
-            nameEdit->setText(*nameBeforeCheck);
-        }
-    });
-
-    auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(buttonBox);
-
-    nameEdit->selectAll();
-    nameEdit->setFocus();
-
-    if (dialog.exec() != QDialog::Accepted) return;
-    const QString name = nameEdit->text().trimmed();
-    if (name.isEmpty()) return;
+    // "복약 전달 경로" 체크박스가 있던 시절엔 QInputDialog에 필드를 추가할 수 없어
+    // 직접 QDialog를 만들었는데, 그 체크박스가 "주행 스케줄" 쪽으로 옮겨가면서
+    // (onScheduleMedicineToggled 참고) 이름 하나만 받으면 되니 다시 QInputDialog로
+    // 되돌린다.
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, QStringLiteral("새 경로"), QStringLiteral("경로 이름"),
+                                                QLineEdit::Normal, QStringLiteral("새 경로"), &ok)
+                              .trimmed();
+    if (!ok || name.isEmpty()) return;
     enterRouteEditMode(name);
 }
 
 void P6PatrolPage::resetRouteOrderEditUi() {
-    routeOrderEditToggleBtn_->setChecked(false);
+    routeOrderEditing_ = false;
     routeOrderList_->setDragDropMode(QAbstractItemView::NoDragDrop);
-    routeOrderEditToggleBtn_->setText(QStringLiteral("편집"));
-    routeOrderEditToggleBtn_->setProperty("variant", "secondary");
-    routeOrderEditToggleBtn_->style()->unpolish(routeOrderEditToggleBtn_);
-    routeOrderEditToggleBtn_->style()->polish(routeOrderEditToggleBtn_);
+    routeOrderEditToggleBtn_->show();
+    routeOrderSaveBtn_->hide();
+    routeOrderCancelBtn_->hide();
+    routeOrderAddRow_->hide();
+    // "새 경로"(enterRouteEditMode, 캔버스 클릭으로 처음부터 순서를 고르는 화면)가
+    // 지금 따로 열려 있으면(routeEditMode_) 그쪽의 canvas_->setRouteEditMode(true)를
+    // 여기서 되돌리면 안 된다 — 이 함수는 이 리스트 편집(routeOrderEditing_) 쪽만
+    // 책임진다. 예: 새 경로 편집 중 마커 우클릭 삭제(handleCanvasDeleteRequested)가
+    // rebuildRouteOrderList()를 무조건 부르는데, 그때 이 함수가 새 경로 편집까지
+    // 꺼버리면 "삭제 한 번에 편집 화면이 튕긴다" 버그가 생긴다.
+    if (!routeEditMode_) canvas_->setRouteEditMode(false);
 }
 
-void P6PatrolPage::toggleRouteOrderEditMode(bool editing) {
-    if (!editing) {
-        resetRouteOrderEditUi();
-    } else {
-        routeOrderList_->setDragDropMode(QAbstractItemView::InternalMove);
-        routeOrderEditToggleBtn_->setText(QStringLiteral("저장"));
-        routeOrderEditToggleBtn_->setProperty("variant", "primary");
-        routeOrderEditToggleBtn_->style()->unpolish(routeOrderEditToggleBtn_);
-        routeOrderEditToggleBtn_->style()->polish(routeOrderEditToggleBtn_);
-        return;  // 편집 켜는 쪽은 저장할 게 없다 — 드래그 허용만 하면 끝.
-    }
+void P6PatrolPage::enterRouteOrderEdit() {
+    if (currentRoute_.isEmpty()) return;
+    routeOrderEditing_ = true;
+    // 취소 시 드래그·추가·삭제를 전부 무시하고 되돌릴 기준점.
+    routeOrderEditSnapshot_ = routes_.value(currentRoute_);
 
-    // "저장" — 지금 routeOrderList_ 순서를 서버(patrol_route.steps)에 반영한다.
-    // 예전엔 드래그로 순서를 바꿔도(rowsMoved) routes_(화면)에만 반영되고 서버에는
-    // 전혀 안 실렸다 — "경로 순서를 바꿔도 DB에 안 들어간다" 리포트(2026-09-10).
-    if (currentRoute_.isEmpty() || currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    routeOrderList_->setDragDropMode(QAbstractItemView::InternalMove);
+    routeOrderEditToggleBtn_->hide();
+    routeOrderSaveBtn_->show();
+    routeOrderCancelBtn_->show();
+    routeOrderAddRow_->show();
+
+    // 캔버스도 "경로 편집" 모드로 켠다 — 안 켜면 마커 클릭이 routeWaypointClicked가
+    // 아니라 waypointEditRequested로 새서 편집 팝오버가 뜨고, 거기서 저장하면 실제
+    // 웨이포인트가 수정돼버린다("경로 편집 중 웨이포인트가 실제로 수정된다" 리포트).
+    // 켜두면 마커 클릭이 handleRouteWaypointClicked(routeOrderEditing_ 분기)로 가서
+    // 추가/삭제로만 동작하고, charge는 chargeClickBlocked로 막힌다.
+    canvas_->setRouteEditMode(true);
+    canvas_->setRouteEditSelection(routes_.value(currentRoute_));
+
+    refreshRouteOrderAddCombo();
+    populateRouteOrderListItems();  // 편집 중 표시(삭제 버튼)로 다시 그린다.
+}
+
+void P6PatrolPage::saveRouteOrderEdit() {
+    // 지금 routeOrderList_/routes_[currentRoute_] 순서(드래그·추가·삭제가 이미 다
+    // 반영된 상태)를 서버(patrol_route.steps)에 반영한다. 예전엔 드래그로 순서를
+    // 바꿔도(rowsMoved) routes_(화면)에만 반영되고 서버에는 전혀 안 실렸다 —
+    // "경로 순서를 바꿔도 DB에 안 들어간다" 리포트(2026-09-10).
+    if (currentRoute_.isEmpty() || currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) {
+        resetRouteOrderEditUi();
+        populateRouteOrderListItems();
+        return;
+    }
     MapData& current = maps_[currentMapIndex_];
     const int routeId = current.routeServerIds.value(currentRoute_, -1);
     if (routeId <= 0) {
-        QMessageBox::warning(this, QStringLiteral("경로 순서 저장 실패"),
+        QMessageBox::warning(this, QStringLiteral("경로 저장 실패"),
                               QStringLiteral("이 경로가 아직 서버에 저장되지 않았습니다. \"+ 새 경로\"로 다시 "
-                                             "만들어 저장한 뒤 순서를 편집해 주세요."));
+                                             "만들어 저장한 뒤 편집해 주세요."));
         return;
     }
     QJsonArray stepsArray;
@@ -1501,10 +1560,71 @@ void P6PatrolPage::toggleRouteOrderEditMode(bool editing) {
                                    [this](bool ok, const ApiClient::PatrolRouteInfo&, const QString& err) {
                                        if (!ok) {
                                            QMessageBox::warning(
-                                               this, QStringLiteral("경로 순서 저장 실패"),
+                                               this, QStringLiteral("경로 저장 실패"),
                                                err.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다.") : err);
                                        }
                                    });
+    resetRouteOrderEditUi();
+    populateRouteOrderListItems();  // 편집 표시(삭제 버튼) 없이 다시 그린다.
+}
+
+void P6PatrolPage::cancelRouteOrderEdit() {
+    // 드래그·추가·삭제를 전부 무시하고 편집 진입 시점 상태로 되돌린다 — 서버 호출 없음.
+    if (!currentRoute_.isEmpty()) {
+        routes_[currentRoute_] = routeOrderEditSnapshot_;
+    }
+    resetRouteOrderEditUi();
+    populateRouteOrderListItems();
+    refreshCanvasPreview();
+}
+
+void P6PatrolPage::addWaypointToCurrentRouteOrder() {
+    if (currentRoute_.isEmpty()) return;
+    const QString id = routeOrderAddCombo_->currentData().toString();
+    if (id.isEmpty()) return;
+
+    QVector<QString> order = routes_.value(currentRoute_);
+    if (order.contains(id)) return;  // 콤보가 이미 제외했어야 하지만 방어적으로.
+    order.append(id);
+    routes_[currentRoute_] = order;
+
+    // handleRouteWaypointClicked(routeOrderEditing_ 분기)와 같은 이유 — 캔버스가 들고
+    // 있는 선택 상태도 같이 갱신해야 지도 위 마커 색·순번 배지가 즉시 바뀐다. 이걸
+    // 빠뜨리면 리스트/콤보는 바뀌는데 지도는 그대로라 "추가/삭제가 지도에 안 보인다"
+    // 는 문제가 생긴다(2026-09-11 리포트).
+    canvas_->setRouteEditSelection(order);
+    populateRouteOrderListItems();
+    refreshRouteOrderAddCombo();  // 방금 추가한 항목을 후보에서 뺀다.
+    refreshCanvasPreview();
+}
+
+void P6PatrolPage::removeWaypointFromCurrentRouteOrder(const QString& id) {
+    if (currentRoute_.isEmpty()) return;
+    QVector<QString> order = routes_.value(currentRoute_);
+    order.removeAll(id);
+    routes_[currentRoute_] = order;
+
+    // addWaypointToCurrentRouteOrder와 같은 이유 — 캔버스 선택 상태 동기화.
+    canvas_->setRouteEditSelection(order);
+    populateRouteOrderListItems();
+    refreshRouteOrderAddCombo();  // 방금 뺀 항목을 다시 추가 후보에 올린다.
+    refreshCanvasPreview();
+}
+
+void P6PatrolPage::refreshRouteOrderAddCombo() {
+    routeOrderAddCombo_->clear();
+    if (!currentRoute_.isEmpty()) {
+        const QVector<QString> inRoute = routes_.value(currentRoute_);
+        for (const WaypointCanvas::Waypoint& w : waypoints_) {
+            // charge(충전 스테이션)는 자동 출발·복귀 전용이라 경로에 못 넣는다
+            // (server/app/api/v1/patrol.py::_reject_charge_in_steps와 같은 규칙).
+            // patrol/emergency는 둘 다 후보 — emergency도 patrol처럼 경로에 넣을 수 있다.
+            if (w.kind == QStringLiteral("charge")) continue;
+            if (inRoute.contains(w.id)) continue;
+            routeOrderAddCombo_->addItem(QStringLiteral("%1 %2").arg(w.id, w.name), w.id);
+        }
+    }
+    routeOrderAddBtn_->setEnabled(routeOrderAddCombo_->count() > 0);
 }
 
 void P6PatrolPage::deleteCurrentRoute() {
@@ -1729,6 +1849,14 @@ void P6PatrolPage::toggleScheduleForm(bool show) {
         scheduleRouteCombo_->clear();
         scheduleRouteCombo_->addItems(routes_.keys());
         scheduleRouteCombo_->setEnabled(true);
+        // 새로 여는 폼은 항상 "복약 아님"에서 시작한다 — setChecked(false)가 이미
+        // false인 상태로도 조용히 넘어가므로, 방금 닫은 폼이 체크돼 있었어도 안전하다.
+        scheduleMedicineCheckbox_->blockSignals(true);
+        scheduleMedicineCheckbox_->setChecked(false);
+        scheduleMedicineCheckbox_->blockSignals(false);
+        scheduleMedLabel_->hide();
+        scheduleMedCombo_->hide();
+        currentRobotMedSchedules_.clear();
         scheduleTimeEdit_->setTime(QTime(10, 0));
         for (int i = 0; i < scheduleDayChips_.size(); ++i) scheduleDayChips_[i]->setChecked(i < 5);
         scheduleSaveBtn_->setText(QStringLiteral("저장"));
@@ -1747,30 +1875,36 @@ void P6PatrolPage::startEditSchedule(int index) {
     toggleScheduleForm(true);  // scheduleEditIndex_가 이미 설정돼 있어 위 기본값 리셋은 건너뛴다
 
     const Schedule& sched = schedules_[index];
-    // addItems()가 첫 항목에서 한 번, 아래 setCurrentIndex가 실제 목표 경로로 또 한 번
-    // currentTextChanged를 태운다 — 그대로 두면 onScheduleRouteComboChanged가 엉뚱한
-    // 경로 이름으로 한 번 먼저(불필요한 네트워크 조회) 불렸다가 곧바로 다시 불린다.
-    // 시그널을 막아뒀다가 목표 경로로 정확히 세팅된 뒤 한 번만 직접 호출한다.
-    scheduleRouteCombo_->blockSignals(true);
     scheduleRouteCombo_->clear();
     scheduleRouteCombo_->addItems(routes_.keys());
     const int routeIdx = scheduleRouteCombo_->findText(sched.routeName);
     if (routeIdx >= 0) scheduleRouteCombo_->setCurrentIndex(routeIdx);
-    scheduleRouteCombo_->blockSignals(false);
     // PUT /patrol-schedules는 route_id 변경을 지원하지 않아 편집 중엔 경로를 고정한다.
     scheduleRouteCombo_->setEnabled(false);
     const QTime t = QTime::fromString(sched.timeText, QStringLiteral("HH:mm"));
     scheduleTimeEdit_->setTime(t.isValid() ? t : QTime(10, 0));
     for (int i = 0; i < scheduleDayChips_.size(); ++i) scheduleDayChips_[i]->setChecked(sched.days.contains(i));
     scheduleSaveBtn_->setText(QStringLiteral("수정 저장"));
-    onScheduleRouteComboChanged(scheduleRouteCombo_->currentText());
+
+    // 체크박스가 onScheduleMedicineToggled를 그대로 다시 태우면 scheduleEditIndex_
+    // 기준 매칭 대신 "선택 안 함"부터 다시 조회하게 되므로, 세팅만 하고 로딩은 아래에서
+    // 직접(수정 모드용 matchId를 넘겨) 한 번만 한다.
+    scheduleMedicineCheckbox_->blockSignals(true);
+    scheduleMedicineCheckbox_->setChecked(sched.medicationScheduleId > 0);
+    scheduleMedicineCheckbox_->blockSignals(false);
+    scheduleMedLabel_->setVisible(sched.medicationScheduleId > 0);
+    scheduleMedCombo_->setVisible(sched.medicationScheduleId > 0);
+    if (sched.medicationScheduleId > 0) {
+        loadMedicationSchedulesForCurrentRobot(sched.medicationScheduleId);
+    } else {
+        currentRobotMedSchedules_.clear();
+    }
 }
 
-void P6PatrolPage::onScheduleRouteComboChanged(const QString& routeName) {
-    const bool isMedicineRoute = (routeName == kMedicineRouteName);
-    scheduleMedLabel_->setVisible(isMedicineRoute);
-    scheduleMedCombo_->setVisible(isMedicineRoute);
-    if (!isMedicineRoute) {
+void P6PatrolPage::onScheduleMedicineToggled(bool checked) {
+    scheduleMedLabel_->setVisible(checked);
+    scheduleMedCombo_->setVisible(checked);
+    if (!checked) {
         currentRobotMedSchedules_.clear();
         return;
     }
@@ -1878,12 +2012,12 @@ void P6PatrolPage::saveScheduleFromForm() {
     int daysBitmask = 0;
     for (int d : days) daysBitmask |= (1 << d);
 
-    // 경로가 "medicine"이면 지금 콤보 선택 상태가 그대로 매칭 결과다 — "선택 안 함"이면
-    // 매칭 해제(0/null), 실제 항목이면 그 medication_schedule.id. 추가·수정 둘 다 이 값
-    // 그대로를 저장한다(요청 사양 — patrol_schedule.medication_schedule_id, 경로가 아니라
-    // 이 회차 자체의 속성).
+    // "복약 스케줄" 체크박스가 켜져 있으면 지금 콤보 선택 상태가 그대로 매칭 결과다 —
+    // "선택 안 함"이면 매칭 해제(0/null), 실제 항목이면 그 medication_schedule.id.
+    // 추가·수정 둘 다 이 값 그대로를 저장한다(patrol_schedule.medication_schedule_id,
+    // 경로가 아니라 이 회차 자체의 속성).
     int medicationScheduleId = 0;
-    if (routeName == kMedicineRouteName) {
+    if (scheduleMedicineCheckbox_->isChecked()) {
         const int medIndex = scheduleMedCombo_->currentIndex() - 1;  // 0번 = "선택 안 함"
         if (medIndex >= 0 && medIndex < currentRobotMedSchedules_.size()) {
             medicationScheduleId = currentRobotMedSchedules_[medIndex].id;
@@ -1901,11 +2035,13 @@ void P6PatrolPage::saveScheduleFromForm() {
         toggleScheduleForm(false);
 
         if (serverId > 0) {
+            // medication_schedule_id는 체크박스를 끈 경우(0)에도 항상 같이 보내야
+            // 서버에 남아있던 이전 매칭이 null로 지워진다 — 예전엔 경로 이름이
+            // 고정돼 있어 체크박스를 편집 중 끌 수 없었지만, 지금은 스케줄 하나하나의
+            // 속성이라 편집 중에도 켰다 끌 수 있다.
             QJsonObject fields{{"run_time", timeText + QStringLiteral(":00")}, {"days_of_week", daysBitmask}};
-            if (routeName == kMedicineRouteName) {
-                fields["medication_schedule_id"] =
-                    medicationScheduleId > 0 ? QJsonValue(medicationScheduleId) : QJsonValue();
-            }
+            fields["medication_schedule_id"] =
+                medicationScheduleId > 0 ? QJsonValue(medicationScheduleId) : QJsonValue();
             apiClient_->updatePatrolSchedule(serverId, fields,
                                               [](bool, const ApiClient::PatrolScheduleInfo&, const QString&) {});
         }
@@ -2058,7 +2194,8 @@ void P6PatrolPage::upsertMap(const QImage& mapImage, const QString& mapName, con
         m.resolution = resolution;
         m.originMeters = originMeters;
         m.waypoints = {
-            {QStringLiteral("WP_01"), QStringLiteral("충전 스테이션"), true, QPointF(90, 260), 0}};
+            {QStringLiteral("WP_01"), QStringLiteral("충전 스테이션"), QStringLiteral("charge"),
+             QPointF(90, 260), 0}};
         m.nextWpSeq = 2;
         maps_.append(m);
         foundIndex = maps_.size() - 1;
@@ -2168,10 +2305,9 @@ void P6PatrolPage::loadServerMapImageDone(std::shared_ptr<QVector<MapData>> maps
             QMap<int, QString> codeById;  // 순찰 경로 steps(웨이포인트 id)를 code로 옮기는 데 필요
             int nextSeq = 1;
             for (const ApiClient::WaypointInfo& w : serverWaypoints) {
-                const bool charging = w.kind == QStringLiteral("charge");
                 const QPointF meters(w.posX, w.posY);
                 md.waypoints.append(WaypointCanvas::Waypoint{
-                    w.code, w.name, charging, designMapMetersToCanvas(md, meters),
+                    w.code, w.name, w.kind, designMapMetersToCanvas(md, meters),
                     CanvasGeometry::mapYawRadToCanvasYawDeg(w.yaw),
                     // metersPos: canvas_->showEvent()가 이 위젯이 처음으로 유효한 실제
                     // 크기를 갖게 되는 시점에 pos를 이 값으로부터 정확히 다시 계산한다

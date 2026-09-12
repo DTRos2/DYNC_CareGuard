@@ -7,13 +7,15 @@
 #
 # 새 로봇을 추가할 때는 careguard-bringup-<code>.service /
 # careguard-uplink-<code>.service 한 쌍을 복사해서 만들고, 이 스크립트로
-# 설치하면 된다.
+# 설치하면 된다. careguard-camera-<code>.service는 그 로봇에 카메라가 있을 때만
+# 선택적으로 추가한다(없으면 건너뛴다 — 2026-09-11, R-06부터 도입).
 set -euo pipefail
 
 CODE="${1:?사용법: ./install.sh r05 (또는 r06 등 소문자 로봇 코드)}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRINGUP_UNIT="careguard-bringup-${CODE}.service"
 UPLINK_UNIT="careguard-uplink-${CODE}.service"
+CAMERA_UNIT="careguard-camera-${CODE}.service"
 
 for unit in "$BRINGUP_UNIT" "$UPLINK_UNIT"; do
     if [ ! -f "$SCRIPT_DIR/$unit" ]; then
@@ -22,9 +24,16 @@ for unit in "$BRINGUP_UNIT" "$UPLINK_UNIT"; do
     fi
 done
 
-sudo cp "$SCRIPT_DIR/$BRINGUP_UNIT" "$SCRIPT_DIR/$UPLINK_UNIT" /etc/systemd/system/
+UNITS=("$BRINGUP_UNIT" "$UPLINK_UNIT")
+if [ -f "$SCRIPT_DIR/$CAMERA_UNIT" ]; then
+    UNITS+=("$CAMERA_UNIT")
+else
+    echo "참고: $CAMERA_UNIT 없음 — 이 로봇엔 카메라 서비스를 설치하지 않는다"
+fi
+
+sudo cp "${UNITS[@]/#/$SCRIPT_DIR/}" /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now "$BRINGUP_UNIT" "$UPLINK_UNIT"
+sudo systemctl enable --now "${UNITS[@]}"
 
 echo "설치 완료. 상태 확인:"
-sudo systemctl status "$BRINGUP_UNIT" "$UPLINK_UNIT" --no-pager -l | head -40
+sudo systemctl status "${UNITS[@]}" --no-pager -l | head -60

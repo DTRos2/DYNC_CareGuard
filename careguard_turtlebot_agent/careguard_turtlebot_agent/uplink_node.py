@@ -16,25 +16,55 @@ map->base_link TF도, /amcl_pose도 존재하지 않는다. 그래서 map 프레
 좁게 잡은 의도적 1단계 결정이다. AMCL/맵 정렬 위치가 필요해지면 LIMO의
 _on_slam_overlay_tick처럼 map->base_link TF 구독으로 교체하면 된다.
 
-지도·카메라 등 다른 토픽 릴레이는 이번 범위 밖이라 구독하지 않는다 — 필요해지면
+지도 등 다른 토픽 릴레이는 이번 범위 밖이라 구독하지 않는다 — 필요해지면
 careguard_agent/uplink_node.py를 참고해 여기에 추가하면 된다. /battery_state만
 "배터리 주의/복귀" 임계값 판단(서버 쪽, robot_ws.py::_handle_battery_state)에
 써야 해서 예외적으로 relay한다.
+
+카메라는 2026-09-11에 추가했다 — 이 로봇(R-05/R-06)은 LIMO의 orbbec_camera와
+달리 라즈베리파이 카메라(camera_ros/libcamera, imx219)를 쓰고, 기본 토픽 이름도
+다르다(`/camera/image_raw/compressed` — LIMO는 `/camera/color/image_raw/compressed`).
+camera_ros가 image_transport로 발행하면 compressed_image_transport 플러그인이
+`/camera/image_raw/compressed`(sensor_msgs/CompressedImage, 이미 JPEG)를 별도
+republish 노드 없이 자동으로 같이 발행해준다 — 그래서 LIMO와 동일하게 재인코딩 없이
+그대로 relay하면 된다. 로봇에서 실제로 `ros2 topic hz /camera/image_raw/compressed`로
+30Hz 발행을 확인했다(2026-09-11). camera_ros 노드 자체를 띄우는 건 이 파일이 아니라
+로봇 bringup(systemd) 쪽 책임이다.
+
+카메라 상하반전(CAREGUARD_CAMERA_FLIP_VERTICAL=1)도 2026-09-11에 추가했다 — R-05
+(aurix)는 카메라가 물리적으로 뒤집혀 마운트돼 있는데, 이 로봇의 libcamera 버전(0.1)은
+camera_ros의 `orientation` 파라미터를 지원하지 않아("parameter 'orientation' not
+supported on libcamera 0.1", 실제로 확인) 드라이버 단에서 회전을 못 시킨다. 그래서
+여기(소프트웨어)에서 cv2로 디코딩 → 뒤집기 → 재인코딩한다 — R-06/LIMO는 이 환경변수를
+안 켜므로 이 로직을 아예 안 타고(패스스루) 완전히 무관하다.
 """
 import asyncio
+import base64
 import json
 import math
+import os
 import threading
+import time
 
+import cv2
+import numpy as np
 import rclpy
 import requests
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from sensor_msgs.msg import BatteryState
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import BatteryState, CompressedImage
 
 from . import ws_config
 
 DEFAULT_RECONNECT_DELAY_SEC = 3.0
+
+# 카메라 라이브 미리보기 전송 간격 — careguard_agent/uplink_node.py(LIMO)와 동일한 값.
+# 대시보드 우측 상단 작은 박스용이라 원본 프레임레이트(30Hz) 그대로 보낼 필요는 없다.
+CAMERA_SEND_INTERVAL_SEC = 0.2
+
+# 이 로봇의 카메라가 물리적으로 뒤집혀 마운트된 경우에만(R-05) systemd Environment로 켠다.
+CAMERA_FLIP_VERTICAL = os.environ.get('CAREGUARD_CAMERA_FLIP_VERTICAL', '0') == '1'
 
 
 def _fetch_reconnect_delay_sec(logger) -> float:
@@ -78,9 +108,14 @@ class UplinkNode(Node):
         self._ws = None
         self._connected = False
         self._reconnect_delay_sec = _fetch_reconnect_delay_sec(self.get_logger())
+        self._last_camera_sent_at = 0.0
 
         self.create_subscription(Odometry, '/odom', self._on_odom, 10)
         self.create_subscription(BatteryState, '/battery_state', self._on_battery_state, 10)
+        # 카메라 드라이버(camera_ros)도 센서 QoS로 퍼블리시해서(라이다와 같은 이유)
+        # sensor QoS로 구독한다 — LIMO의 _on_camera_frame 구독과 동일한 이유.
+        self.create_subscription(CompressedImage, '/camera/image_raw/compressed',
+                                  self._on_camera_frame, qos_profile_sensor_data)
 
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
@@ -100,6 +135,31 @@ class UplinkNode(Node):
         # 비율로 보고 100을 곱한다.
         percentage = msg.percentage * 100.0 if msg.percentage <= 1.0 else msg.percentage
         self._send({'type': 'battery_state', 'percentage': percentage})
+
+    def _on_camera_frame(self, msg: CompressedImage):
+        now = time.monotonic()
+        if now - self._last_camera_sent_at < CAMERA_SEND_INTERVAL_SEC:
+            return
+        if not msg.data:
+            return
+        self._last_camera_sent_at = now
+        # 카메라가 똑바로 마운트된 로봇(플래그 미설정)은 msg.data가 이미 JPEG로
+        # 압축되어 있어(compressed_image_transport) 재인코딩 없이 그대로 relay한다.
+        # 뒤집힌 마운트(플래그 설정)만 cv2로 디코딩 -> 상하반전 -> 재인코딩한다.
+        jpeg_bytes = bytes(msg.data)
+        if CAMERA_FLIP_VERTICAL:
+            image = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if image is None:
+                return
+            flipped = cv2.flip(image, 0)
+            ok, encoded = cv2.imencode('.jpg', flipped)
+            if not ok:
+                return
+            jpeg_bytes = encoded.tobytes()
+        self._send({
+            'type': 'camera_frame',
+            'jpeg_base64': base64.b64encode(jpeg_bytes).decode('ascii'),
+        })
 
     def _send(self, payload: dict):
         if not self._connected or self._ws is None:
