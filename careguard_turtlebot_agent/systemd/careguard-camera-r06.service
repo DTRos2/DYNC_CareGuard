@@ -14,7 +14,12 @@ ExecStartPre=/bin/sleep 1
 # 못해 "Unrecognized image encoding [nv21]" 에러와 함께 매 프레임 빈 CompressedImage만
 # 발행한다(2026-09-11 실제로 확인·재현). RGB888로 지정하면 정상적으로 JPEG 압축된다.
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && exec ros2 launch camera_ros camera.launch.py camera:=0 format:=RGB888'
-Restart=on-failure
+# on-failure가 아니라 always다 — ros2 launch는 하위 component_container가
+# "Device or resource busy"/세그폴트 등으로 죽어도 launch 프로세스 자체는 exit
+# code 0으로 끝내버려서(2026-09-12 R-05에서 실제로 이 상태로 멈춰있던 걸 발견),
+# on-failure로는 재시작이 안 걸린다. 카메라 프로세스는 항상 살아있어야 하므로
+# 종료 코드와 무관하게 재시작한다.
+Restart=always
 RestartSec=5
 
 [Install]
