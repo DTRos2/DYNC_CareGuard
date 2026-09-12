@@ -518,5 +518,6 @@ def record_video_view(camera_recording_id: int, body: RecordVideoViewRequest):
         ]
 
         conn.commit()
+        dashboard_ws.broadcast_threadsafe({"type": "audit_log_created"})
 
     return RecordVideoViewResponse(view_count=len(history), view_history=history)
