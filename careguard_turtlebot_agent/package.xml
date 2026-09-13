@@ -3,13 +3,22 @@
 <package format="3">
   <name>careguard_turtlebot_agent</name>
   <version>0.1.0</version>
-  <description>TurtleBot 업링크 — 서버 /ws/robot에 접속해 온라인 상태를 알리고 /odom 기반 위치·/battery_state를 relay한다. robot_careguard_ws/src/careguard_agent(LIMO)의 연결 유지 패턴을 재사용했다.</description>
+  <description>TurtleBot &lt;-&gt; CareGuard 서버 업링크/다운링크. 업링크는 온라인 상태·/odom 기반 위치·/battery_state를 relay하고, 다운링크는 배터리 임계값 자동 복귀(patrol_start return_to_charging) 명령을 받아 Nav2로 충전소까지 주행한다. robot_careguard_ws/src/careguard_agent(LIMO)의 패턴을 재사용했다.</description>
   <maintainer email="ajtwlscldjs@gmail.com">postwo</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <!-- 다운링크의 충전소 복귀 주행(downlink_node.py)용 — nav2_bringup/
+       nav2_simple_commander가 이미 설치돼 있다는 전제(2026-09-13 R-05/R-06 실
+       로봇에서 확인: turtlebot3_navigation2는 소스만 있고 안 빌드돼 있어서
+       대신 nav2_bringup의 bringup_launch.py를 쓴다). -->
+  <depend>nav2_bringup</depend>
+  <depend>nav2_simple_commander</depend>
+  <depend>python3-requests</depend>
+  <depend>python3-yaml</depend>
   <!-- 카메라 상하반전(CAREGUARD_CAMERA_FLIP_VERTICAL=1)용 — uplink_node.py 참고 -->
   <depend>python3-opencv</depend>
   <depend>python3-numpy</depend>
