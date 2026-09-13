@@ -577,10 +577,43 @@ void P7SettingsPage::registerRobot(const RobotDialog::RobotData& data) {
     });
 }
 
+void P7SettingsPage::updateRobot(int robotDbId, const RobotDialog::RobotData& data) {
+    QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2").arg(serverUrl_).arg(robotDbId)));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    const QJsonObject body{
+        {"name", data.name},
+        {"model", data.model},
+        {"ros_domain_id", data.rosDomainId},
+        {"ip", data.ip.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(data.ip)},
+    };
+    const int recipientId = data.recipientId;
+    QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, robotDbId, recipientId] {
+        const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusCode != 200) {
+            const QJsonObject err = QJsonDocument::fromJson(reply->readAll()).object();
+            const QString detail = err.value("detail").toString();
+            reply->deleteLater();
+            QMessageBox::warning(this, QStringLiteral("로봇 수정 실패"),
+                                  detail.isEmpty() ? QStringLiteral("서버에 연결할 수 없습니다") : detail);
+            return;
+        }
+        reply->deleteLater();
+        // 담당 대상자는 별도 API(PUT /robots/{id}/recipient)라 이어서 저장한다 —
+        // registerRobot이 신규 등록 뒤 assignRobotRecipient를 잇는 것과 같은 이유.
+        // recipientId<=0이어도(미배정으로 바뀐 경우 포함) 호출해야 기존 배정이 풀린다.
+        assignRobotRecipient(robotDbId, recipientId);
+    });
+}
+
 void P7SettingsPage::assignRobotRecipient(int robotDbId, int recipientId) {
     QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2/recipient").arg(serverUrl_).arg(robotDbId)));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    const QJsonObject body{{"recipient_id", recipientId}};
+    // recipientId<=0(RobotData::recipientId 기본값, "미배정")은 서버 스키마의
+    // recipient_id: Optional[int] = None에 맞춰 JSON null로 보내야 배정 해제로
+    // 처리된다 — 그대로 숫자를 보내면 존재하지 않는 대상자 id로 오인해 404가 난다.
+    const QJsonObject body{{"recipient_id", recipientId > 0 ? QJsonValue(recipientId) : QJsonValue(QJsonValue::Null)}};
     QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -614,7 +647,16 @@ void P7SettingsPage::deregisterRobot(int dbId) {
 }
 
 void P7SettingsPage::handleWsMessage(const QJsonObject& message) {
-    if (message.value(QStringLiteral("type")).toString() != QStringLiteral("robot_status")) return;
+    const QString type = message.value(QStringLiteral("type")).toString();
+
+    if (type == QStringLiteral("robot_updated")) {
+        // 이 창에서 저장했든(updateRobot/assignRobotRecipient) 다른 대시보드 창에서
+        // 저장했든 서버가 똑같이 브로드캐스트하므로, 구분 없이 그냥 다시 불러온다
+        // (patrol_run_created 등 다른 *_created/*_updated 이벤트와 같은 관례).
+        fetchRobots();
+        return;
+    }
+    if (type != QStringLiteral("robot_status")) return;
 
     const QString code = message.value(QStringLiteral("robot_code")).toString();
     const bool online = message.value(QStringLiteral("online")).toBool();
@@ -652,8 +694,6 @@ void P7SettingsPage::openRobotDialog(int rowIndex) {
         data.connectionDetail = row.connectionDetail;
     }
 
-    const QString previousRecipient = isNew ? QString() : robots_[static_cast<size_t>(rowIndex)].recipientLabel;
-
     QVector<RobotDialog::RecipientOption> recipientOptions;
     for (const RecipientRow& rc : recipients_) {
         RobotDialog::RecipientOption option;
@@ -665,24 +705,17 @@ void P7SettingsPage::openRobotDialog(int rowIndex) {
     auto* dialog = new RobotDialog(isNew ? RobotDialog::Mode::Register : RobotDialog::Mode::Edit, data,
                                     recipientOptions, this);
     connect(dialog, &RobotDialog::robotSaved, this,
-            [this, rowIndex, isNew, previousRecipient](const RobotDialog::RobotData& saved) {
+            [this, rowIndex, isNew](const RobotDialog::RobotData& saved) {
         if (isNew) {
             // 신규 등록은 서버(DB)에 저장하고, 응답 후 목록을 다시 불러와 반영한다.
             registerRobot(saved);
             return;
         }
-        // 기존 로봇 수정은 이번 범위 밖 — 지금까지처럼 로컬 표시만 갱신한다.
-        RobotRow row = robots_[static_cast<size_t>(rowIndex)];
-        row.name = saved.name;
-        row.model = saved.model;
-        row.rosDomainId = saved.rosDomainId;
-        row.ip = saved.ip;
-        row.recipientLabel = saved.recipientLabel;
-        if (saved.recipientLabel != previousRecipient) {
-            row.mapRecipient = saved.recipientLabel;
-        }
-        robots_[static_cast<size_t>(rowIndex)] = row;
-        refreshRobotTable();
+        // 기존 로봇 수정도 이제 서버(DB)에 저장한다 — updateRobot이 성공하면 이어서
+        // 담당 대상자까지 저장하고, 서버가 robot_updated를 브로드캐스트해 이 창을 포함한
+        // 모든 대시보드가 fetchRobots()로 새로고침된다(handleWsMessage 참고).
+        const int dbId = robots_[static_cast<size_t>(rowIndex)].dbId;
+        updateRobot(dbId, saved);
     });
     connect(dialog, &RobotDialog::robotDeregisterRequested, this, [this, rowIndex](const QString&) {
         if (rowIndex >= 0) {

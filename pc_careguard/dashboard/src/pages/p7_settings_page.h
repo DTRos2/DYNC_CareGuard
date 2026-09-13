@@ -78,6 +78,7 @@ private:
     void fetchRobots();  // GET /robots
     void handleRobotsReply(QNetworkReply* reply);
     void registerRobot(const RobotDialog::RobotData& data);  // POST /robots
+    void updateRobot(int robotDbId, const RobotDialog::RobotData& data);  // PUT /robots/{id}
     void assignRobotRecipient(int robotDbId, int recipientId);  // PUT /robots/{id}/recipient
     void deregisterRobot(int dbId);  // DELETE /robots/{id}
     void handleWsMessage(const QJsonObject& message);  // WsClient::messageReceived — type으로 분기

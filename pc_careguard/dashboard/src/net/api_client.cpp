@@ -458,6 +458,7 @@ void ApiClient::createMap(const MapCreateParams& params, ItemCallback<MapInfo> c
 ApiClient::PatrolRunInfo ApiClient::parsePatrolRun(const QJsonObject& o) {
     PatrolRunInfo run;
     run.id = o.value(QStringLiteral("id")).toInt();
+    run.robotId = o.value(QStringLiteral("robot_id")).toInt();
     run.status = o.value(QStringLiteral("status")).toString();
     run.trigger = o.value(QStringLiteral("trigger")).toString();
     run.waypointsTotal = o.value(QStringLiteral("waypoints_total")).toInt();
