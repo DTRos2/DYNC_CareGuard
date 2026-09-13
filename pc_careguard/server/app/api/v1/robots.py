@@ -1,8 +1,10 @@
+import anyio
 import psycopg2
 from fastapi import APIRouter, HTTPException
 from typing import List
 
 from ...core import db
+from ...ws import dashboard_ws
 from ...ws.robot_ws import is_connected, nav_running
 from ...schemas import (
     AssignRobotRecipientRequest,
@@ -129,6 +131,11 @@ def assign_robot_recipient(robot_id: int, payload: AssignRobotRecipientRequest):
 
         conn.commit()
 
+    # 다른 대시보드가 이미 이 로봇의 맵/대상자 화면을 열어두고 있을 수 있다 — 재시작
+    # 없이도 새 담당 대상자로 반영되도록 push한다(map.py::create_map의 map_changed와
+    # 같은 이유·같은 패턴).
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "robot_recipient_changed", "robot_id": robot_id})
+
 
 THRESHOLD_COLUMNS = (
     "battery_attention_pct",
@@ -220,3 +227,5 @@ def deregister_robot(robot_id: int):
             conn.rollback()
             raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
         conn.commit()
+
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "robot_deregistered", "robot_id": robot_id})

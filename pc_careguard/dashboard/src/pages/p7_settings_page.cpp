@@ -614,7 +614,17 @@ void P7SettingsPage::deregisterRobot(int dbId) {
 }
 
 void P7SettingsPage::handleWsMessage(const QJsonObject& message) {
-    if (message.value(QStringLiteral("type")).toString() != QStringLiteral("robot_status")) return;
+    const QString type = message.value(QStringLiteral("type")).toString();
+
+    if (type == QStringLiteral("robot_recipient_changed") || type == QStringLiteral("robot_deregistered") ||
+        type == QStringLiteral("map_changed")) {
+        // 담당 대상자 재배정·로봇 등록 해제·새 맵 등록 — 로봇 관리 탭의 "맵/대상자"
+        // 열이 이 값들을 보여주므로(robots.py::LIST_QUERY), GET /robots를 다시 받는다.
+        fetchRobots();
+        return;
+    }
+
+    if (type != QStringLiteral("robot_status")) return;
 
     const QString code = message.value(QStringLiteral("robot_code")).toString();
     const bool online = message.value(QStringLiteral("online")).toBool();

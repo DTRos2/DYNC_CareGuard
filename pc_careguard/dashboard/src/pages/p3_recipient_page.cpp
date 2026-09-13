@@ -806,7 +806,17 @@ void P3RecipientPage::requestMedicationReannounce(const QString& robotCode, cons
 }
 
 void P3RecipientPage::handleWsMessage(const QJsonObject& message) {
-    if (message.value(QStringLiteral("type")).toString() != QStringLiteral("robot_status")) return;
+    const QString type = message.value(QStringLiteral("type")).toString();
+
+    if (type == QStringLiteral("recipient_changed") || type == QStringLiteral("robot_recipient_changed")) {
+        // 다른 대시보드가 대상자 정보(이름·담당 로봇·보호자 등)를 바꿨거나, 로봇
+        // 등록 모달에서 담당 대상자를 재배정했을 수 있다 — 부분 필드만 오므로
+        // patrol_schedules_changed와 같은 이유로 GET /recipients를 통째로 다시 받는다.
+        loadRecipientsFromServer();
+        return;
+    }
+
+    if (type != QStringLiteral("robot_status")) return;
 
     const QString robotCode = message.value(QStringLiteral("robot_code")).toString();
     const bool online = message.value(QStringLiteral("online")).toBool();

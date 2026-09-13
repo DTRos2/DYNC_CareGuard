@@ -2,6 +2,7 @@ import asyncio
 from datetime import date, timedelta
 from typing import List, Optional
 
+import anyio
 import psycopg2.extras
 from fastapi import APIRouter, HTTPException, Query
 
@@ -103,6 +104,8 @@ def create_patrol_route(payload: PatrolRouteCreate):
         row = cur.fetchone()
         conn.commit()
 
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "patrol_routes_changed", "map_id": row["map_id"]})
+
     return PatrolRouteItem(**row)
 
 
@@ -133,6 +136,9 @@ def update_patrol_route(route_id: int, payload: PatrolRouteUpdate):
 
     if row is None:
         raise HTTPException(status_code=404, detail="경로를 찾을 수 없습니다")
+
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "patrol_routes_changed", "map_id": row["map_id"]})
+
     return PatrolRouteItem(**row)
 
 
@@ -141,10 +147,11 @@ def delete_patrol_route(route_id: int):
     """경로를 삭제한다. 이 경로를 쓰는 순찰 스케줄도 함께 비활성화한다."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE patrol_route SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL",
+            "UPDATE patrol_route SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL RETURNING map_id",
             (route_id,),
         )
-        if cur.rowcount == 0:
+        row = cur.fetchone()
+        if row is None:
             conn.rollback()
             raise HTTPException(status_code=404, detail="경로를 찾을 수 없습니다")
 
@@ -153,6 +160,8 @@ def delete_patrol_route(route_id: int):
             (route_id,),
         )
         conn.commit()
+
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "patrol_routes_changed", "map_id": row["map_id"]})
 
 
 @schedules_router.get("", response_model=List[PatrolScheduleItem])
