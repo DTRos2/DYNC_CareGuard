@@ -417,8 +417,14 @@ async def _clear_running_patrol_run(robot_code: str) -> None:
         cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
         robot = cur.fetchone()
         if robot is not None:
+            # patrol_run.status CHECK 제약은 'running'/'completed'/'aborted'/'failed'만
+            # 허용한다 — 'cancelled'는 없는 값이라, 이 UPDATE가 실제로 running 행을
+            # 하나라도 만나면 CheckViolation으로 매번 500이 났다(2026-09-13 발견: R-02에
+            # 쌓여있던 고아 running 기록 4건이 이 버그 때문에 "취소"를 눌러도 전혀 안
+            # 지워지고 있었다). 사용자가 직접 멈춘 경우의 라벨로 이미 있는 'aborted'
+            # ("중단", STATUS_LABELS 참고)가 의미상으로도 맞는다.
             cur.execute(
-                "UPDATE patrol_run SET status = 'cancelled', ended_at = NOW() "
+                "UPDATE patrol_run SET status = 'aborted', ended_at = NOW() "
                 "WHERE robot_id = %s AND status = 'running'",
                 (robot["id"],),
             )
@@ -441,6 +447,11 @@ async def cancel_patrol_run(payload: CancelPatrolRunRequest):
         robot_ws.send_command(payload.robot_code, {"type": "patrol_stop"}),
         _clear_running_patrol_run(payload.robot_code),
     )
+
+    # P1 통합관제의 "순찰/이동 중" 표시가 patrol_run 실제 상태로 판단하므로(nav_status가
+    # 아니라 — Nav2는 정지 후에도 계속 떠 있어 "대기 중"으로 안 바뀌던 문제, 2026-09-13),
+    # 이 창에서 취소했든 다른 창에서 취소했든 전부 새로고침 없이 반영되게 브로드캐스트한다.
+    await dashboard_ws.broadcast({"type": "patrol_run_updated", "robot_code": payload.robot_code})
 
     # drive-to-point(run_id=0)와 달리 여기서는 로봇 미연결을 에러로 만들지 않는다 —
     # "이미 오프라인이라 실제로 멈추진 못했지만, 화면/DB의 stuck 상태는 정리됐다"가

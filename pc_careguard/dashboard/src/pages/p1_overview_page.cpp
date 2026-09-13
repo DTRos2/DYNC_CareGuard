@@ -206,26 +206,6 @@ QWidget* P1OverviewPage::buildHeaderRow() {
     rowLayout->addWidget(title);
     rowLayout->addStretch();
 
-    // 셋 다 특정 로봇을 고르는 UI가 이 헤더엔 없는 페이지 레벨 버튼이다 — 그래서
-    // "그 시점에 조건에 맞는 로봇 전체"에 명령을 뿌린다(handle*Clicked 참고). 서버에
-    // 로봇 개별 비상정지(모터 즉시 정지) API가 따로 없어서, "전체 비상정지"도 실제로는
-    // 순찰/이동 취소(cancelPatrolRun)를 전체에 보내는 것으로 대신한다 — 지금 낼 수
-    // 있는 가장 가까운 실제 동작이라 그렇다.
-    auto* returnHomeBtn = new QPushButton(QStringLiteral("충전 복귀"), row);
-    returnHomeBtn->setProperty("variant", "secondary");
-    connect(returnHomeBtn, &QPushButton::clicked, this, &P1OverviewPage::handleReturnAllToChargeClicked);
-    rowLayout->addWidget(returnHomeBtn);
-
-    auto* cancelPatrolBtn = new QPushButton(QStringLiteral("순찰 취소"), row);
-    cancelPatrolBtn->setProperty("variant", "secondary");
-    connect(cancelPatrolBtn, &QPushButton::clicked, this, &P1OverviewPage::handleCancelAllPatrolsClicked);
-    rowLayout->addWidget(cancelPatrolBtn);
-
-    auto* estopAllBtn = new QPushButton(QStringLiteral("전체 비상정지"), row);
-    estopAllBtn->setProperty("variant", "danger");
-    connect(estopAllBtn, &QPushButton::clicked, this, &P1OverviewPage::handleEstopAllClicked);
-    rowLayout->addWidget(estopAllBtn);
-
     return row;
 }
 
@@ -594,7 +574,9 @@ void P1OverviewPage::populateTable() {
             // 비상정지"와 같은 이유로 순찰/이동 취소(cancelPatrolRun)로 대신한다.
             connect(estopBtn, &QPushButton::clicked, this, [this, robotCode = row.id]() {
                 apiClient_->cancelPatrolRun(robotCode, [this, robotCode](bool ok, const QString& err) {
-                    if (!ok) {
+                    if (ok) {
+                        markRobotIdle(robotCode);
+                    } else {
                         QMessageBox::warning(this, QStringLiteral("정지 실패"),
                                               err.isEmpty() ? QStringLiteral("%1 연결을 확인해주세요.").arg(robotCode)
                                                             : err);
@@ -630,6 +612,29 @@ void P1OverviewPage::loadFromServer() {
         populateKpiRow();
         populateAlertFeed();
     });
+    refreshPatrolRunStatus();
+}
+
+void P1OverviewPage::refreshPatrolRunStatus() {
+    // robotId<=0 -> robot_id 필터 없이 전체 로봇의 실행 중(status=running) 목록을
+    // 한 번에 받아온다(ApiClient::fetchPatrolRuns 주석 참고).
+    apiClient_->fetchPatrolRuns(0, QStringLiteral("running"),
+                                [this](bool ok, const QVector<ApiClient::PatrolRunInfo>& runs) {
+        if (!ok) return;
+        patrollingRobotIds_.clear();
+        for (const auto& run : runs) patrollingRobotIds_.insert(run.robotId);
+        rebuildRowsFromData();
+    });
+}
+
+void P1OverviewPage::markRobotIdle(const QString& robotCode) {
+    for (const auto& robot : robots_) {
+        if (robot.code == robotCode) {
+            patrollingRobotIds_.remove(robot.id);
+            break;
+        }
+    }
+    rebuildRowsFromData();
 }
 
 void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
@@ -671,6 +676,14 @@ void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
+    if (type == QStringLiteral("patrol_run_created") || type == QStringLiteral("patrol_run_updated")) {
+        // 이 창에서 시작/취소한 것이든(낙관적 갱신은 이미 markRobotIdle이 처리) 다른
+        // 대시보드 창·scheduler.py 자동 트리거로 시작/취소된 것이든, 서버가 같은
+        // 이벤트로 브로드캐스트하므로 구분 없이 실제 상태를 다시 조회해 맞춘다.
+        refreshPatrolRunStatus();
+        return;
+    }
+
     if (type == QStringLiteral("event_created")) {
         // scheduler.py::_medication_tick()가 care_event를 새로 커밋한 직후 보내는
         // 알림(2026-09-12 추가) — "실시간 알림"이라는 이름에 맞게, 페이지를 새로고침하지
@@ -692,6 +705,22 @@ void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
         rebuildRowsFromData();
         populateKpiRow();
         populateAlertFeed();
+        return;
+    }
+
+    if (type == QStringLiteral("system_event_created")) {
+        // robot_ws.py가 배터리 임계값 등 로봇 쪽 시스템 이벤트를 감지했을 때 보내는
+        // 알림(robot_ws.py:462) — event_created(scheduler.py)와 달리 payload 없이 type만
+        // 오므로 바로 반영할 수 없어 목록을 통째로 다시 받아온다(P8LogsPage::handleWsMessage의
+        // fetchSystemEventLog()와 같은 이유). 이게 없으면 배터리 주의/복귀 필요 알림이
+        // 통합관제 화면에 새로고침 전까지 안 뜬다.
+        apiClient_->fetchEvents([this](bool ok, const QVector<ApiClient::EventInfo>& items) {
+            if (!ok) return;
+            events_ = items;
+            rebuildRowsFromData();
+            populateKpiRow();
+            populateAlertFeed();
+        });
         return;
     }
 }
@@ -746,7 +775,7 @@ void P1OverviewPage::rebuildRowsFromData() {
         }
 
         if (!robot.isOnline) row.mission = QStringLiteral("통신 두절");
-        else if (robot.isNavRunning) row.mission = QStringLiteral("순찰/이동 중");
+        else if (patrollingRobotIds_.contains(robot.id)) row.mission = QStringLiteral("순찰/이동 중");
         else row.mission = QStringLiteral("대기 중");
 
         if (const auto* event = latestUnresolvedEventByRobot.value(robot.code, nullptr)) {
@@ -762,93 +791,3 @@ void P1OverviewPage::rebuildRowsFromData() {
     populateTable();
 }
 
-void P1OverviewPage::handleEstopAllClicked() {
-    QVector<QString> targets;
-    for (const auto& robot : robots_) {
-        if (robot.isOnline) targets.push_back(robot.code);
-    }
-    if (targets.isEmpty()) return;
-
-    if (QMessageBox::question(this, QStringLiteral("전체 비상정지"),
-                               QStringLiteral("온라인 로봇 %1대 전체에 정지 명령을 보낼까요?").arg(targets.size()))
-        != QMessageBox::Yes) {
-        return;
-    }
-    for (const auto& code : targets) {
-        apiClient_->cancelPatrolRun(code, [](bool, const QString&) {});
-    }
-}
-
-void P1OverviewPage::handleCancelAllPatrolsClicked() {
-    QVector<QString> targets;
-    for (const auto& robot : robots_) {
-        if (robot.isOnline && robot.isNavRunning) targets.push_back(robot.code);
-    }
-    if (targets.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("순찰 취소"), QStringLiteral("지금 순찰/이동 중인 로봇이 없습니다."));
-        return;
-    }
-    for (const auto& code : targets) {
-        apiClient_->cancelPatrolRun(code, [this, code](bool ok, const QString& err) {
-            if (!ok) {
-                QMessageBox::warning(this, QStringLiteral("순찰 취소 실패"),
-                                      err.isEmpty() ? QStringLiteral("%1 연결을 확인해주세요.").arg(code) : err);
-            }
-        });
-    }
-}
-
-void P1OverviewPage::handleReturnAllToChargeClicked() {
-    QVector<QString> targets;
-    for (const auto& robot : robots_) {
-        if (robot.isOnline) targets.push_back(robot.code);
-    }
-    if (targets.isEmpty()) return;
-
-    if (QMessageBox::question(
-            this, QStringLiteral("충전 복귀"),
-            QStringLiteral("온라인 로봇 %1대 전체를 충전소로 복귀시킬까요?").arg(targets.size()))
-        != QMessageBox::Yes) {
-        return;
-    }
-    for (const auto& code : targets) {
-        sendRobotToCharge(code);
-    }
-}
-
-void P1OverviewPage::sendRobotToCharge(const QString& robotCode) {
-    // RobotControlModal::loadChargeWaypoint()/sendReturnToCharge()와 같은 절차(활성 맵
-    // 조회 -> kind=='charge' 웨이포인트 찾기 -> driveToPoint)를 여기선 로봇 하나가
-    // 아니라 대상 전체에 반복한다 — 모달 쪽은 미리 한 번만 로드해두고 버튼 클릭에 바로
-    // 쓰지만, 여기는 클릭 시점에 그때그때 조회한다(헤더 버튼은 한 세션에 한두 번
-    // 누르는 정도라 미리 캐싱할 이유가 적다).
-    apiClient_->fetchActiveMaps([this, robotCode](bool ok, const QVector<ApiClient::MapInfo>& maps) {
-        if (!ok) return;
-        int mapId = 0;
-        for (const auto& map : maps) {
-            if (map.robotCode == robotCode) {
-                mapId = map.id;
-                break;
-            }
-        }
-        if (mapId <= 0) return;
-
-        apiClient_->fetchWaypoints(mapId, [this, robotCode, mapId](bool wpOk, const QVector<ApiClient::WaypointInfo>& waypoints) {
-            if (!wpOk) return;
-            for (const auto& wp : waypoints) {
-                if (wp.kind != QStringLiteral("charge")) continue;
-                apiClient_->driveToPoint(robotCode, mapId, wp.code, wp.posX, wp.posY, wp.yaw,
-                                          [this, robotCode](bool driveOk, const QString& err) {
-                                              if (!driveOk) {
-                                                  QMessageBox::warning(
-                                                      this, QStringLiteral("충전 복귀 실패"),
-                                                      err.isEmpty()
-                                                          ? QStringLiteral("%1 연결을 확인해주세요.").arg(robotCode)
-                                                          : err);
-                                              }
-                                          });
-                return;
-            }
-        });
-    });
-}
