@@ -364,8 +364,27 @@ QWidget* P6PatrolPage::buildHeaderRow() {
     refreshRobotStateBtn_->setProperty("variant", "secondary");
     refreshRobotStateBtn_->setIconSize(QSize(12, 12));
     refreshRobotStateBtn_->setToolTip(QStringLiteral("로봇 상태 새로고침"));
-    connect(refreshRobotStateBtn_, &QPushButton::clicked, this, &P6PatrolPage::refreshRobotState);
+    connect(refreshRobotStateBtn_, &QPushButton::clicked, this, [this] {
+        refreshRobotState();
+        // 배지가 떠 있을 때만(=staleMapIds_에 지금 맵이 있을 때만) 실제 재조회를
+        // 한다 — 평소엔 이 버튼이 로봇 상태만 다시 맞추던 것과 동작이 그대로다.
+        if (currentMapIndex_ >= 0 && currentMapIndex_ < maps_.size() &&
+            staleMapIds_.contains(maps_[currentMapIndex_].serverMapId)) {
+            reloadCurrentMapWaypointsAndRoutes();
+        }
+    });
     layout->addWidget(refreshRobotStateBtn_);
+
+    // 다른 대시보드가 이 맵의 웨이포인트/경로를 저장했을 때만 나타난다
+    // (handleWsMessage의 waypoints_changed/patrol_routes_changed) — 눌러야 하는
+    // 이유를 보여주는 용도라, 새로고침 버튼처럼 항상 떠 있지 않고 평소엔 숨어 있다.
+    refreshStaleBadge_ = new QLabel(QStringLiteral("웨이포인트/경로 변경됨"), row);
+    refreshStaleBadge_->setObjectName("badge");
+    refreshStaleBadge_->setProperty("level", "info");
+    refreshStaleBadge_->setProperty("size", "xs");
+    refreshStaleBadge_->setToolTip(QStringLiteral("새로고침을 누르면 최신 웨이포인트·경로를 받아옵니다"));
+    refreshStaleBadge_->setVisible(false);
+    layout->addWidget(refreshStaleBadge_);
 
     layout->addStretch();
 
@@ -2150,6 +2169,7 @@ void P6PatrolPage::loadMapData(int index) {
     rebuildRouteOrderList();
     rebuildScheduleList();
     refreshCanvasPreview();
+    updateRefreshBadge();
 }
 
 void P6PatrolPage::switchToMap(int index) {
@@ -2273,6 +2293,102 @@ void P6PatrolPage::refreshMapForRobot(const QString& robotCode) {
     });
 }
 
+void P6PatrolPage::updateRefreshBadge() {
+    const bool stale = currentMapIndex_ >= 0 && currentMapIndex_ < maps_.size() &&
+                        staleMapIds_.contains(maps_[currentMapIndex_].serverMapId);
+    refreshStaleBadge_->setVisible(stale);
+}
+
+void P6PatrolPage::reloadCurrentMapWaypointsAndRoutes() {
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const int mapId = maps_[currentMapIndex_].serverMapId;
+    if (mapId <= 0) return;
+
+    // 서버 값으로 통째로 교체하는 이상 로컬 편집과의 델타 계산은 무의미하다 —
+    // cancelRouteOrderEdit/exitRouteEditMode(false) 둘 다 서버 호출 없이 편집 UI만
+    // 끈다(switchToMap이 맵 전환 시 이미 같은 방식으로 쓰는 패턴).
+    if (routeOrderEditing_) cancelRouteOrderEdit();
+    if (routeEditMode_) exitRouteEditMode(false);
+
+    apiClient_->fetchWaypoints(mapId, [this, mapId](bool ok, const QVector<ApiClient::WaypointInfo>& serverWaypoints) {
+        // 응답이 오는 사이 다른 맵으로 전환했을 수 있다 — loadServerMapImageDone과
+        // 같은 이유로 매번 다시 확인한다.
+        if (!ok || currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].serverMapId != mapId) return;
+
+        QVector<WaypointCanvas::Waypoint> newWaypoints;
+        QMap<QString, int> newWaypointServerIds;
+        QMap<int, QString> codeById;
+        int nextSeq = 1;
+        for (const ApiClient::WaypointInfo& w : serverWaypoints) {
+            const QPointF meters(w.posX, w.posY);
+            // 이미 떠 있는 현재 맵이라 designMapMetersToCanvas(초기 로딩 전용 폴백)
+            // 대신 canvas_의 live 변환을 그대로 쓸 수 있다.
+            newWaypoints.append(WaypointCanvas::Waypoint{
+                w.code, w.name, w.kind, canvas_->mapMetersToCanvas(meters),
+                CanvasGeometry::mapYawRadToCanvasYawDeg(w.yaw), meters});
+            newWaypointServerIds[w.code] = w.id;
+            codeById[w.id] = w.code;
+            if (w.code.startsWith(QStringLiteral("WP_"))) {
+                bool convOk = false;
+                const int n = w.code.mid(3).toInt(&convOk);
+                if (convOk) nextSeq = qMax(nextSeq, n + 1);
+            }
+        }
+
+        apiClient_->fetchPatrolRoutes(
+            mapId, [this, mapId, newWaypoints, newWaypointServerIds, codeById, nextSeq](
+                       bool routesOk, const QVector<ApiClient::PatrolRouteInfo>& serverRoutes) {
+                if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+                if (maps_[currentMapIndex_].serverMapId != mapId) return;
+                MapData& md = maps_[currentMapIndex_];
+
+                QMap<QString, QVector<QString>> newRoutes;
+                QMap<QString, int> newRouteServerIds;
+                if (routesOk) {
+                    for (const ApiClient::PatrolRouteInfo& r : serverRoutes) {
+                        QVector<QString> codes;
+                        for (int waypointId : r.steps) codes.append(codeById.value(waypointId));
+                        newRoutes[r.name] = codes;
+                        newRouteServerIds[r.name] = r.id;
+                    }
+                }
+
+                waypoints_ = newWaypoints;
+                nextWpSeq_ = nextSeq;
+                md.waypoints = newWaypoints;
+                md.waypointServerIds = newWaypointServerIds;
+                md.nextWpSeq = nextSeq;
+
+                // routesOk가 false면(조회 실패) 기존 routes_를 그대로 둔다 — 실패를
+                // "경로가 전부 삭제됨"으로 잘못 해석하면 안 되므로.
+                if (routesOk) {
+                    routes_ = newRoutes;
+                    md.routes = newRoutes;
+                    md.routeServerIds = newRouteServerIds;
+                    if (newRoutes.contains(currentRoute_)) {
+                        // 그대로 유지
+                    } else if (!newRoutes.isEmpty()) {
+                        currentRoute_ = newRoutes.firstKey();
+                    } else {
+                        currentRoute_.clear();
+                    }
+                    md.currentRoute = currentRoute_;
+                }
+
+                canvas_->setWaypoints(waypoints_);
+                canvas_->requestMetersResync();
+                rebuildWpList();
+                rebuildRouteSelector();
+                rebuildRouteOrderList();
+                refreshCanvasPreview();
+
+                staleMapIds_.remove(mapId);
+                updateRefreshBadge();
+            });
+    });
+}
+
 void P6PatrolPage::loadServerMapDetails(std::shared_ptr<QVector<MapData>> maps, int index) {
     if (index >= maps->size()) {
         // 모든 맵의 웨이포인트·경로·스케줄을 다 채웠다 — 로컬 데모 데이터를 서버 데이터로 교체.
@@ -2392,6 +2508,38 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
             slamActive_ = false;
             updateRobotStatusBanner();
             updateDrivingButtonsEnabled();
+        }
+        return;
+    }
+
+    if (type == QStringLiteral("map_changed")) {
+        // 다른 대시보드가 "파일로 등록"으로 이 로봇의 맵을 새로 올렸을 수 있다 —
+        // slam_done과 같은 이유·같은 경로로 반영한다.
+        refreshMapForRobot(message.value(QStringLiteral("robot_code")).toString());
+        return;
+    }
+
+    if (type == QStringLiteral("robot_recipient_changed")) {
+        // 담당 대상자가 재배정됐을 수 있다 — 맵 메뉴에 곁들여 보여주는 대상자
+        // 이름(rebuildMapMenu가 쓰는 recipientName)을 새로 받아온다. robot_id만
+        // 오므로 maps_에서 같은 로봇의 코드를 찾아 slam_done과 같은 경로로 새로고침한다.
+        const int robotId = message.value(QStringLiteral("robot_id")).toInt();
+        for (const MapData& m : maps_) {
+            if (m.serverRobotId == robotId) {
+                refreshMapForRobot(m.robotId);
+                break;
+            }
+        }
+        return;
+    }
+
+    if (type == QStringLiteral("waypoints_changed") || type == QStringLiteral("patrol_routes_changed")) {
+        // 다른 대시보드가 이 맵의 웨이포인트/경로를 저장했다 — 자동으로 캔버스를
+        // 갈아치우지 않고(reloadCurrentMapWaypointsAndRoutes 주석 참고) 배지만 띄운다.
+        const int mapId = message.value(QStringLiteral("map_id")).toInt();
+        if (mapId > 0) {
+            staleMapIds_.insert(mapId);
+            updateRefreshBadge();
         }
         return;
     }

@@ -656,6 +656,16 @@ void P7SettingsPage::handleWsMessage(const QJsonObject& message) {
         fetchRobots();
         return;
     }
+
+    if (type == QStringLiteral("robot_recipient_changed") || type == QStringLiteral("robot_deregistered") ||
+        type == QStringLiteral("map_changed")) {
+        // robot_updated가 담당 대상자 재배정까지는 이미 덮지만, 로봇 등록 해제·새 맵
+        // 등록은 이쪽 이벤트로만 온다 — 로봇 관리 탭의 "맵/대상자" 열이 이 값들을
+        // 보여주므로(robots.py::LIST_QUERY), GET /robots를 다시 받는다.
+        fetchRobots();
+        return;
+    }
+
     if (type != QStringLiteral("robot_status")) return;
 
     const QString code = message.value(QStringLiteral("robot_code")).toString();

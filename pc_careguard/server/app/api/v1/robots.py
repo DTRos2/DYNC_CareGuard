@@ -1,3 +1,4 @@
+import anyio
 import psycopg2
 from fastapi import APIRouter, HTTPException
 from typing import List
@@ -179,6 +180,10 @@ def assign_robot_recipient(robot_id: int, payload: AssignRobotRecipientRequest):
     # update_robot과 같은 이유 — 담당 대상자도 로봇 수정 다이얼로그의 일부라, 다른
     # 대시보드 창의 로봇 목록·대상자 목록이 새로고침 없이 같이 바뀌어야 한다.
     dashboard_ws.broadcast_threadsafe({"type": "robot_updated"})
+    # P6가 어느 로봇의 맵을 바로 찾아 새로고침(refreshMapForRobot)할 수 있도록
+    # robot_id가 실린 이벤트도 함께 보낸다 — robot_updated만으론 어느 로봇인지 몰라
+    # P6가 반응할 수 없다.
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "robot_recipient_changed", "robot_id": robot_id})
 
 
 THRESHOLD_COLUMNS = (
@@ -271,3 +276,5 @@ def deregister_robot(robot_id: int):
             conn.rollback()
             raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
         conn.commit()
+
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "robot_deregistered", "robot_id": robot_id})
