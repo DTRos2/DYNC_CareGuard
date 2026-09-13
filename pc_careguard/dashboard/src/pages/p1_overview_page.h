@@ -1,5 +1,6 @@
 #pragma once
 #include <QMap>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 
@@ -62,6 +63,14 @@ private:
     void loadFromServer();
     void handleWsMessage(const QJsonObject& message);
     void rebuildRowsFromData();
+    // "순찰/이동 중" 여부는 nav_status(Nav2 프로세스 생존)가 아니라 실제 patrol_run
+    // 진행 상태로 판단해야 한다(P6PatrolPage::isPatrolling_과 같은 이유·같은 원본 데이터) —
+    // Nav2는 정지 명령 후에도 계속 떠 있어서 nav_status만으로는 "대기 중"으로 안 바뀐다.
+    void refreshPatrolRunStatus();
+    // cancelPatrolRun 성공 직후 그 로봇을 낙관적으로 "대기 중"으로 반영한다 — 서버가
+    // patrol_run_updated를 브로드캐스트해줘도 그 WS 메시지를 다시 받기 전까지 이 창의
+    // 클릭 결과가 화면에 안 보이면 사용자가 "제대로 안 됐나?" 헷갈리기 때문.
+    void markRobotIdle(const QString& robotCode);
     void populateKpiRow();
     void populateAlertFeed();
 
@@ -95,6 +104,9 @@ private:
     QVector<ApiClient::RobotInfo> robots_;
     QVector<ApiClient::RecipientInfo> recipients_;
     QVector<ApiClient::EventInfo> events_;
+    // status='running'인 patrol_run이 있는 robot.id 집합 — "순찰/이동 중" 판단 기준
+    // (robot.isNavRunning이 아니라 이걸 써야 하는 이유는 refreshPatrolRunStatus() 선언부 참고).
+    QSet<int> patrollingRobotIds_;
     // robot_code -> 배터리 %. 서버(robot_ws.py::_smooth_battery_percent)가 이미 EMA +
     // 히스테리시스로 다듬어서 내려주므로 여기서는 그대로 저장만 한다(2026-09-12,
     // 원래는 여기서 스무딩했는데 화면마다 중복 구현해야 해서 서버로 옮겼다).

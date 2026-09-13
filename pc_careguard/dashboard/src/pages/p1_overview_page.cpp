@@ -594,7 +594,9 @@ void P1OverviewPage::populateTable() {
             // 비상정지"와 같은 이유로 순찰/이동 취소(cancelPatrolRun)로 대신한다.
             connect(estopBtn, &QPushButton::clicked, this, [this, robotCode = row.id]() {
                 apiClient_->cancelPatrolRun(robotCode, [this, robotCode](bool ok, const QString& err) {
-                    if (!ok) {
+                    if (ok) {
+                        markRobotIdle(robotCode);
+                    } else {
                         QMessageBox::warning(this, QStringLiteral("정지 실패"),
                                               err.isEmpty() ? QStringLiteral("%1 연결을 확인해주세요.").arg(robotCode)
                                                             : err);
@@ -630,6 +632,29 @@ void P1OverviewPage::loadFromServer() {
         populateKpiRow();
         populateAlertFeed();
     });
+    refreshPatrolRunStatus();
+}
+
+void P1OverviewPage::refreshPatrolRunStatus() {
+    // robotId<=0 -> robot_id 필터 없이 전체 로봇의 실행 중(status=running) 목록을
+    // 한 번에 받아온다(ApiClient::fetchPatrolRuns 주석 참고).
+    apiClient_->fetchPatrolRuns(0, QStringLiteral("running"),
+                                [this](bool ok, const QVector<ApiClient::PatrolRunInfo>& runs) {
+        if (!ok) return;
+        patrollingRobotIds_.clear();
+        for (const auto& run : runs) patrollingRobotIds_.insert(run.robotId);
+        rebuildRowsFromData();
+    });
+}
+
+void P1OverviewPage::markRobotIdle(const QString& robotCode) {
+    for (const auto& robot : robots_) {
+        if (robot.code == robotCode) {
+            patrollingRobotIds_.remove(robot.id);
+            break;
+        }
+    }
+    rebuildRowsFromData();
 }
 
 void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
@@ -671,6 +696,14 @@ void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
+    if (type == QStringLiteral("patrol_run_created") || type == QStringLiteral("patrol_run_updated")) {
+        // 이 창에서 시작/취소한 것이든(낙관적 갱신은 이미 markRobotIdle이 처리) 다른
+        // 대시보드 창·scheduler.py 자동 트리거로 시작/취소된 것이든, 서버가 같은
+        // 이벤트로 브로드캐스트하므로 구분 없이 실제 상태를 다시 조회해 맞춘다.
+        refreshPatrolRunStatus();
+        return;
+    }
+
     if (type == QStringLiteral("event_created")) {
         // scheduler.py::_medication_tick()가 care_event를 새로 커밋한 직후 보내는
         // 알림(2026-09-12 추가) — "실시간 알림"이라는 이름에 맞게, 페이지를 새로고침하지
@@ -692,6 +725,22 @@ void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
         rebuildRowsFromData();
         populateKpiRow();
         populateAlertFeed();
+        return;
+    }
+
+    if (type == QStringLiteral("system_event_created")) {
+        // robot_ws.py가 배터리 임계값 등 로봇 쪽 시스템 이벤트를 감지했을 때 보내는
+        // 알림(robot_ws.py:462) — event_created(scheduler.py)와 달리 payload 없이 type만
+        // 오므로 바로 반영할 수 없어 목록을 통째로 다시 받아온다(P8LogsPage::handleWsMessage의
+        // fetchSystemEventLog()와 같은 이유). 이게 없으면 배터리 주의/복귀 필요 알림이
+        // 통합관제 화면에 새로고침 전까지 안 뜬다.
+        apiClient_->fetchEvents([this](bool ok, const QVector<ApiClient::EventInfo>& items) {
+            if (!ok) return;
+            events_ = items;
+            rebuildRowsFromData();
+            populateKpiRow();
+            populateAlertFeed();
+        });
         return;
     }
 }
@@ -746,7 +795,7 @@ void P1OverviewPage::rebuildRowsFromData() {
         }
 
         if (!robot.isOnline) row.mission = QStringLiteral("통신 두절");
-        else if (robot.isNavRunning) row.mission = QStringLiteral("순찰/이동 중");
+        else if (patrollingRobotIds_.contains(robot.id)) row.mission = QStringLiteral("순찰/이동 중");
         else row.mission = QStringLiteral("대기 중");
 
         if (const auto* event = latestUnresolvedEventByRobot.value(robot.code, nullptr)) {
@@ -852,3 +901,4 @@ void P1OverviewPage::sendRobotToCharge(const QString& robotCode) {
         });
     });
 }
+
