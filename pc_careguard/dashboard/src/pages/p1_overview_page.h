@@ -77,13 +77,6 @@ private:
     void sortRows(SortMode mode);
     void populateTable();
 
-    // 헤더의 "전체 비상정지"/"순찰 취소"/"충전 복귀" — 셋 다 로봇 하나를 고르는 UI가
-    // 없는 페이지 레벨 버튼이라, 대상 조건에 맞는 모든 로봇에 각각 명령을 보낸다.
-    void handleEstopAllClicked();
-    void handleCancelAllPatrolsClicked();
-    void handleReturnAllToChargeClicked();
-    void sendRobotToCharge(const QString& robotCode);
-
     ApiClient* apiClient_ = nullptr;
     WsClient* wsClient_ = nullptr;
 

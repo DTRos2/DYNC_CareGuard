@@ -206,26 +206,6 @@ QWidget* P1OverviewPage::buildHeaderRow() {
     rowLayout->addWidget(title);
     rowLayout->addStretch();
 
-    // 셋 다 특정 로봇을 고르는 UI가 이 헤더엔 없는 페이지 레벨 버튼이다 — 그래서
-    // "그 시점에 조건에 맞는 로봇 전체"에 명령을 뿌린다(handle*Clicked 참고). 서버에
-    // 로봇 개별 비상정지(모터 즉시 정지) API가 따로 없어서, "전체 비상정지"도 실제로는
-    // 순찰/이동 취소(cancelPatrolRun)를 전체에 보내는 것으로 대신한다 — 지금 낼 수
-    // 있는 가장 가까운 실제 동작이라 그렇다.
-    auto* returnHomeBtn = new QPushButton(QStringLiteral("충전 복귀"), row);
-    returnHomeBtn->setProperty("variant", "secondary");
-    connect(returnHomeBtn, &QPushButton::clicked, this, &P1OverviewPage::handleReturnAllToChargeClicked);
-    rowLayout->addWidget(returnHomeBtn);
-
-    auto* cancelPatrolBtn = new QPushButton(QStringLiteral("순찰 취소"), row);
-    cancelPatrolBtn->setProperty("variant", "secondary");
-    connect(cancelPatrolBtn, &QPushButton::clicked, this, &P1OverviewPage::handleCancelAllPatrolsClicked);
-    rowLayout->addWidget(cancelPatrolBtn);
-
-    auto* estopAllBtn = new QPushButton(QStringLiteral("전체 비상정지"), row);
-    estopAllBtn->setProperty("variant", "danger");
-    connect(estopAllBtn, &QPushButton::clicked, this, &P1OverviewPage::handleEstopAllClicked);
-    rowLayout->addWidget(estopAllBtn);
-
     return row;
 }
 
@@ -809,96 +789,5 @@ void P1OverviewPage::rebuildRowsFromData() {
 
     sortRows(currentSortMode_);
     populateTable();
-}
-
-void P1OverviewPage::handleEstopAllClicked() {
-    QVector<QString> targets;
-    for (const auto& robot : robots_) {
-        if (robot.isOnline) targets.push_back(robot.code);
-    }
-    if (targets.isEmpty()) return;
-
-    if (QMessageBox::question(this, QStringLiteral("전체 비상정지"),
-                               QStringLiteral("온라인 로봇 %1대 전체에 정지 명령을 보낼까요?").arg(targets.size()))
-        != QMessageBox::Yes) {
-        return;
-    }
-    for (const auto& code : targets) {
-        apiClient_->cancelPatrolRun(code, [](bool, const QString&) {});
-    }
-}
-
-void P1OverviewPage::handleCancelAllPatrolsClicked() {
-    QVector<QString> targets;
-    for (const auto& robot : robots_) {
-        if (robot.isOnline && robot.isNavRunning) targets.push_back(robot.code);
-    }
-    if (targets.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("순찰 취소"), QStringLiteral("지금 순찰/이동 중인 로봇이 없습니다."));
-        return;
-    }
-    for (const auto& code : targets) {
-        apiClient_->cancelPatrolRun(code, [this, code](bool ok, const QString& err) {
-            if (!ok) {
-                QMessageBox::warning(this, QStringLiteral("순찰 취소 실패"),
-                                      err.isEmpty() ? QStringLiteral("%1 연결을 확인해주세요.").arg(code) : err);
-            }
-        });
-    }
-}
-
-void P1OverviewPage::handleReturnAllToChargeClicked() {
-    QVector<QString> targets;
-    for (const auto& robot : robots_) {
-        if (robot.isOnline) targets.push_back(robot.code);
-    }
-    if (targets.isEmpty()) return;
-
-    if (QMessageBox::question(
-            this, QStringLiteral("충전 복귀"),
-            QStringLiteral("온라인 로봇 %1대 전체를 충전소로 복귀시킬까요?").arg(targets.size()))
-        != QMessageBox::Yes) {
-        return;
-    }
-    for (const auto& code : targets) {
-        sendRobotToCharge(code);
-    }
-}
-
-void P1OverviewPage::sendRobotToCharge(const QString& robotCode) {
-    // RobotControlModal::loadChargeWaypoint()/sendReturnToCharge()와 같은 절차(활성 맵
-    // 조회 -> kind=='charge' 웨이포인트 찾기 -> driveToPoint)를 여기선 로봇 하나가
-    // 아니라 대상 전체에 반복한다 — 모달 쪽은 미리 한 번만 로드해두고 버튼 클릭에 바로
-    // 쓰지만, 여기는 클릭 시점에 그때그때 조회한다(헤더 버튼은 한 세션에 한두 번
-    // 누르는 정도라 미리 캐싱할 이유가 적다).
-    apiClient_->fetchActiveMaps([this, robotCode](bool ok, const QVector<ApiClient::MapInfo>& maps) {
-        if (!ok) return;
-        int mapId = 0;
-        for (const auto& map : maps) {
-            if (map.robotCode == robotCode) {
-                mapId = map.id;
-                break;
-            }
-        }
-        if (mapId <= 0) return;
-
-        apiClient_->fetchWaypoints(mapId, [this, robotCode, mapId](bool wpOk, const QVector<ApiClient::WaypointInfo>& waypoints) {
-            if (!wpOk) return;
-            for (const auto& wp : waypoints) {
-                if (wp.kind != QStringLiteral("charge")) continue;
-                apiClient_->driveToPoint(robotCode, mapId, wp.code, wp.posX, wp.posY, wp.yaw,
-                                          [this, robotCode](bool driveOk, const QString& err) {
-                                              if (!driveOk) {
-                                                  QMessageBox::warning(
-                                                      this, QStringLiteral("충전 복귀 실패"),
-                                                      err.isEmpty()
-                                                          ? QStringLiteral("%1 연결을 확인해주세요.").arg(robotCode)
-                                                          : err);
-                                              }
-                                          });
-                return;
-            }
-        });
-    });
 }
 
