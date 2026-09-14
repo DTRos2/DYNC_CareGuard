@@ -274,7 +274,8 @@ void LoginWindow::handleLoginReply(QNetworkReply* reply, const QString& id) {
     if (statusCode == 200) {
         failCount_ = 0;
         setState(State::Idle);
-        emit loginSucceeded(id);
+        const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
+        emit loginSucceeded(id, body.value("role").toString(), body.value("id").toInt());
         return;
     }
 

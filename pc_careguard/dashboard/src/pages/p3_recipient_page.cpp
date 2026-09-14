@@ -508,6 +508,12 @@ void P3RecipientPage::setWsClient(WsClient* client) {
     connect(wsClient_, &WsClient::messageReceived, this, &P3RecipientPage::handleWsMessage);
 }
 
+void P3RecipientPage::setGuardianUserId(int userId) {
+    if (guardianUserId_ == userId) return;
+    guardianUserId_ = userId;
+    loadRecipientsFromServer();
+}
+
 void P3RecipientPage::loadRecipientsFromServer() {
     apiClient_->fetchRecipients([this](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
         if (!ok) {
@@ -516,6 +522,7 @@ void P3RecipientPage::loadRecipientsFromServer() {
             return;
         }
         QVector<RecipientCard> cards;
+        QStringList names;
         for (const auto& info : items) {
             RecipientCard card;
             card.id = info.id;
@@ -533,10 +540,15 @@ void P3RecipientPage::loadRecipientsFromServer() {
             card.statusSummary = info.statusSummary;
             applyMedsToday(info.medsToday, card.meds);
             cards.append(card);
+            names.append(card.name);
         }
         recipients_ = cards;
         rebuildGrid();
-    });
+        // guardianUserId_==0(admin/operator)이면 빈 목록 = "필터 없음"으로 보낸다. names는
+        // 이미 fetchRecipients가 guardian_user_id로 걸러온 결과라 그대로 넘겨도 맞지만,
+        // P2EventPage 쪽 필터 의미(빈 목록=전체 허용)를 명확히 하기 위해 구분해서 보낸다.
+        emit guardianRecipientNamesChanged(guardianUserId_ > 0 ? names : QStringList());
+    }, guardianUserId_);
 }
 
 QWidget* P3RecipientPage::buildHeaderRow() {

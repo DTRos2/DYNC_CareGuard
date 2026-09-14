@@ -150,7 +150,8 @@ int main(int argc, char* argv[]) {
     auto* login = new LoginWindow();
     MainWindow* mainWindow = nullptr;
 
-    QObject::connect(login, &LoginWindow::loginSucceeded, [&](const QString& username) {
+    QObject::connect(login, &LoginWindow::loginSucceeded,
+                      [&](const QString& username, const QString& role, int userId) {
         if (!mainWindow) {
             mainWindow = new MainWindow();
             QObject::connect(mainWindow, &MainWindow::logoutRequested, [&]() {
@@ -159,6 +160,7 @@ int main(int argc, char* argv[]) {
             });
         }
         mainWindow->setUserName(username);
+        mainWindow->setUserRole(role, userId);
         mainWindow->show();
         login->hide();
     });

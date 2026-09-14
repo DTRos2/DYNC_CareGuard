@@ -147,6 +147,25 @@ void P7SettingsPage::setCurrentUserLoginId(const QString& loginId) {
     if (accountTable_ != nullptr) refreshAccountTable();
 }
 
+void P7SettingsPage::setCurrentUserRole(const QString& role) {
+    const bool operatorRole = (role == QStringLiteral("operator"));
+
+    // 로봇 관리(0)·계정 관리(1) 탭은 operator에게 숨긴다 — 임계값·알림(2) 탭 하나만 남는다.
+    if (tabs_ != nullptr) {
+        tabs_->setTabVisible(0, !operatorRole);
+        tabs_->setTabVisible(1, !operatorRole);
+        if (operatorRole) tabs_->setCurrentIndex(2);
+    }
+
+    // 남은 임계값·알림 탭은 operator에게 조회 전용 — 입력칸을 막고 저장 버튼을 숨긴다.
+    for (QLineEdit* edit : {batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
+                             reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_}) {
+        if (edit != nullptr) edit->setReadOnly(operatorRole);
+    }
+    if (saveThresholdsBtn_ != nullptr) saveThresholdsBtn_->setVisible(!operatorRole);
+    if (applyAllThresholdsBtn_ != nullptr) applyAllThresholdsBtn_->setVisible(!operatorRole);
+}
+
 P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     // 로봇 목록은 하드코딩하지 않고 서버 DB에서 불러온다 (fetchRobots(), 생성자 마지막에서 호출).
 
@@ -165,11 +184,11 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     title->setObjectName("pageTitle");
     layout->addWidget(title);
 
-    auto* tabs = new QTabWidget(this);
-    tabs->addTab(buildRobotTab(), QStringLiteral("로봇 관리"));
-    tabs->addTab(buildAccountTab(), QStringLiteral("계정 관리"));
-    tabs->addTab(buildThresholdTab(), QStringLiteral("임계값 · 알림"));
-    layout->addWidget(tabs);
+    tabs_ = new QTabWidget(this);
+    tabs_->addTab(buildRobotTab(), QStringLiteral("로봇 관리"));
+    tabs_->addTab(buildAccountTab(), QStringLiteral("계정 관리"));
+    tabs_->addTab(buildThresholdTab(), QStringLiteral("임계값 · 알림"));
+    layout->addWidget(tabs_);
 
     serverUrl_ = ServerConfig::resolveServerUrl();
     netManager_ = new QNetworkAccessManager(this);
@@ -423,15 +442,15 @@ QWidget* P7SettingsPage::buildThresholdTab() {
     buttonLayout->setSpacing(10);
     buttonLayout->addStretch();
 
-    auto* saveBtn = new QPushButton(QStringLiteral("이 로봇에 저장"), buttonRow);
-    saveBtn->setProperty("variant", "primary");
-    connect(saveBtn, &QPushButton::clicked, this, &P7SettingsPage::saveThresholdsForCurrentRobot);
-    buttonLayout->addWidget(saveBtn);
+    saveThresholdsBtn_ = new QPushButton(QStringLiteral("이 로봇에 저장"), buttonRow);
+    saveThresholdsBtn_->setProperty("variant", "primary");
+    connect(saveThresholdsBtn_, &QPushButton::clicked, this, &P7SettingsPage::saveThresholdsForCurrentRobot);
+    buttonLayout->addWidget(saveThresholdsBtn_);
 
-    auto* applyAllBtn = new QPushButton(QStringLiteral("전체 로봇에 적용"), buttonRow);
-    applyAllBtn->setProperty("variant", "secondary");
-    connect(applyAllBtn, &QPushButton::clicked, this, &P7SettingsPage::applyThresholdsToAllRobots);
-    buttonLayout->addWidget(applyAllBtn);
+    applyAllThresholdsBtn_ = new QPushButton(QStringLiteral("전체 로봇에 적용"), buttonRow);
+    applyAllThresholdsBtn_->setProperty("variant", "secondary");
+    connect(applyAllThresholdsBtn_, &QPushButton::clicked, this, &P7SettingsPage::applyThresholdsToAllRobots);
+    buttonLayout->addWidget(applyAllThresholdsBtn_);
 
     layout->addWidget(buttonRow);
     layout->addStretch();
