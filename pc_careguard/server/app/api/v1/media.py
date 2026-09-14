@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from psycopg2.extras import Json
 
 from ...core import config, db
+from ...core.auth import CurrentUser, get_current_user, require_roles
 from ...schemas import (
     MapImageUploadResponse,
     MediaUploadResponse,
@@ -466,7 +467,7 @@ def list_video_events(
 
 
 @video_events_router.post("/{camera_recording_id}/view", response_model=RecordVideoViewResponse)
-def record_video_view(camera_recording_id: int, body: RecordVideoViewRequest):
+def record_video_view(camera_recording_id: int, body: RecordVideoViewReques, current_user: CurrentUser = Depends(get_current_user)):
     """영상 열람 사실을 감사 로그(user_action_log)에 기록한다.
 
     view_count 전용 컬럼은 없다 — list_video_events()와 마찬가지로 이 테이블을 그때그때
@@ -486,6 +487,23 @@ def record_video_view(camera_recording_id: int, body: RecordVideoViewRequest):
         recording = cur.fetchone()
         if recording is None:
             raise HTTPException(status_code=404, detail="녹화를 찾을 수 없습니다")
+
+        if current_user.role == "guardian":
+            cur.execute(
+                """
+                SELECT COALESCE(rc.guardian_user_id, rc_by_robot.guardian_user_id) AS owner_id
+                FROM camera_recording cr
+                LEFT JOIN care_event ce ON ce.id = cr.care_event_id
+                LEFT JOIN recipient rc ON rc.id = ce.recipient_id
+                LEFT JOIN recipient rc_by_robot
+                    ON rc_by_robot.robot_id = cr.robot_id AND rc_by_robot.deregistered_at IS NULL
+                WHERE cr.id = %s
+                """,
+                (camera_recording_id,),
+            )
+            owner = cur.fetchone()
+            if owner is None or owner["owner_id"] != current_user.id:
+                raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
 
         cur.execute(
             "SELECT id FROM careguard_user WHERE login_id = %s AND deleted_at IS NULL",
