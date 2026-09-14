@@ -18,7 +18,6 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -27,6 +26,7 @@
 
 #include "dialogs/p7_account_dialog.h"
 #include "dialogs/p7_robot_dialog.h"
+#include "net/server_config.h"
 #include "net/ws_client.h"
 #include "theme/tokens.h"
 #include "widgets/dropdown_fix_combo_box.h"
@@ -171,8 +171,7 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     tabs->addTab(buildThresholdTab(), QStringLiteral("임계값 · 알림"));
     layout->addWidget(tabs);
 
-    serverUrl_ = QProcessEnvironment::systemEnvironment().value(
-        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    serverUrl_ = ServerConfig::resolveServerUrl();
     netManager_ = new QNetworkAccessManager(this);
     fetchAccounts();
     fetchRecipients();
