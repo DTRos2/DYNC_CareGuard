@@ -143,3 +143,38 @@ def test_battery_return_needed_requires_recovery_margin(client, cleanup_robot):
     finally:
         _cleanup_system_events(robot_id)
         robot_ws._battery_alert_state.pop(code, None)
+
+
+def test_battery_attention_requires_recovery_margin(client, cleanup_robot):
+    """return_needed와 같은 증상이 attention_pct(30%) 근처에서도 재현됐다 —
+    여유분 없이 경계만 보면 "배터리 주의" <-> "정상 회복"이 번갈아 반복 생성된다."""
+    code = _unique_code()
+    cleanup_robot.append(code)
+    robot_id = client.post("/robots", json={"code": code, "name": "배터리 주의 히스테리시스 테스트"}).json()["id"]
+    _set_battery_thresholds(client, robot_id, attention_pct=30, return_pct=15)
+
+    try:
+        robot_ws._handle_battery_state(code, 29)
+        assert robot_ws._battery_alert_state[code] == "attention"
+
+        # attention_pct(30%)를 살짝 넘는 33%로 튀어도 여유분(+5%p=35%) 미만이라 주의 유지.
+        robot_ws._handle_battery_state(code, 33)
+        assert robot_ws._battery_alert_state[code] == "attention"
+
+        robot_ws._handle_battery_state(code, 29)
+        assert robot_ws._battery_alert_state[code] == "attention"
+
+        events = _system_events_for(robot_id)
+        assert len(events) == 1
+        assert events[0]["event_type"] == "battery_attention"
+
+        # 여유분을 확실히 넘기면(36% > 30+5) 비로소 정상으로 복귀.
+        robot_ws._handle_battery_state(code, 36)
+        assert robot_ws._battery_alert_state[code] == "normal"
+
+        events = _system_events_for(robot_id)
+        assert len(events) == 2
+        assert events[1]["event_type"] == "battery_recovered"
+    finally:
+        _cleanup_system_events(robot_id)
+        robot_ws._battery_alert_state.pop(code, None)
