@@ -176,8 +176,10 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     fetchAccounts();
     fetchRecipients();
     fetchRobots();
+}
 
-    wsClient_ = new WsClient(this);
+void P7SettingsPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
     connect(wsClient_, &WsClient::messageReceived, this, &P7SettingsPage::handleWsMessage);
     // 서버가 재시작됐다 돌아오는 경우 등, (재)연결될 때마다 목록을 다시 불러온다 —
     // 그 사이에 놓친 robot_status push가 있어도 이걸로 따라잡는다. 최초 연결 때도 한 번
@@ -185,7 +187,6 @@ P7SettingsPage::P7SettingsPage(QWidget* parent) : QWidget(parent) {
     connect(wsClient_, &WsClient::connectionStateChanged, this, [this](bool connected) {
         if (connected) fetchRobots();
     });
-    wsClient_->connectToServer();
 }
 
 QWidget* P7SettingsPage::buildRobotTab() {

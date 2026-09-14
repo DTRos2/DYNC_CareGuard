@@ -138,6 +138,10 @@ class P3RecipientPage : public QWidget {
 public:
     explicit P3RecipientPage(QWidget* parent = nullptr);
 
+    // MainWindow가 앱 전체에서 공유하는 WsClient 하나를 내려준다 — 페이지마다 자기
+    // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
+    void setWsClient(WsClient* client);
+
 signals:
     // 긴급 카드의 "이벤트 확인" 클릭. MainWindow가 P2 이벤트 페이지로 전환 + 필터링에 연결한다.
     void eventCheckRequested(const QString& recipientName);

@@ -170,8 +170,6 @@ Tokens::Level riskLevelFromCode(const QString& code) {
 
 P1OverviewPage::P1OverviewPage(QWidget* parent) : QWidget(parent) {
     apiClient_ = new ApiClient(this);
-    wsClient_ = new WsClient(this);
-    connect(wsClient_, &WsClient::messageReceived, this, &P1OverviewPage::handleWsMessage);
 
     batteryRefreshTimer_ = new QTimer(this);
     batteryRefreshTimer_->setSingleShot(true);
@@ -192,7 +190,11 @@ P1OverviewPage::P1OverviewPage(QWidget* parent) : QWidget(parent) {
     populateTable();
     populateAlertFeed();
     loadFromServer();
-    wsClient_->connectToServer();
+}
+
+void P1OverviewPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
+    connect(wsClient_, &WsClient::messageReceived, this, &P1OverviewPage::handleWsMessage);
 }
 
 QWidget* P1OverviewPage::buildHeaderRow() {
