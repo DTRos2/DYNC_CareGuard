@@ -1,6 +1,7 @@
 #pragma once
 #include <functional>
 
+#include <QStringList>
 #include <QWidget>
 
 class QLabel;
@@ -35,6 +36,10 @@ public:
     // P4 영상 페이지 "이벤트 상세로 이동" 클릭 진입점. eventUid로 검색·기간을 맞춘 뒤,
     // 최신 상태를 다시 받아와(P4에서 방금 막 생긴 이벤트일 수 있음) 상세 모달을 바로 연다.
     void openEventByUid(const QString& eventUid);
+
+    // role=guardian 전용. P3RecipientPage::guardianRecipientNamesChanged를 MainWindow가
+    // 여기로 연결한다 — 빈 목록이면 필터 없음(admin/operator).
+    void setRecipientNameFilter(const QStringList& names);
 
 signals:
     // MainWindow가 TopBar 뱃지(setEmergencyCount/setAttentionCount)에 연결한다.

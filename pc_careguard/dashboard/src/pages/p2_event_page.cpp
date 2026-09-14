@@ -464,6 +464,10 @@ bool P2EventPage::eventFilter(QObject* watched, QEvent* event) {
     return QWidget::eventFilter(watched, event);
 }
 
+void P2EventPage::setRecipientNameFilter(const QStringList& names) {
+    proxy_->setRecipientNameAllowlist(names);
+}
+
 void P2EventPage::filterToRecipient(const QString& recipientName) {
     periodMonthBtn_->setChecked(true);  // 오늘 범위 밖(어제 등) 이벤트도 가리지 않도록 30일로 확장
     applyPeriodPreset(29);
