@@ -11,6 +11,9 @@
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
+  <!-- P6 라이다 스캔 오버레이(uplink_node.py::_send_scan_overlay)용 map->스캔
+       프레임 TF 조회 -->
+  <depend>tf2_ros</depend>
   <!-- 다운링크의 충전소 복귀 주행(downlink_node.py)용 — nav2_bringup/
        nav2_simple_commander가 이미 설치돼 있다는 전제(2026-09-13 R-05/R-06 실
        로봇에서 확인: turtlebot3_navigation2는 소스만 있고 안 빌드돼 있어서
