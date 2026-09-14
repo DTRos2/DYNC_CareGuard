@@ -1,0 +1,16 @@
+[Unit]
+Description=CareGuard 서버(FastAPI/uvicorn) - 대시보드를 안 켜도 로봇·다른 PC의 대시보드가 계속 접속할 수 있게 상시 기동
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@SERVER_DIR@
+Environment=CAREGUARD_SERVER_BIND_HOST=0.0.0.0
+ExecStart=/bin/bash -lc 'exec @SERVER_DIR@/.venv/bin/uvicorn app.main:app --host "${CAREGUARD_SERVER_BIND_HOST}" --port 8000'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
