@@ -29,6 +29,16 @@ careguard_agent/uplink_node.py를 참고해 여기에 추가하면 된다. /batt
 "배터리 주의/복귀" 임계값 판단(서버 쪽, robot_ws.py::_handle_battery_state)에
 써야 해서 예외적으로 relay한다.
 
+2026-09-14: P6 순찰 지도의 실시간 라이다 스캔 표시(slam_scan_update WS 메시지,
+대시보드 feature/p6-lidar-scan-overlay) 기능이 LIMO(careguard_agent/uplink_node.py
+::_send_scan_overlay)에만 있고 터틀봇엔 없어서, 초기 위치를 잡아도 라이다 점이
+전혀 안 뜬다는 리포트로 여기도 같은 방식을 추가했다 — /scan(LaserScan) 구독 +
+tf2_ros로 map->스캔 프레임 TF 조회 + 각 포인트를 map 프레임 좌표로 변환해
+slam_scan_update 전송. position(_on_pose)은 이미 /amcl_pose를 직접 구독하고
+있어 TF가 따로 필요 없지만, 스캔 포인트는 원래 그 스캔 프레임(base_scan 등)
+기준이라 map 프레임으로 옮기려면 TF 조회가 꼭 필요하다 — 그래서 tf2_ros가
+이번에 새로 들어왔다.
+
 카메라는 2026-09-11에 추가했다 — 이 로봇(R-05/R-06)은 LIMO의 orbbec_camera와
 달리 라즈베리파이 카메라(camera_ros/libcamera, imx219)를 쓰고, 기본 토픽 이름도
 다르다(`/camera/image_raw/compressed` — LIMO는 `/camera/color/image_raw/compressed`).
@@ -67,14 +77,21 @@ import cv2
 import numpy as np
 import rclpy
 import requests
+import tf2_ros
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import BatteryState, CompressedImage
+from sensor_msgs.msg import BatteryState, CompressedImage, LaserScan
 
 from . import ws_config
 
 DEFAULT_RECONNECT_DELAY_SEC = 3.0
+
+# careguard_agent(LIMO)의 SLAM_OVERLAY_INTERVAL_SEC/MAX_SCAN_POINTS와 같은 값 —
+# 대시보드가 두 로봇 종류를 구분 안 하고 같은 slam_scan_update를 그리므로, 점
+# 밀도·갱신 주기가 로봇마다 달라 보이지 않게 맞춘다.
+SCAN_OVERLAY_INTERVAL_SEC = 0.3
+MAX_SCAN_POINTS = 450
 
 # 카메라 라이브 미리보기 전송 간격. 대시보드 우측 상단 작은 박스용이라 원본
 # 프레임레이트(30Hz) 그대로 보낼 필요는 없다. 온라인/오프라인 흔들림 조사 중
@@ -129,6 +146,7 @@ class UplinkNode(Node):
         self._connected = False
         self._reconnect_delay_sec = _fetch_reconnect_delay_sec(self.get_logger())
         self._last_camera_sent_at = 0.0
+        self._latest_scan = None
 
         self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self._on_pose, 10)
         self.create_subscription(BatteryState, '/battery_state', self._on_battery_state, 10)
@@ -136,6 +154,12 @@ class UplinkNode(Node):
         # sensor QoS로 구독한다 — LIMO의 _on_camera_frame 구독과 동일한 이유.
         self.create_subscription(CompressedImage, '/camera/image_raw/compressed',
                                   self._on_camera_frame, qos_profile_sensor_data)
+        # LDS(LDS-01/LDS-03) 드라이버도 BEST_EFFORT로 퍼블리시한다 — LIMO의 ydlidar와
+        # 같은 이유로 sensor QoS로 구독해야 한다(기본 RELIABLE로는 아무것도 안 옴).
+        self.create_subscription(LaserScan, '/scan', self._on_scan, qos_profile_sensor_data)
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        self.create_timer(SCAN_OVERLAY_INTERVAL_SEC, self._send_scan_overlay)
 
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
@@ -148,6 +172,48 @@ class UplinkNode(Node):
             'y': msg.pose.pose.position.y,
             'yaw': yaw,
         })
+
+    def _on_scan(self, msg: LaserScan):
+        self._latest_scan = msg
+
+    def _send_scan_overlay(self):
+        """careguard_agent(LIMO)::_send_scan_overlay와 동일 — 최신 /scan을
+        map 프레임 좌표로 변환해 slam_scan_update로 보낸다. Nav2(AMCL)가 아직
+        안 떠서 map->스캔 프레임 TF가 없으면(패트롤 대기 중 등) 조용히
+        스킵한다 — _on_pose가 /amcl_pose 없을 때 아무것도 안 보내는 것과 같은
+        이유(맵과 무관한 좌표를 보내느니 안 보내는 게 낫다).
+        """
+        scan = self._latest_scan
+        if scan is None:
+            return
+        try:
+            tf = self._tf_buffer.lookup_transform('map', scan.header.frame_id, rclpy.time.Time())
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            return
+
+        ranges = np.array(scan.ranges, dtype=np.float64)
+        valid = np.isfinite(ranges) & (ranges >= scan.range_min) & (ranges <= scan.range_max)
+        idx = np.nonzero(valid)[0]
+        if idx.size == 0:
+            return
+        if idx.size > MAX_SCAN_POINTS:
+            idx = idx[np.linspace(0, idx.size - 1, MAX_SCAN_POINTS).astype(int)]
+
+        angles = scan.angle_min + idx * scan.angle_increment
+        r = ranges[idx]
+        local_x = r * np.cos(angles)
+        local_y = r * np.sin(angles)
+
+        tx, ty = tf.transform.translation.x, tf.transform.translation.y
+        yaw = _yaw_from_quaternion(tf.transform.rotation)
+        cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+        map_x = tx + local_x * cos_yaw - local_y * sin_yaw
+        map_y = ty + local_x * sin_yaw + local_y * cos_yaw
+
+        points = np.empty(map_x.size * 2, dtype=np.float64)
+        points[0::2] = map_x
+        points[1::2] = map_y
+        self._send({'type': 'slam_scan_update', 'points': np.round(points, 3).tolist()})
 
     def _on_battery_state(self, msg: BatteryState):
         # 드라이버에 따라 percentage를 0.0~1.0(REP 표준) 또는 0~100 그대로 발행하는
