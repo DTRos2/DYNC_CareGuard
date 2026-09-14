@@ -3,18 +3,18 @@
 #include <QAbstractSocket>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QProcessEnvironment>
 #include <QTimer>
 #include <QUrl>
 #include <QWebSocket>
+
+#include "net/server_config.h"
 
 namespace {
 constexpr int kReconnectIntervalMs = 3000;
 }
 
 WsClient::WsClient(QObject* parent) : QObject(parent) {
-    QString serverUrl = QProcessEnvironment::systemEnvironment().value(
-        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    QString serverUrl = ServerConfig::resolveServerUrl();
     // http(s):// -> ws(s):// 로 바꿔서 /ws/dashboard에 붙는다.
     wsUrl_ = serverUrl.replace(QStringLiteral("https://"), QStringLiteral("wss://"))
                  .replace(QStringLiteral("http://"), QStringLiteral("ws://")) +

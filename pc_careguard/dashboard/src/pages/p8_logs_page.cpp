@@ -16,13 +16,13 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QUrlQuery>
 #include <QVBoxLayout>
 
+#include "net/server_config.h"
 #include "net/ws_client.h"
 #include "theme/calendar_style.h"
 #include "theme/tokens.h"
@@ -80,8 +80,7 @@ P8LogsPage::P8LogsPage(QWidget* parent) : QWidget(parent) {
     tabs->addTab(buildPatrolRunLogTab(), QStringLiteral("경로순찰 로그"));
     layout->addWidget(tabs);
 
-    serverUrl_ = QProcessEnvironment::systemEnvironment().value(
-        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    serverUrl_ = ServerConfig::resolveServerUrl();
     netManager_ = new QNetworkAccessManager(this);
     fetchAuditLog();
     fetchSystemEventLog();
