@@ -23,6 +23,11 @@ amcl이 안 떠 있어 그 토픽에 퍼블리셔가 전혀 없다 — 매핑 �
 보이게 하기 위함이다. /amcl_pose 구독은 매핑이 끝난 뒤 amcl로 위치를 잡는
 순찰(P6) 단계를 위해 그대로 남겨둔다.
 
+2026-09-14에 position 메시지에 pos_std_m(x/y 공분산 대각 성분에서 뽑은 위치
+표준편차, 미터)을 추가했다 — _on_pose 참고. _on_slam_overlay_tick(TF 기반)
+경로는 공분산이 없어 이 필드를 안 보낸다(그 경로는 P5 SLAM 뷰 전용이라 P6의
+수렴 판단과 무관).
+
 /camera/color/image_raw/compressed(orbbec_camera, sensor_msgs/CompressedImage)도
 같은 방식으로 relay한다 — 이미 JPEG로 압축되어 있어 재인코딩 없이 그대로
 base64만 씌워 보낸다(대시보드 P5/P6 우측 상단 카메라 라이브 박스용).
@@ -178,11 +183,21 @@ class UplinkNode(Node):
 
     def _on_pose(self, msg: PoseWithCovarianceStamped):
         yaw = _yaw_from_quaternion(msg.pose.pose.orientation)
+        # 6x6 행-우선 공분산 행렬(geometry_msgs/PoseWithCovariance)에서 x/y 분산은
+        # 대각 성분 [0](x,x)·[7](y,y)에 있다 — P6 대시보드가 "위치 보정" 직후 AMCL이
+        # 실제로 수렴했는지 판단하는 데 쓴다(고정 시간 타이머로 흔들림을 가리던
+        # 방식은 실 로봇에서 수렴 시간이 그보다 길면 타이머가 먼저 풀려 흔들림이
+        # 그대로 보이는 문제가 있었다 — P6PatrolPage::poseCaptureSettling_ 주석 참고).
+        # max(cov_x, cov_y, 0.0)로 더 불확실한 축 기준으로 보수적으로 잡는다.
+        cov_x = msg.pose.covariance[0]
+        cov_y = msg.pose.covariance[7]
+        pos_std_m = math.sqrt(max(cov_x, cov_y, 0.0))
         self._send({
             'type': 'position',
             'x': msg.pose.pose.position.x,
             'y': msg.pose.pose.position.y,
             'yaw': yaw,
+            'pos_std_m': pos_std_m,
         })
 
     def _on_map(self, msg: OccupancyGrid):
