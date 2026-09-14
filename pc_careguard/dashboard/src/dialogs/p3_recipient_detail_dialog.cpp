@@ -215,18 +215,18 @@ QWidget* P3RecipientDetailDialog::buildHeader() {
     layout->setContentsMargins(16, 0, 16, 0);
     layout->setSpacing(8);
 
-    auto* name = new QLabel(detail_.card.name, header);
-    QFont nameFont = name->font();
+    headerNameLabel_ = new QLabel(detail_.card.name, header);
+    QFont nameFont = headerNameLabel_->font();
     nameFont.setPixelSize(Tokens::Font::BODY);
     nameFont.setWeight(QFont::Medium);
-    name->setFont(nameFont);
-    layout->addWidget(name);
+    headerNameLabel_->setFont(nameFont);
+    layout->addWidget(headerNameLabel_);
 
-    auto* idInfo = new QLabel(
+    headerIdInfoLabel_ = new QLabel(
         QStringLiteral("%1 · %2 · %3").arg(detail_.card.code, detail_.card.robotCode, detail_.card.address),
         header);
-    idInfo->setProperty("role", "mono");
-    layout->addWidget(idInfo);
+    headerIdInfoLabel_->setProperty("role", "mono");
+    layout->addWidget(headerIdInfoLabel_);
 
     layout->addWidget(makeStatusBadge(detail_.card.level, header));
     layout->addStretch();
@@ -1245,6 +1245,37 @@ void P3RecipientDetailDialog::handleSaveClicked() {
     // 이미 갱신돼 있다 — 여기서 다시 모을 필요 없이 그대로 실어 보낸다.
     emit saveRequested(detail_);
     accept();
+}
+
+void P3RecipientDetailDialog::applyRemoteUpdate(const RecipientDetail& fresh) {
+    if (autoEditGuardianIndex_ != -1 || autoEditScheduleIndex_ != -1) return;
+
+    detail_ = fresh;
+
+    setWindowTitle(QStringLiteral("대상자 상세 — %1").arg(detail_.card.name));
+    if (headerNameLabel_) headerNameLabel_->setText(detail_.card.name);
+    if (headerIdInfoLabel_) {
+        headerIdInfoLabel_->setText(
+            QStringLiteral("%1 · %2 · %3").arg(detail_.card.code, detail_.card.robotCode, detail_.card.address));
+    }
+
+    nameEdit_->setText(detail_.card.name);
+    addressEdit_->setText(detail_.card.address);
+    birthYearEdit_->setText(detail_.birthYear > 0 ? QString::number(detail_.birthYear) : QString());
+    genderCombo_->setCurrentIndex(detail_.gender == QStringLiteral("여") ? 1 : 0);
+    diseasesEdit_->setText(detail_.diseases);
+    noteEdit_->setText(detail_.note);
+
+    const int operatorIdx = operatorCombo_->findData(detail_.card.operatorId);
+    operatorCombo_->setCurrentIndex(operatorIdx >= 0 ? operatorIdx : 0);
+
+    // robotCombo_ 변경은 이미 연결된 currentIndexChanged 핸들러가 mapCombo_까지 같이 맞춰준다
+    // (buildBasicInfoTab() 참고) — 여기서 mapCombo_를 따로 안 건드려도 된다.
+    const int robotIdx = kRobotCodes.indexOf(detail_.card.robotCode);
+    robotCombo_->setCurrentIndex(robotIdx >= 0 ? robotIdx + 1 : 0);
+
+    refreshGuardianTable();
+    refreshScheduleTable();
 }
 
 void P3RecipientDetailDialog::showComingSoon(const QString& feature) {

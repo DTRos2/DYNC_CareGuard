@@ -36,6 +36,16 @@ _nav_running: Dict[str, bool] = {}
 # 순간(경계를 넘는 순간)에만 한 번 남긴다.
 _battery_alert_state: Dict[str, str] = {}
 
+# return_needed에서 벗어나려면 battery_return_pct를 이 여유분만큼 더 넘어야 한다.
+# 2026-09-14 R-07(LIMO)에서 실제로 확인된 문제: 복귀 임계값(28%) 근처에서 모터
+# 구동/정지에 따라 배터리 %가 27%↔31%로 반복해서 튀는데(전압 처짐·회복 — 이미
+# 스무딩 대상인 것과 같은 현상, _smooth_battery_percent() 주석 참고), 여유분 없이
+# 그때그때 경계만 비교하면 return_needed <-> normal이 수십 초 간격으로 계속
+# 뒤집히면서 system_event가 반복 생성되고, 그때마다 "충전소로 복귀" 명령까지
+# 매번 다시 나갔다(patrol_start가 반복 재전송됨). 실측된 4%p 흔들림보다 넉넉하게
+# 잡는다.
+_BATTERY_RETURN_RECOVERY_MARGIN_PCT = 5
+
 # robot.code -> 마지막으로 임계값을 확인한 시각(time.monotonic()). db.get_connection()이
 # 커넥션 풀 없이 매번 원격 DB(192.168.230.13)에 새 TCP 연결을 여는 방식이라, /battery_state가
 # 빠르게 계속 들어오면 이 확인 하나가 이벤트 루프를 막아 서버 전체(새 WS 접속 등)가
@@ -292,7 +302,10 @@ async def _handle_message(robot_code: str, message: dict) -> None:
             _last_battery_check[robot_code] = now
             # db.get_connection()이 매번 원격 DB에 새로 접속하는 blocking 호출이라
             # (§_battery_check_interval_sec 주석), 이벤트 루프를 막지 않게 스레드로 뺀다.
-            return_map_id = await asyncio.to_thread(_handle_battery_state, robot_code, percentage)
+            # 원본 percentage가 아니라 smoothed(위에서 이미 계산한 EMA 값)를 넘긴다 —
+            # 표시값과 같은 소스를 봐야 "화면엔 안 튀는데 복귀 알림만 계속 뒤집힌다"는
+            # 불일치가 안 생기고, 임계값 판정 자체도 원본의 순간 튐에 덜 흔들린다.
+            return_map_id = await asyncio.to_thread(_handle_battery_state, robot_code, smoothed)
             if return_map_id is not None:
                 # 빈 웨이포인트 + return_to_charging=True — _start_patrol이 이미
                 # "웨이포인트 다 돌고 충전소로 복귀"로 처리하는 조합을 그대로 재사용한다
@@ -430,14 +443,20 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
         attention_pct = thresholds["battery_attention_pct"] if thresholds else 30
         return_pct = thresholds["battery_return_pct"] if thresholds else 28
 
-        if percentage <= return_pct:
+        previous_state = _battery_alert_state.get(robot_code, "normal")
+
+        if previous_state == "return_needed" and percentage <= return_pct + _BATTERY_RETURN_RECOVERY_MARGIN_PCT:
+            # 여유분(_BATTERY_RETURN_RECOVERY_MARGIN_PCT)을 확실히 넘기 전까지는
+            # return_needed를 유지한다 — return_pct를 살짝 넘나드는 값(모듈 상단
+            # 주석 참고)만으로 정상 복귀로 인정하지 않는다.
+            new_state = "return_needed"
+        elif percentage <= return_pct:
             new_state = "return_needed"
         elif percentage <= attention_pct:
             new_state = "attention"
         else:
             new_state = "normal"
 
-        previous_state = _battery_alert_state.get(robot_code, "normal")
         _battery_alert_state[robot_code] = new_state
         if new_state == previous_state:
             return None

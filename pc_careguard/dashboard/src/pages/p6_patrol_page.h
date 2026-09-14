@@ -37,6 +37,10 @@ class P6PatrolPage : public QWidget {
 public:
     explicit P6PatrolPage(QWidget* parent = nullptr);
 
+    // MainWindow가 앱 전체에서 공유하는 WsClient 하나를 내려준다 — 페이지마다 자기
+    // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
+    void setWsClient(WsClient* client);
+
 public slots:
     // robotId가 이미 있는 맵이면 이름·대상자·배경 이미지·서버 id·좌표 환산 기준을
     // 갱신하고, 없으면 새 맵으로 추가한다. serverMapId/resolution/originMeters를 같이

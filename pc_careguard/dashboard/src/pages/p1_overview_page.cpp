@@ -170,8 +170,6 @@ Tokens::Level riskLevelFromCode(const QString& code) {
 
 P1OverviewPage::P1OverviewPage(QWidget* parent) : QWidget(parent) {
     apiClient_ = new ApiClient(this);
-    wsClient_ = new WsClient(this);
-    connect(wsClient_, &WsClient::messageReceived, this, &P1OverviewPage::handleWsMessage);
 
     batteryRefreshTimer_ = new QTimer(this);
     batteryRefreshTimer_->setSingleShot(true);
@@ -192,7 +190,11 @@ P1OverviewPage::P1OverviewPage(QWidget* parent) : QWidget(parent) {
     populateTable();
     populateAlertFeed();
     loadFromServer();
-    wsClient_->connectToServer();
+}
+
+void P1OverviewPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
+    connect(wsClient_, &WsClient::messageReceived, this, &P1OverviewPage::handleWsMessage);
 }
 
 QWidget* P1OverviewPage::buildHeaderRow() {
@@ -705,6 +707,21 @@ void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
         rebuildRowsFromData();
         populateKpiRow();
         populateAlertFeed();
+        return;
+    }
+
+    if (type == QStringLiteral("recipient_changed") || type == QStringLiteral("robot_recipient_changed")) {
+        // recipient.py::update_recipient(이름 등 기본정보 저장)나 robots.py::
+        // assign_robot_recipient(담당 로봇 재배정)가 보내는 알림(2026-09-13 추가,
+        // P3/P5/P7의 같은 처리와 같은 이유) — recipients_는 loadFromServer()가 시작할
+        // 때 한 번만 받아오므로, 이게 없으면 이미 켜져 있던 다른 대시보드 창의
+        // 통합관제 테이블은 새로고침(재시작) 전까지 옛 값을 계속 보여줬다.
+        apiClient_->fetchRecipients([this](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
+            if (!ok) return;
+            recipients_ = items;
+            rebuildRowsFromData();
+            populateKpiRow();
+        });
         return;
     }
 

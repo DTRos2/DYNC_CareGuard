@@ -73,6 +73,10 @@ public:
     // P2EventPage::openEventByUid()와 같은 이유(방금 막 생긴 영상일 수 있음).
     void openVideoPlayerByEventUid(const QString& eventUid);
 
+    // MainWindow가 앱 전체에서 공유하는 WsClient 하나를 내려준다 — 페이지마다 자기
+    // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
+    void setWsClient(WsClient* client);
+
 signals:
     // 재생 모달의 "이벤트 상세로 이동" 클릭. MainWindow가 P2 이벤트 페이지로 전환 +
     // 상세 모달 오픈에 연결한다 (P3RecipientPage::eventCheckRequested와 같은 패턴).
@@ -105,9 +109,8 @@ private:
     void handleVideoClipsReply(QNetworkReply* reply);
 
     // /ws/dashboard가 push하는 "video_event_created"(새 영상 클립 저장 완료)를 받아
-    // fetchVideoClips()를 다시 호출한다 — P3/P5/P6와 같은 패턴(페이지마다 자기 WsClient를
-    // 따로 둠). 목록 전체를 다시 세는 방식(list_video_events)과 맞춰, 부분 diff 대신
-    // 항상 서버에서 다시 받아 그린다.
+    // fetchVideoClips()를 다시 호출한다. 목록 전체를 다시 세는 방식(list_video_events)과
+    // 맞춰, 부분 diff 대신 항상 서버에서 다시 받아 그린다.
     void handleWsMessage(const QJsonObject& message);
 
     // 열람 사유 확인 후 재생이 시작되면(unlock()) 호출한다. 서버 POST

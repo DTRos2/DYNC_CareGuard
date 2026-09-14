@@ -8,6 +8,7 @@ class QTimer;
 class QIcon;
 class P4VideoPage;
 class P7SettingsPage;
+class WsClient;
 
 // 공통 셸: TopBar + Sidebar + QStackedWidget.
 // CareGuard_DESIGN_SYSTEM.md §3(공통 셸 구조), §4-2(objectName), §6(페이지 인벤토리) 참고.
@@ -37,6 +38,10 @@ private:
     QButtonGroup* navGroup_ = nullptr;
     P4VideoPage* videoPage_ = nullptr;
     P7SettingsPage* settingsPage_ = nullptr;
+    // 앱 전체가 공유하는 /ws/dashboard 연결 하나. 예전엔 페이지(P1/P3/P4/P5/P6/P7/P8)마다
+    // 자기 WsClient를 따로 만들어서 서버에 동일 엔드포인트로 소켓이 7개씩 열려 있었다
+    // (`lsof -i :8000`으로 확인, 2026-09-14). 여기서 하나만 만들어 각 페이지로 내려준다.
+    WsClient* wsClient_ = nullptr;
     QLabel* clockLabel_;
     QLabel* userLabel_;
     QLabel* emergencyBadge_;

@@ -105,3 +105,41 @@ def test_battery_above_attention_does_not_create_event(client, cleanup_robot):
     finally:
         _cleanup_system_events(robot_id)
         robot_ws._battery_alert_state.pop(code, None)
+
+
+def test_battery_return_needed_requires_recovery_margin(client, cleanup_robot):
+    """2026-09-14 R-07(LIMO)에서 실제로 확인된 문제 재현 — 모터 구동/정지에 따라
+    복귀 임계값(28%) 근처에서 27%↔31%로 반복해서 튀는데, 여유분 없이 경계만 보면
+    return_needed <-> normal이 계속 뒤집힌다. _handle_battery_state를 직접 호출해서
+    (WS 경로의 5초 스로틀을 우회) 여러 판정을 연속으로 검증한다."""
+    code = _unique_code()
+    cleanup_robot.append(code)
+    robot_id = client.post("/robots", json={"code": code, "name": "배터리 히스테리시스 테스트"}).json()["id"]
+    _set_battery_thresholds(client, robot_id, attention_pct=30, return_pct=28)
+
+    try:
+        robot_ws._handle_battery_state(code, 27)
+        assert robot_ws._battery_alert_state[code] == "return_needed"
+
+        # return_pct(28%)를 살짝 넘는 31%로 튀어도 여유분(+5%p=33%) 미만이라 복귀 필요 유지.
+        robot_ws._handle_battery_state(code, 31)
+        assert robot_ws._battery_alert_state[code] == "return_needed"
+
+        # 다시 27%로 떨어져도 상태 변화 없음 — 위 두 호출 다 "새 이벤트 없음"이어야 한다.
+        robot_ws._handle_battery_state(code, 27)
+        assert robot_ws._battery_alert_state[code] == "return_needed"
+
+        events = _system_events_for(robot_id)
+        assert len(events) == 1
+        assert events[0]["event_type"] == "battery_return_needed"
+
+        # 여유분을 확실히 넘기면(34% > 28+5) 비로소 정상으로 복귀.
+        robot_ws._handle_battery_state(code, 34)
+        assert robot_ws._battery_alert_state[code] == "normal"
+
+        events = _system_events_for(robot_id)
+        assert len(events) == 2
+        assert events[1]["event_type"] == "battery_recovered"
+    finally:
+        _cleanup_system_events(robot_id)
+        robot_ws._battery_alert_state.pop(code, None)

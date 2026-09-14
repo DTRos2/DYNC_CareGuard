@@ -1272,11 +1272,12 @@ P4VideoPage::P4VideoPage(QWidget* parent) : QWidget(parent) {
     });
 
     fetchVideoClips();
+}
 
+void P4VideoPage::setWsClient(WsClient* client) {
     // video_event_created push를 구독해 목록을 자동으로 다시 받아온다.
-    wsClient_ = new WsClient(this);
+    wsClient_ = client;
     connect(wsClient_, &WsClient::messageReceived, this, &P4VideoPage::handleWsMessage);
-    wsClient_->connectToServer();
 }
 
 void P4VideoPage::handleWsMessage(const QJsonObject& message) {
