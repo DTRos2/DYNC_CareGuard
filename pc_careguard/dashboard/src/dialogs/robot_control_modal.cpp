@@ -1,6 +1,7 @@
 #include "robot_control_modal.h"
 
 #include <algorithm>
+#include <functional>
 
 #include <QDateTime>
 #include <QFrame>
@@ -14,6 +15,8 @@
 #include <QVBoxLayout>
 
 #include "theme/tokens.h"
+#include "widgets/canvas_geometry.h"
+#include "widgets/pgm_image_loader.h"
 #include "widgets/simple_icons.h"
 
 namespace {
@@ -37,8 +40,10 @@ QLabel* statusDot(bool ok, const QString& label, QWidget* parent) {
 
 // 모달 왼쪽의 작은 맵 미리보기 — P6WaypointCanvas(전체 편집용, 클릭·드래그·경로
 // 편집 다 딸려있음)를 그대로 쓰기엔 여기선 "지금 웨이포인트가 어디 있는지"만
-// 보여주면 충분해서 과하다. 좌표 범위를 위젯 크기에 맞춰 정규화해 원+라벨만
-// 그리는 훨씬 가벼운 전용 위젯을 둔다.
+// 보여주면 충분해서 과하다. 클릭·드래그·경로 편집 없이 원+라벨(+2026-09-14부터
+// 실제 맵 배경 이미지)만 그리는 훨씬 가벼운 전용 위젯을 둔다 — 좌표 환산은
+// P6WaypointCanvas와 같은 CanvasGeometry를 그대로 재사용해 두 화면에서 같은
+// 위치가 항상 같은 자리에 그려지게 한다.
 class MiniMapView : public QFrame {
 public:
     explicit MiniMapView(QWidget* parent = nullptr) : QFrame(parent) {
@@ -55,34 +60,62 @@ public:
         update();
     }
 
+    // 실제 맵 배경 이미지(PGM에서 디코딩된 QImage) + resolution/origin(map_server
+    // .yaml과 같은 값, ApiClient::MapInfo가 이미 내려줌) — P6WaypointCanvas가
+    // CanvasGeometry로 하는 것과 정확히 같은 환산을 여기서도 써야 웨이포인트가
+    // 이미지 위 실제 위치에 겹쳐 그려진다. resolution<=0이거나 image가 비어있으면
+    // (맵 미등록) 기존처럼 웨이포인트 좌표 범위 기준 정규화로 폴백한다.
+    void setMapImage(const QImage& image, qreal resolution, QPointF originMeters) {
+        backgroundImage_ = image;
+        mapResolution_ = resolution;
+        mapOrigin_ = originMeters;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent* event) override {
         QFrame::paintEvent(event);
-        if (waypoints_.isEmpty()) return;
-
-        double minX = waypoints_.first().posX, maxX = minX;
-        double minY = waypoints_.first().posY, maxY = minY;
-        for (const auto& wp : waypoints_) {
-            minX = std::min(minX, wp.posX);
-            maxX = std::max(maxX, wp.posX);
-            minY = std::min(minY, wp.posY);
-            maxY = std::max(maxY, wp.posY);
-        }
-        const double spanX = std::max(maxX - minX, 0.5);
-        const double spanY = std::max(maxY - minY, 0.5);
-        constexpr int MARGIN = 28;
-        const QRectF plotRect = rect().adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN);
-
-        auto toPoint = [&](double x, double y) {
-            // map 프레임은 y가 위로 갈수록 커지는 좌표계라 화면(y가 아래로 갈수록
-            // 커짐)에 그리려면 y를 뒤집어야 한다.
-            const double nx = (x - minX) / spanX;
-            const double ny = 1.0 - (y - minY) / spanY;
-            return QPointF(plotRect.left() + nx * plotRect.width(), plotRect.top() + ny * plotRect.height());
-        };
 
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
+
+        const bool hasRealMap = !backgroundImage_.isNull() && mapResolution_ > 0.0;
+
+        QPointF imageTopLeft;
+        QSize imageScaledSize;
+        if (hasRealMap && CanvasGeometry::imagePlacement(rect(), backgroundImage_, &imageTopLeft, &imageScaledSize)) {
+            painter.drawImage(QRectF(imageTopLeft, imageScaledSize), backgroundImage_);
+        }
+
+        if (waypoints_.isEmpty()) return;
+
+        std::function<QPointF(double, double)> toPoint;
+        if (hasRealMap) {
+            toPoint = [&](double x, double y) {
+                return CanvasGeometry::metersToCanvas(QPointF(x, y), mapResolution_, mapOrigin_, rect(),
+                                                       backgroundImage_);
+            };
+        } else {
+            double minX = waypoints_.first().posX, maxX = minX;
+            double minY = waypoints_.first().posY, maxY = minY;
+            for (const auto& wp : waypoints_) {
+                minX = std::min(minX, wp.posX);
+                maxX = std::max(maxX, wp.posX);
+                minY = std::min(minY, wp.posY);
+                maxY = std::max(maxY, wp.posY);
+            }
+            const double spanX = std::max(maxX - minX, 0.5);
+            const double spanY = std::max(maxY - minY, 0.5);
+            constexpr int MARGIN = 28;
+            const QRectF plotRect = rect().adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN);
+            // map 프레임은 y가 위로 갈수록 커지는 좌표계라 화면(y가 아래로 갈수록
+            // 커짐)에 그리려면 y를 뒤집어야 한다.
+            toPoint = [minX, maxX, minY, maxY, spanX, spanY, plotRect](double x, double y) {
+                const double nx = (x - minX) / spanX;
+                const double ny = 1.0 - (y - minY) / spanY;
+                return QPointF(plotRect.left() + nx * plotRect.width(), plotRect.top() + ny * plotRect.height());
+            };
+        }
 
         if (waypoints_.size() >= 2) {
             QPen pathPen(Tokens::ACCENT, 1.5, Qt::DashLine);
@@ -115,6 +148,9 @@ protected:
 
 private:
     QVector<ApiClient::WaypointInfo> waypoints_;
+    QImage backgroundImage_;
+    qreal mapResolution_ = 0.0;
+    QPointF mapOrigin_;
 };
 
 RobotControlModal::RobotControlModal(const Data& data, QWidget* parent) : QDialog(parent), data_(data) {
@@ -256,8 +292,13 @@ QWidget* RobotControlModal::buildEventBox() {
     auto* openLink = new QPushButton(QStringLiteral("이벤트 상세 열기 →"), box);
     openLink->setProperty("variant", "ghost");
     openLink->setStyleSheet(QStringLiteral("text-align:left; padding:0; color:%1;").arg(Tokens::EMERGENCY.main.name()));
-    connect(openLink, &QPushButton::clicked, this,
-            [this]() { emit eventNavigationRequested(data_.eventCode); });
+    // 2026-09-14: 누르면 이벤트 페이지로 넘어가는데 이 모달은 안 닫혀서 뒤에 계속
+    // 떠있던 문제 — 페이지 전환과 동시에 이 모달도 닫는다(하단 "이벤트로 이동"
+    // 버튼은 같은 동작의 중복이라 제거했다, buildFooter 참고).
+    connect(openLink, &QPushButton::clicked, this, [this]() {
+        emit eventNavigationRequested(data_.eventCode);
+        close();
+    });
     layout->addWidget(openLink);
 
     return box;
@@ -352,19 +393,9 @@ QWidget* RobotControlModal::buildFooter() {
 
     layout->addStretch();
 
-    // 진행 중 이벤트가 없어도(예: 정상 순찰 중인 로봇) 버튼 자체는 항상 보인다 —
-    // 다만 이동할 이벤트가 없으니 그럴 땐 비활성화한다.
-    auto* goToEventBtn = new QPushButton(QStringLiteral("이벤트로 이동"), footer);
-    goToEventBtn->setObjectName("goToEventBtn");
-    goToEventBtn->setStyleSheet(
-        QStringLiteral("QPushButton#goToEventBtn{background:%1; color:#FFFFFF; border:none; font-weight:500;}"
-                        "QPushButton#goToEventBtn:hover{background:#12684A;}"
-                        "QPushButton#goToEventBtn:disabled{background:%2; color:%3;}")
-            .arg(Tokens::OK.main.name(), Tokens::BG_SUNKEN.name(), Tokens::TEXT_MUTED.name()));
-    goToEventBtn->setEnabled(!data_.eventCode.isEmpty());
-    connect(goToEventBtn, &QPushButton::clicked, this,
-            [this]() { emit eventNavigationRequested(data_.eventCode); });
-    layout->addWidget(goToEventBtn);
+    // 2026-09-14: "이벤트로 이동" 버튼 제거 — buildEventBox()의 "이벤트 상세 열기 →"와
+    // 완전히 같은 동작(eventNavigationRequested)이 중복으로 있었다. 진행 중 이벤트로
+    // 이동하는 경로는 이제 그 버튼 하나로 통일한다.
 
     return footer;
 }
@@ -375,12 +406,27 @@ void RobotControlModal::loadChargeWaypoint() {
     // 백그라운드로 미리 가져와두고, 버튼을 누른 시점엔 이미 준비돼 있게 한다.
     apiClient_->fetchActiveMaps([this](bool ok, const QVector<ApiClient::MapInfo>& maps) {
         if (!ok) return;
+        ApiClient::MapInfo matched;
         for (const auto& map : maps) {
             if (map.robotCode != data_.robotCode) continue;
+            matched = map;
             mapId_ = map.id;
             break;
         }
         if (mapId_ <= 0) return;
+
+        // 웨이포인트만 그리던 기존 미리보기에 실제 맵 배경 이미지도 같이 띄워달라는
+        // 요청(2026-09-14) — P6WaypointCanvas가 이미지를 불러오는 것과 같은 절차
+        // (fetchBytes로 원본 바이트를 받아 PgmImageLoader로 디코딩)를 여기서도 그대로
+        // 쓴다. 이미지가 없는 맵(imageUrl 비어있음)이면 기존처럼 웨이포인트만 그린다.
+        if (!matched.imageUrl.isEmpty() && matched.resolution > 0.0) {
+            apiClient_->fetchBytes(matched.imageUrl, [this, matched](bool imgOk, const QByteArray& data) {
+                if (!imgOk) return;
+                const QImage image = PgmImageLoader::loadFromData(data);
+                if (image.isNull() || !mapView_) return;
+                mapView_->setMapImage(image, matched.resolution, QPointF(matched.originX, matched.originY));
+            });
+        }
 
         apiClient_->fetchWaypoints(mapId_, [this](bool wpOk, const QVector<ApiClient::WaypointInfo>& waypoints) {
             if (!wpOk) return;

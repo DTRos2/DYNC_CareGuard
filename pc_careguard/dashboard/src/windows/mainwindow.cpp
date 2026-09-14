@@ -111,10 +111,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 eventPage_->openEventByUid(eventUid);
             });
 
-    // P1 로봇 상세 모달의 "이벤트로 이동" → 검색어로 필터링해서 상세 모달까지 자동으로
-    // 여는 것 없이, P2로 페이지만 전환한다.
+    // P1 로봇 상세 모달의 "이벤트 상세 열기" → P2로 전환하고 검색창에 event_id를 넣어
+    // 그 이벤트가 목록에 걸리게 한다(2026-09-14 변경 — 예전엔 eventUid를 무시하고
+    // 페이지 전환만 했다). P4의 openEventByUid와 달리 상세 모달까지 자동으로 열지는
+    // 않는다 — 로봇 상세 모달이 닫히자마자 곧바로 또 다른 모달이 뜨는 게 어색하다는
+    // 리포트로, filterToEventUid로 검색까지만 하고 열람은 사용자가 직접 누르게 했다.
     connect(overviewPage, &P1OverviewPage::eventNavigationRequested, this,
-            [this](const QString&) { switchToPage(1); });
+            [this](const QString& eventUid) {
+                switchToPage(1);
+                eventPage_->filterToEventUid(eventUid);
+            });
 
     // 반대 방향 — P2 이벤트 상세 모달의 "사유 입력 후 열람" → 페이지 전환 없이 그 자리에
     // P4의 재생 모달을 그대로 띄운다(연결된 클립을 찾아서). eventDetailRequested와 달리

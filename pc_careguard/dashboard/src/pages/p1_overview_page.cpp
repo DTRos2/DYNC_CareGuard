@@ -777,7 +777,12 @@ void P1OverviewPage::rebuildRowsFromData() {
         row.level = robot.isOnline ? (recipient ? riskLevelFromCode(recipient->level) : Tokens::Level::Normal)
                                     : Tokens::Level::Offline;
 
-        row.battery = liveBattery_.value(robot.code, -1);
+        // row.level/mission과 같은 이유(바로 위 주석 참고) — 통신이 끊긴 로봇은
+        // liveBattery_에 남아있는 마지막 값을 그대로 보여주면 "지금도 이 정도"라고
+        // 오해를 준다. 2026-09-14 "LIMO 통신이 끊겼는데 배터리 값이 그대로 뜬다"는
+        // 리포트로 실제 확인 — level/mission만 오프라인 처리가 돼 있고 배터리는
+        // 빠져 있었다. -1이면 테이블이 "-"로 표시한다(row.battery >= 0 분기 참고).
+        row.battery = robot.isOnline ? liveBattery_.value(robot.code, -1) : -1;
 
         row.medSteps = -1;
         if (recipient) {
