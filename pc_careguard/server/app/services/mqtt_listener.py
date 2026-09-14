@@ -44,9 +44,16 @@ KST = ZoneInfo("Asia/Seoul")
 TOPIC_FILTER = "cg/v1/button/+/press"
 
 
-def start_mqtt_listener(loop) -> mqtt.Client:
+def start_mqtt_listener(loop) -> mqtt.Client | None:
     """앱 시작 시(main.py) 한 번 호출. asyncio 이벤트 루프(loop)는 paho의 콜백
-    스레드에서 코루틴을 예약하는 데 쓴다."""
+    스레드에서 코루틴을 예약하는 데 쓴다.
+
+    브로커가 이 컴퓨터에 없는 경우(로컬 개발용 대시보드 등, SOS 버튼 기능을
+    안 쓰는 인스턴스)에도 서버 자체는 정상적으로 떠야 한다 — 여기서 실패해도
+    나머지 startup 태스크(스케줄러, dashboard_ws 등)에는 영향이 없어야 하므로,
+    연결 실패를 경고만 남기고 삼킨다. 이 경우 이 서버는 SOS 버튼 이벤트를
+    받지 못하지만, 다른 기능들은 그대로 동작한다.
+    """
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 
     def _on_connect(c, userdata, connect_flags, reason_code, properties=None):
@@ -64,7 +71,15 @@ def start_mqtt_listener(loop) -> mqtt.Client:
 
     client.on_connect = _on_connect
     client.on_message = _on_message
-    client.connect(config.MQTT_HOST, config.MQTT_PORT, keepalive=30)
+    try:
+        client.connect(config.MQTT_HOST, config.MQTT_PORT, keepalive=30)
+    except OSError as e:
+        print(
+            f"[mqtt_listener] {config.MQTT_HOST}:{config.MQTT_PORT} 브로커에 연결하지 "
+            f"못했습니다 ({e}). 응급 호출 버튼 기능은 비활성화된 채로 서버를 계속 "
+            "시작합니다 — 로컬 개발 환경이면 mosquitto 컨테이너를 띄우세요."
+        )
+        return None
     client.loop_start()
     return client
 
@@ -106,27 +121,36 @@ async def _handle_press(code: str) -> None:
             x, y, yaw, point_code = button["pos_x"], button["pos_y"], button["yaw"], code
 
         event_uid = f"EV-{button['robot_code']}-{now:%y%m%d}-{uuid.uuid4().hex[:8]}"
+        summary = f"{button['room_name']} 호출 버튼 눌림"
         cur.execute(
             """
             INSERT INTO care_event (event_uid, recipient_id, robot_id, trigger_path, event_type,
                 severity, summary, evidence, location_name, pos_x, pos_y, occurred_at)
             VALUES (%s, %s, %s, 'A', 'SOS_BUTTON', 'emergency', %s, %s, %s, %s, %s, NOW())
+            RETURNING id
             """,
             (
                 event_uid,
                 recipient["id"] if recipient else None,
                 button["robot_id"],
-                f"{button['room_name']} 호출 버튼 눌림",
+                summary,
                 json.dumps({"button_code": code}),
                 button["room_name"],
                 x,
                 y,
             ),
         )
+        care_event_id = cur.fetchone()["id"]
         conn.commit()
 
     try:
-        await dispatch_drive_to_point(button["robot_code"], point_code, x, y, yaw, button["map_id"])
+        # care_event_id/severity를 실어 보내면 downlink_node.py가 record_trigger를
+        # 발행해 video_recorder.py의 이벤트 클립 녹화를 켠다(P6 "이동"은 이 인자들을
+        # 안 넘기므로 녹화가 안 켜진다 — dispatch_drive_to_point 공유 로직 참고).
+        await dispatch_drive_to_point(
+            button["robot_code"], point_code, x, y, yaw, button["map_id"],
+            care_event_id=care_event_id, severity="emergency", reason=summary,
+        )
     except Exception:
         # 로봇 미등록/SLAM 중/연결 끊김 등으로 출동 명령이 실패해도, 위에서 이미
         # care_event는 남았다 — 담당자가 대시보드로 보고 수동 대응할 수 있으니
