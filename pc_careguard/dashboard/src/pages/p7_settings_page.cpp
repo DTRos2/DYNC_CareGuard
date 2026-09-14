@@ -19,6 +19,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPushButton>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -157,10 +158,16 @@ void P7SettingsPage::setCurrentUserRole(const QString& role) {
         if (operatorRole) tabs_->setCurrentIndex(2);
     }
 
-    // 남은 임계값·알림 탭은 operator에게 조회 전용 — 입력칸을 막고 저장 버튼을 숨긴다.
+    // 남은 임계값·알림 탭은 operator에게 조회 전용 — 입력·수정이 아예 안 되게 막고,
+    // 입력칸처럼 보이지 않게 테두리도 없애 그냥 텍스트로 보이게 한다(요청 사양).
     for (QLineEdit* edit : {batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
                              reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_}) {
-        if (edit != nullptr) edit->setReadOnly(operatorRole);
+        if (edit == nullptr) continue;
+        edit->setReadOnly(operatorRole);
+        edit->setFocusPolicy(operatorRole ? Qt::NoFocus : Qt::StrongFocus);
+        edit->setProperty("variant", operatorRole ? QStringLiteral("plain") : QVariant());
+        edit->style()->unpolish(edit);
+        edit->style()->polish(edit);
     }
     if (saveThresholdsBtn_ != nullptr) saveThresholdsBtn_->setVisible(!operatorRole);
     if (applyAllThresholdsBtn_ != nullptr) applyAllThresholdsBtn_->setVisible(!operatorRole);
