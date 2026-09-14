@@ -288,21 +288,6 @@ class DownlinkNode(Node):
         # 같은 이유로 audio_player도 patrol_task보다 먼저 떠 있어야 한다.
         self._ensure_voice_announcer_running()
 
-        # SOS 호출 버튼 자동 출동(patrol.py::dispatch_drive_to_point)만 severity를
-        # 실어 보낸다 — P6 "이동"/일반 순찰은 이 필드가 없으므로 녹화가 안 켜진다.
-        # video_recorder.py가 이미(위에서) 뜬 상태라 구독도 이미 잡혀 있다(__init__에서
-        # 노드 기동 즉시 먼저 띄워두는 이유 참고) — 여기서 또 late-joiner를 걱정할
-        # 필요는 없다.
-        severity = message.get('severity')
-        if severity:
-            trigger_msg = String()
-            trigger_msg.data = json.dumps({
-                'care_event_id': message.get('care_event_id'),
-                'severity': severity,
-                'reason': message.get('reason'),
-            })
-            self._record_trigger_pub.publish(trigger_msg)
-
         # patrol_task도 Nav2처럼 map_id 기준으로 (재)기동을 보장한다 — 아래 이유 참고.
         if map_id > 0:
             if not self._ensure_patrol_task_running(map_id):
@@ -331,6 +316,27 @@ class DownlinkNode(Node):
         goal.return_to_charging = bool(message.get('return_to_charging', True))
         send_future = self._patrol_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_patrol_goal_response)
+
+        # SOS 호출 버튼 자동 출동(patrol.py::dispatch_drive_to_point)만 severity를
+        # 실어 보낸다 — P6 "이동"/일반 순찰은 이 필드가 없으므로 녹화가 안 켜진다.
+        # video_recorder.py가 이미(위에서) 뜬 상태라 구독도 이미 잡혀 있다(__init__에서
+        # 노드 기동 즉시 먼저 띄워두는 이유 참고) — 여기서 또 late-joiner를 걱정할
+        # 필요는 없다.
+        #
+        # 이 goal 전송 다음에 발행한다 — patrol_task를 죽였다 새로 띄우는 작업
+        # (_ensure_patrol_task_running)과 녹화 시작(video_recorder의 VideoWriter
+        # open)이 같은 순간에 겹치면 로봇 컴퓨터에 순간적으로 부하가 몰려 bt_navigator가
+        # goal 응답을 제때 못 보내는 문제를 실 로봇에서 확인했다(2026-09-14). patrol_task
+        # 재시작 + goal 전송이 다 끝난 뒤에 녹화/음성을 트리거해 그 부하 구간을 피한다.
+        severity = message.get('severity')
+        if severity:
+            trigger_msg = String()
+            trigger_msg.data = json.dumps({
+                'care_event_id': message.get('care_event_id'),
+                'severity': severity,
+                'reason': message.get('reason'),
+            })
+            self._record_trigger_pub.publish(trigger_msg)
 
     def _on_patrol_goal_response(self, future):
         """patrol_task의 액션 서버가 goal을 accept/reject한 직후 온다 — accept면 그
