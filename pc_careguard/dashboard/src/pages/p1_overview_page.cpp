@@ -708,6 +708,21 @@ void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
+    if (type == QStringLiteral("recipient_changed") || type == QStringLiteral("robot_recipient_changed")) {
+        // recipient.py::update_recipient(이름 등 기본정보 저장)나 robots.py::
+        // assign_robot_recipient(담당 로봇 재배정)가 보내는 알림(2026-09-13 추가,
+        // P3/P5/P7의 같은 처리와 같은 이유) — recipients_는 loadFromServer()가 시작할
+        // 때 한 번만 받아오므로, 이게 없으면 이미 켜져 있던 다른 대시보드 창의
+        // 통합관제 테이블은 새로고침(재시작) 전까지 옛 값을 계속 보여줬다.
+        apiClient_->fetchRecipients([this](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
+            if (!ok) return;
+            recipients_ = items;
+            rebuildRowsFromData();
+            populateKpiRow();
+        });
+        return;
+    }
+
     if (type == QStringLiteral("system_event_created")) {
         // robot_ws.py가 배터리 임계값 등 로봇 쪽 시스템 이벤트를 감지했을 때 보내는
         // 알림(robot_ws.py:462) — event_created(scheduler.py)와 달리 payload 없이 type만

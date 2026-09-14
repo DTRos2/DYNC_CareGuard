@@ -381,15 +381,23 @@ async def create_patrol_run(payload: PatrolRunCreate):
     return await start_patrol_run(payload.robot_id, payload.route_id, payload.trigger)
 
 
-@runs_router.post("/drive-to-point", response_model=DriveToPointResponse)
-async def drive_to_point(payload: DriveToPointRequest):
-    """P6 "이동" — 순찰이 아니라 이 좌표 하나로만 로봇을 보내고, 도착 후 충전소로
-    복귀시키지 않는다(제자리에 머문다). patrol_run을 새로 기록하지 않는 일회성
-    명령이라 run_id=0으로 보낸다 — ws/robot_ws.py::_update_patrol_run은 존재하지
-    않는 run_id의 UPDATE를 0행 영향으로 조용히 무시하므로 안전하다.
+async def dispatch_drive_to_point(
+    robot_code: str, code: str, x: float, y: float, yaw: float, map_id: int
+) -> bool:
+    """좌표 하나로만 로봇을 보낸다(순찰이 아니라 일회성 이동 — 도착해도 충전소로
+    복귀하지 않고 그 자리에 머문다). patrol_run을 새로 기록하지 않으므로 run_id=0으로
+    보낸다 — ws/robot_ws.py::_update_patrol_run은 존재하지 않는 run_id의 UPDATE를
+    0행 영향으로 조용히 무시하므로 안전하다.
+
+    P6 "이동"(아래 drive_to_point HTTP 엔드포인트)과 SOS 호출 버튼 자동 출동
+    (services/mqtt_listener.py — call_button 코멘트의 "누르면... 로봇이 해당
+    위치로 출동한다" 계약)이 이 로직을 공유한다. 로봇 미등록/SLAM 진행 중이면
+    start_patrol_run과 동일하게 HTTPException을 던진다 — HTTP 엔드포인트는 그대로
+    응답 코드가 되고, MQTT 트리거 쪽은 호출부(_handle_press)가 잡아서 경고 로그만
+    남기고 넘어간다(버튼 눌림 자체를 실패시킬 이유는 없음).
     """
     with db.get_connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (payload.robot_code,))
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
         robot = cur.fetchone()
         if robot is None:
             raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
@@ -397,15 +405,23 @@ async def drive_to_point(payload: DriveToPointRequest):
         # patrol_start를 그대로 쓰므로 SLAM 중엔 로봇이 조용히 거부한다.
         _reject_if_slam_active(cur, robot["id"])
 
-    connected = await robot_ws.send_command(
-        payload.robot_code,
+    return await robot_ws.send_command(
+        robot_code,
         {
             "type": "patrol_start",
             "run_id": 0,
-            "waypoints": [{"code": payload.code, "x": payload.x, "y": payload.y, "yaw": payload.yaw}],
+            "waypoints": [{"code": code, "x": x, "y": y, "yaw": yaw}],
             "return_to_charging": False,
-            "map_id": payload.map_id,
+            "map_id": map_id,
         },
+    )
+
+
+@runs_router.post("/drive-to-point", response_model=DriveToPointResponse)
+async def drive_to_point(payload: DriveToPointRequest):
+    """P6 "이동" — dispatch_drive_to_point() 참고."""
+    connected = await dispatch_drive_to_point(
+        payload.robot_code, payload.code, payload.x, payload.y, payload.yaw, payload.map_id
     )
     if not connected:
         raise HTTPException(status_code=409, detail="로봇이 연결되어 있지 않습니다")

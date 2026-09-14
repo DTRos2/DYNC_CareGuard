@@ -19,6 +19,7 @@ class LiveSearchLineEdit;
 class WsClient;
 class QJsonObject;
 class QLineEdit;
+class P3RecipientDetailDialog;
 
 // P3 대상자 관리. gui/wireframe/v1/p3_recipient_management_wireframe.html,
 // CareGuard_DESIGN_SYSTEM.md §5-2(대상자 카드)·§6(idx 2)·§7-1/7-2(상태 판정·퀵액션) 기준.
@@ -166,13 +167,24 @@ private:
     // ATTENTION 카드 "복약 재안내" 클릭. POST /missions로 실제 mission을 만들고 로봇에
     // 다운링크를 보낸다 — medication_scheduler가 없어 스케줄을 거치지 않는 즉시 실행.
     void requestMedicationReannounce(const QString& robotCode, const QString& recipientName);
-    // /ws/dashboard가 push하는 robot_status(로봇 연결/해제)를 받아 OFFLINE 카드를 자동으로
-    // 갱신한다 — "재연결 시도" 버튼 없이 로봇이 실제로 재연결되면 카드가 저절로 바뀐다.
+    // /ws/dashboard가 push하는 robot_status(로봇 연결/해제)·recipient_changed(대상자 정보
+    // 저장)를 받아 OFFLINE 카드/카드 목록을 자동으로 갱신한다 — "재연결 시도" 버튼 없이
+    // 로봇이 실제로 재연결되거나, 다른 PC가 대상자 정보를 저장하면 카드가 저절로 바뀐다.
     void handleWsMessage(const QJsonObject& message);
+    // recipient_changed가 왔을 때, 지금 그 대상자의 상세 모달이 열려 있으면(openDetailDialog_)
+    // GET /recipients/{id}로 새로 받아와 그 모달도 새로고침 없이 갱신한다 — 안 하면 모달을
+    // 열 때 받아온 스냅샷 그대로 남아, 닫았다 다시 열기 전까지 다른 PC의 수정(보호자·복약
+    // 스케줄 등, 목록 API엔 없는 필드)이 안 보였다.
+    void refreshOpenDetailDialog(int recipientId);
 
     ApiClient* apiClient_ = nullptr;
     WsClient* wsClient_ = nullptr;
     QVector<RecipientCard> recipients_;
+
+    // 현재 열려 있는 상세 모달과 그 대상자 id — 없으면 -1/nullptr(다이얼로그는
+    // WA_DeleteOnClose라 닫히면 destroyed 시그널에서 이 둘을 되돌린다).
+    P3RecipientDetailDialog* openDetailDialog_ = nullptr;
+    int openDetailRecipientId_ = -1;
 
     QWidget* gridPage_ = nullptr;
     QGridLayout* grid_ = nullptr;
