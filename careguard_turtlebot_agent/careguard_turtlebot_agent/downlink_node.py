@@ -30,6 +30,13 @@ patrol_start에 실제 웨이포인트 목록이 들어있는 "진짜 순찰" �
 아예 없던 이전 상태(2026-09-13 트러블슈팅에서 발견됨)처럼 "명령이 어디로 갔는지
 모르는" 상황이 재발하지 않게 한다.
 
+2026-09-14: P6 "초기 위치 설정"(set_initial_pose)이 터틀봇에서 아무 반응이 없다는
+문제로 nav_prepare/set_initial_pose 핸들러를 추가했다 — LIMO(careguard_agent)
+쪽 구현은 careguard_nav/careguard_mission 같은 LIMO 전용 패키지에 의존해 그대로
+옮길 수 없어서, 이미 이 노드에 있던 _ensure_navigation_running/
+_publish_initial_pose(둘 다 외부 패키지 없이 자체 구현됨)를 그대로 재사용해
+얇은 핸들러만 새로 달았다.
+
 빌드/실행 미검증 — nav2_simple_commander.BasicNavigator API는 실 로봇(R-05/R-06)
 에서 한 번 맞춰봐야 한다(robot_careguard_ws의 같은 표시가 있는 코드들과 같은
 이유). nav2_bringup/nav2_simple_commander 패키지 자체가 설치돼 있는지와
@@ -142,11 +149,52 @@ class DownlinkNode(Node):
             self._start_patrol(message)
         elif msg_type == 'patrol_stop':
             self._stop_patrol(message)
+        elif msg_type == 'nav_prepare':
+            self._prepare_navigation(message)
+        elif msg_type == 'set_initial_pose':
+            self._handle_set_initial_pose(message)
         else:
-            # SLAM/cmd_vel/nav_prepare 등은 아직 이 노드가 처리하지 않는다 —
-            # 조용히 버리지 않고 경고를 남겨서 "명령이 어디로 갔는지 모르겠다"는
-            # 상황(이번에 downlink_node 자체가 없어서 겪은 문제)이 재발하지 않게 한다.
+            # SLAM/cmd_vel 등은 아직 이 노드가 처리하지 않는다 — 조용히 버리지
+            # 않고 경고를 남겨서 "명령이 어디로 갔는지 모르겠다"는 상황(이번에
+            # downlink_node 자체가 없어서 겪은 문제)이 재발하지 않게 한다.
             self.get_logger().warn(f'터틀봇 downlink가 아직 처리하지 않는 명령: {msg_type!r}')
+
+    def _prepare_navigation(self, message: dict):
+        """P6 페이지가 열리거나 다른 로봇의 맵으로 전환될 때 오는 명령 — 실제
+        순찰/이동 목표 없이 Nav2만 미리 준비한다.
+        careguard_agent/downlink_node.py::_prepare_navigation과 같은 목적이지만,
+        video_recorder/voice_announcer/patrol_task 기동은 LIMO 전용 워크스페이스
+        패키지(careguard_mission 등)에 의존해서 터틀봇엔 없다(모듈 docstring
+        참고) — Nav2 준비까지만 한다.
+        """
+        map_id = int(message.get('map_id', 0) or 0)
+        if map_id <= 0:
+            self.get_logger().warn('nav_prepare에 유효한 map_id가 없습니다')
+            return
+        try:
+            charge_x, charge_y, charge_yaw = self._fetch_charge_waypoint(map_id)
+        except Exception as exc:  # noqa: BLE001 - 원인이 다양해(네트워크/DB/웨이포인트 없음 등) 전부 여기서 로그만 남긴다
+            self.get_logger().error(f'nav_prepare용 충전 웨이포인트 조회 실패: {exc}')
+            return
+        self._ensure_navigation_running(map_id, charge_x, charge_y, charge_yaw)
+
+    def _handle_set_initial_pose(self, message: dict):
+        """P6 "위치 보정" — 지도 클릭+드래그로 사용자가 직접 지정한 위치·방향으로
+        AMCL 초기 위치를 즉석에서 다시 잡는다.
+        careguard_agent/downlink_node.py::_set_initial_pose와 같은 목적이지만,
+        그쪽은 careguard_nav 패키지를 별도 프로세스(`ros2 run careguard_nav
+        initial_pose_setter`)로 불러 처리하는데 터틀봇 워크스페이스엔 그 패키지가
+        없다 — 대신 이 노드가 이미 자체 구현해둔 _publish_initial_pose를 그대로
+        쓴다(patrol_start가 충전 복귀 후 초기 위치를 잡을 때 쓰는 것과 동일한
+        경로). Nav2 자체는 이미 떠 있어야 한다(여기서 새로 켜지 않음).
+        """
+        if self._nav_process is None or self._nav_process.poll() is not None:
+            self.get_logger().warn('Nav2가 떠있지 않아 초기 위치를 보정할 수 없습니다')
+            return
+        x = float(message.get('x', 0.0) or 0.0)
+        y = float(message.get('y', 0.0) or 0.0)
+        yaw = float(message.get('yaw', 0.0) or 0.0)
+        self._publish_initial_pose(x, y, yaw)
 
     def _start_patrol(self, message: dict):
         waypoints = message.get('waypoints') or []
