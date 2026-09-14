@@ -273,8 +273,29 @@ bool P6PatrolPage::canDrive() const {
 
 void P6PatrolPage::updateDrivingButtonsEnabled() {
     const bool drivable = canDrive();
-    testBtn_->setEnabled(drivable);
-    testBtn_->setToolTip(drivable ? QString() : QStringLiteral("로봇 ws 연결을 확인해주세요"));
+    // 팝오버의 "경로 이동"<->"주행 취소"(refreshPopoverDriveButton/
+    // WaypointPopover::setDriveButtonState)와 같은 토글을 testBtn_("경로 주행")에도
+    // 맞춘다 — 2026-09-14까지는 이 버튼이 늘 "경로 주행"으로 고정이라, 순찰 중에
+    // 눌러도(비활성화라 눌리지도 않았지만) 멈출 방법이 없었다는 리포트로 추가했다.
+    // drivingWaypointId_가 비어 있으면(팝오버의 개별 웨이포인트 이동이 아니라) 이
+    // 버튼이 시작한 경로 전체 주행이라는 뜻이다 — runTestRun()이 성공 시 isPatrolling_만
+    // 켜고 drivingWaypointId_는 안 건드리는 것과 짝이 맞다.
+    const bool isRoutePatrolling = isPatrolling_ && drivingWaypointId_.isEmpty();
+    if (isRoutePatrolling) {
+        testBtn_->setText(QStringLiteral("주행 취소"));
+        testBtn_->setProperty("variant", "danger");
+        // 취소는 팝오버와 같은 이유로(DB의 stuck 기록 정리를 위해) 오프라인이어도
+        // 항상 누를 수 있게 둔다.
+        testBtn_->setEnabled(true);
+        testBtn_->setToolTip(QString());
+    } else {
+        testBtn_->setText(QStringLiteral("경로 주행"));
+        testBtn_->setProperty("variant", "secondary");
+        testBtn_->setEnabled(drivable);
+        testBtn_->setToolTip(drivable ? QString() : QStringLiteral("로봇 ws 연결을 확인해주세요"));
+    }
+    testBtn_->style()->unpolish(testBtn_);
+    testBtn_->style()->polish(testBtn_);
     refreshPopoverDriveButton();
 }
 
@@ -1700,6 +1721,15 @@ void P6PatrolPage::deleteCurrentRoute() {
 }
 
 void P6PatrolPage::runTestRun() {
+    // updateDrivingButtonsEnabled()가 이미 이 버튼을 "주행 취소"로 토글해뒀다면
+    // (isPatrolling_ && drivingWaypointId_ 비어있음), 클릭은 새 주행 시작이 아니라
+    // 지금 하고 있는 경로 주행을 멈추라는 뜻이다 — cancelCurrentDrive와 같은
+    // /patrol-runs/cancel 경로를 그대로 재사용한다(팝오버의 "주행 취소"와 동일).
+    if (isPatrolling_ && drivingWaypointId_.isEmpty()) {
+        cancelCurrentDrive(QString());
+        return;
+    }
+
     const QVector<QString> order = routes_.value(currentRoute_);
     const QString chargeId = chargingWaypointId();
     if (currentRoute_.isEmpty() || order.isEmpty() || chargeId.isEmpty()) {
