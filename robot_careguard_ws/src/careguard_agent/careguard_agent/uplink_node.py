@@ -78,15 +78,38 @@ MAX_SCAN_POINTS = 450
 # WS 대역폭 부담이 적다.
 CAMERA_SEND_INTERVAL_SEC = 0.2
 
-# LIMO(3S 리튬이온 팩) 완충/컷오프 전압. MAX(12.6V=4.2V/cell)는 3S 리튬이온의
-# 화학적 완충 전압이라 실측 없이도 신뢰할 수 있어 그대로 둔다. MIN은 원래
-# 일반 스펙(3.5V/cell=10.5V) 추정치였는데, 2026-09-13 실 로봇에서 물리 배터리
-# 게이지(4칸, 칸당 25%)와 실측 전압을 대조해 다시 잡았다: 게이지 3번째 칸이
-# 깜빡이는 시점(칸당 25% 기준 50% 경계로 봄)의 실측 전압이 11.3V였다 —
-# 이 한 지점만으로 MAX=12.6V 고정 하에 역산한 값(10.0V)이라 다른 지점(예: 완충
-# 시점 실측치)으로 다시 확인해보면 더 정확해질 수 있다.
-LIMO_BATTERY_VOLTAGE_MAX = 12.6
-LIMO_BATTERY_VOLTAGE_MIN = 10.0
+# LIMO(3S 리튬이온 팩) 전압 -> 배터리 % 환산표. 2점 직선(MAX/MIN)으로는 리튬이온의
+# 비선형 방전곡선(중간은 완만, 저잔량에서 급격히 꺾임)을 못 따라가서 실제로 크게
+# 어긋나는 사례가 나왔다 — 2026-09-14, 물리 게이지가 4칸 중 1.5칸(~37.5%)인데
+# 당시 MIN=10.0V 기준 계산값은 1%였다(실측 전압 9.8V는 MIN보다도 낮았음).
+# 그래서 실측 지점들을 직접 잇는 구간별 직선(피스와이즈)으로 바꿨다. 전압 내림차순:
+#   12.6V -> 100%  : 3S 리튬이온 화학적 완충 전압(4.2V/cell) — 실측 없이도 신뢰 가능
+#   11.3V -> 50%   : 2026-09-13 실측. 게이지 3번째 칸이 깜빡이던 시점(칸당 25% 기준
+#                    50% 경계로 추정)의 전압
+#   9.8V  -> 37.5% : 2026-09-14 실측. 게이지 1.5/4칸(칸당 25% 기준) 상태에서
+#                    ros2 topic echo /limo_status로 확인한 전압(정지 상태, 안정적)
+#   9.0V  -> 0%    : 실측치 없음. 3S 팩의 일반적인 완전방전 컷오프(3.0V/cell) 추정치
+# 중간 두 점(11.3V, 9.8V)은 게이지를 눈대중으로 읽은 값이라 여전히 근사치다.
+# 추가로 칸 전환 시점의 전압을 실측할수록 이 표가 더 정확해진다.
+LIMO_BATTERY_VOLTAGE_PERCENT_CURVE = (
+    (12.6, 100.0),
+    (11.3, 50.0),
+    (9.8, 37.5),
+    (9.0, 0.0),
+)
+
+
+def _limo_voltage_to_percentage(voltage: float) -> float:
+    points = LIMO_BATTERY_VOLTAGE_PERCENT_CURVE
+    if voltage >= points[0][0]:
+        return 100.0
+    if voltage <= points[-1][0]:
+        return 0.0
+    for (v_hi, p_hi), (v_lo, p_lo) in zip(points, points[1:]):
+        if v_lo <= voltage <= v_hi:
+            ratio = (voltage - v_lo) / (v_hi - v_lo)
+            return p_lo + ratio * (p_hi - p_lo)
+    return 0.0
 
 
 def _yaw_from_quaternion(q) -> float:
@@ -212,13 +235,11 @@ class UplinkNode(Node):
         })
 
     def _on_limo_status(self, msg: LimoStatus):
-        # battery_voltage(V) -> percentage 환산 — 위 LIMO_BATTERY_VOLTAGE_MIN/MAX 참고.
+        # battery_voltage(V) -> percentage 환산 — 위 LIMO_BATTERY_VOLTAGE_PERCENT_CURVE 참고.
         # 서버(robot_ws.py::_handle_battery_state)와 대시보드는 터틀봇/LIMO 구분 없이
         # {"type": "battery_state", "percentage": 0~100}만 기대하므로, 환산은 여기서
         # 끝내고 나머지 파이프라인(스무딩·임계값 판단·브로드캐스트)은 그대로 재사용한다.
-        span = LIMO_BATTERY_VOLTAGE_MAX - LIMO_BATTERY_VOLTAGE_MIN
-        ratio = (msg.battery_voltage - LIMO_BATTERY_VOLTAGE_MIN) / span
-        percentage = max(0.0, min(100.0, ratio * 100.0))
+        percentage = _limo_voltage_to_percentage(msg.battery_voltage)
         self._send({'type': 'battery_state', 'percentage': percentage})
 
     def _on_slam_overlay_tick(self):
