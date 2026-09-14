@@ -193,6 +193,9 @@ QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTimeEdit:focus, QDateEdi
 QLineEdit[state="error"], QComboBox[state="error"] { border: 1.5px solid #D93B47; }
 QLineEdit:disabled, QComboBox:disabled, QDateEdit:disabled { background: #F5F7F9; color: #93A0AC; }
 QLineEdit::placeholder { color: #93A0AC; }
+/* 입력칸 테두리를 없애 값만 텍스트처럼 보이게 한다(P7 임계값 탭 operator 조회 전용 등).
+   :disabled과 달리 회색으로 흐려지지 않는다 — "읽을 수 없다"가 아니라 "고칠 수만 없다"이므로. */
+QLineEdit[variant="plain"] { background: transparent; border: none; padding: 5px 0; min-height: 22px; }
 
 QSpinBox, QDoubleSpinBox, QTimeEdit, QDateEdit {
     font-family: "JetBrains Mono", "D2Coding", monospace; font-size: 13px;
