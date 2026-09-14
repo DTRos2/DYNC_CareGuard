@@ -585,6 +585,9 @@ void P7SettingsPage::registerRobot(const RobotDialog::RobotData& data) {
 void P7SettingsPage::updateRobot(int robotDbId, const RobotDialog::RobotData& data) {
     QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2").arg(serverUrl_).arg(robotDbId)));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
 
     const QJsonObject body{
         {"name", data.name},

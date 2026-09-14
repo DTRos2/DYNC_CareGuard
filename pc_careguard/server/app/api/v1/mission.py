@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
 from ...core import db
 from ...schemas import MissionCreate, MissionItem
 from ...ws import robot_ws
+from ...core.auth import CurrentUser, require_roles
 
 # P3 "복약 재안내" 버튼 전용. medication_scheduler 자체가 이 코드베이스에 없어서(스케줄러는
 # patrol_schedule만 폴링) 여기는 스케줄러를 거치지 않고 버튼 클릭 즉시 mission을 만들어
@@ -15,7 +16,7 @@ router = APIRouter(prefix="/missions", tags=["mission"])
 
 
 @router.post("", response_model=MissionItem, status_code=201)
-async def create_mission(payload: MissionCreate):
+async def create_mission(payload: MissionCreate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (payload.robot_code,))
         robot = cur.fetchone()

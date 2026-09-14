@@ -2,7 +2,8 @@ from datetime import date, timedelta
 from typing import List, Optional
 
 import anyio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from ...core.auth import CurrentUser, get_current_user, require_roles
 
 from ...core import db
 from ...schemas import (
@@ -159,9 +160,15 @@ def _next_code(cur) -> str:
 
 
 @router.get("", response_model=List[RecipientItem])
-def list_recipients():
+def list_recipients(current_user: CurrentUser = Depends(get_current_user)):
     with db.get_connection() as conn, conn.cursor() as cur:
-        cur.execute(_RECIPIENT_SELECT + " WHERE rc.deregistered_at IS NULL ORDER BY rc.id")
+        query = _RECIPIENT_SELECT + " WHERE rc.deregistered_at IS NULL"
+        params : list = []
+        if current_user.role == "guardian":
+            query += " AND rc.guardian_user_id = %s"
+            params.append(current_user.id)
+        query += " ORDER BY rc.id"
+        cur.execute(query, params)
         rows = cur.fetchall()
         ids = [row["id"] for row in rows]
         risk = _risk_by_recipient(cur, ids)
@@ -182,12 +189,18 @@ def list_recipients():
 
 
 @router.get("/{recipient_id}", response_model=RecipientDetailItem)
-def get_recipient(recipient_id: int):
+def get_recipient(recipient_id: int, current_user: CurrentUser = Depends(get_current_user)):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(_RECIPIENT_SELECT + " WHERE rc.id = %s AND rc.deregistered_at IS NULL", (recipient_id,))
         row = cur.fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="대상자를 찾을 수 없습니다")
+
+        if current_user.role == "guardian":
+            cur.execute("SELECT guardian_user_id FROM recipient WHERE id = %s", (recipient_id,))
+            owner = cur.fetchone()
+            if owner is None or owner["guardian_user_id"] != current_user.id:
+                raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
 
         cur.execute(
             """
@@ -228,7 +241,7 @@ def get_recipient(recipient_id: int):
 
 
 @router.post("", response_model=RecipientDetailItem, status_code=201)
-def create_recipient(payload: RecipientCreate):
+def create_recipient(payload: RecipientCreate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """P3 "대상자 등록" 모달. recipient + guardian(1순위 이상) + medication_schedule을
     한 트랜잭션으로 저장한다. 긴급 고정 행(119·112)은 화면 전용 표시라 guardians에
     안 실려 온다는 전제(대시보드 쪽에서 이미 걸러 보냄) — 여기서는 온 것만 그대로 넣는다.
@@ -297,7 +310,7 @@ def create_recipient(payload: RecipientCreate):
 
 
 @router.put("/{recipient_id}", response_model=RecipientDetailItem)
-def update_recipient(recipient_id: int, payload: RecipientCreate):
+def update_recipient(recipient_id: int, payload: RecipientCreate, current_user: CurrentUser = Depends(require_roles("admin","operator"))):
     """P3 대상자 상세 모달의 "저장". 기본정보를 갱신하고, 보호자·복약 스케줄은 다이얼로그가
     들고 있는 전체 목록으로 통째로 교체한다(기존 활성 행을 등록 해제 후 다시 심음) — 다이얼로그가
     이미 전체 상태를 관리하고 있어 부분 diff보다 훨씬 단순하고, POST와 같은 payload 모양을
@@ -437,7 +450,7 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
 
 
 @router.post("/{recipient_id}/deactivate", status_code=204)
-def deactivate_recipient(recipient_id: int):
+def deactivate_recipient(recipient_id: int, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """P3 상세 모달의 "대상자 비활성화". 하드 삭제 대신 recipient.deregistered_at을 찍어
     목록(GET /recipients)·조회(GET /recipients/{id})에서만 제외한다 — guardian·
     medication_schedule과 같은 소프트 삭제 정책. robot_id·operator_id는 그대로 남겨두는데,

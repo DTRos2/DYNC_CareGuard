@@ -1,7 +1,7 @@
 from typing import List, Optional
 
 import anyio
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 
 import psycopg2.extras
 
@@ -18,6 +18,7 @@ from ...schemas import (
     WaypointUpdate,
 )
 from ...ws import dashboard_ws, robot_ws
+from ...core.auth import CurrentUser, require_roles
 
 router = APIRouter(prefix="/maps", tags=["map"])
 
@@ -33,7 +34,7 @@ def _waypoint_row_to_item(row) -> WaypointItem:
 
 
 @router.get("/active", response_model=List[MapItem])
-def list_active_maps():
+def list_active_maps(current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """로봇별 현재 활성 맵 목록. map.is_active=TRUE는 로봇당 1개만 존재한다(스키마 유니크 인덱스).
 
     대시보드가 로봇 목록을 별도로 조회하지 않아도 맵 스위처를 바로 그릴 수 있도록
@@ -77,7 +78,7 @@ def list_active_maps():
 
 
 @router.post("", response_model=MapItem, status_code=201)
-def create_map(payload: MapCreate):
+def create_map(payload: MapCreate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """"파일로 맵 등록" 모달 — POST /media/upload-map으로 이미 올려둔 파일(file_id)을
     맵으로 확정한다. SLAM 저장(ws/robot_ws.py::_save_slam_result)과 흐름이 같다
     (기존 활성 맵 비활성화 -> map 행 생성 -> files.entity_id 재연결) — slam_job이
@@ -179,7 +180,7 @@ def create_map(payload: MapCreate):
 
 
 @waypoints_router.get("", response_model=List[WaypointItem])
-def list_waypoints(map_id: int = Query(..., description="대상 맵 id")):
+def list_waypoints(map_id: int = Query(..., description="대상 맵 id"), current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """맵 위 활성 웨이포인트 목록. 순찰 지점(kind=patrol)과 충전 스테이션(kind=charge)을 모두 포함한다."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -197,7 +198,7 @@ def list_waypoints(map_id: int = Query(..., description="대상 맵 id")):
 
 
 @waypoints_router.post("", response_model=WaypointItem, status_code=201)
-def create_waypoint(payload: WaypointCreate):
+def create_waypoint(payload: WaypointCreate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """웨이포인트 생성. 코드 중복, 충전 스테이션(맵당 1개) 중복은 사전 체크 후 409로 막는다."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -235,7 +236,7 @@ def create_waypoint(payload: WaypointCreate):
 
 
 @waypoints_router.put("/{waypoint_id}", response_model=WaypointItem)
-def update_waypoint(waypoint_id: int, payload: WaypointUpdate):
+def update_waypoint(waypoint_id: int, payload: WaypointUpdate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """부분 수정. 보낸 필드만 반영한다."""
     fields = payload.dict(exclude_unset=True)
     if not fields:
@@ -280,7 +281,7 @@ def update_waypoint(waypoint_id: int, payload: WaypointUpdate):
 
 
 @waypoints_router.delete("/{waypoint_id}", status_code=204)
-def delete_waypoint(waypoint_id: int):
+def delete_waypoint(waypoint_id: int, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE waypoint SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL RETURNING map_id",
@@ -296,7 +297,7 @@ def delete_waypoint(waypoint_id: int):
 
 
 @slam_jobs_router.post("", response_model=SlamJobItem, status_code=201)
-async def start_slam_job(payload: SlamJobCreate):
+async def start_slam_job(payload: SlamJobCreate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """최초 자택 매핑을 시작한다. DB에 slam_job(status=queued)을 남기고 로봇에 명령을 전송한다."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (payload.robot_code,))
@@ -322,7 +323,7 @@ async def start_slam_job(payload: SlamJobCreate):
 
 
 @slam_jobs_router.post("/{job_id}/cancel", response_model=SlamJobItem)
-async def cancel_slam_job(job_id: int):
+async def cancel_slam_job(job_id: int, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """진행 중인 SLAM을 취소한다 — P5 "초기화"가 쓴다. "매핑 시작"은 이후 사용자가
     별도로 다시 눌러야 하는 독립된 동작이다(자동 재시작 체인 없음).
 
@@ -358,7 +359,7 @@ async def cancel_slam_job(job_id: int):
 
 
 @slam_jobs_router.post("/{job_id}/save", response_model=SlamJobItem)
-async def save_slam_job(job_id: int, payload: SlamJobSaveRequest = SlamJobSaveRequest()):
+async def save_slam_job(job_id: int, payload: SlamJobSaveRequest = SlamJobSaveRequest(), current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """"SLAM 맵 저장·배포" 버튼 — 로봇에 지금까지 그린 지도를 실제로 저장하라고 명령한다.
 
     payload.map_name이 오면 "매핑 시작" 때 넣어뒀던 임시 이름(예: "새 맵")을 여기서
@@ -405,7 +406,8 @@ async def save_slam_job(job_id: int, payload: SlamJobSaveRequest = SlamJobSaveRe
 @slam_jobs_router.get("", response_model=List[SlamJobItem])
 def list_slam_jobs(
     robot_id: Optional[int] = Query(None, description="로봇으로 필터링"),
-    status: Optional[str] = Query(None, description="slam_job.status로 필터링(예: queued)"),
+    status: Optional[str] = Query(None, description="slam_job.status로 필터링(예: queued)"), 
+    current_user: CurrentUser = Depends(require_roles("admin", "operator"))
 ):
     """SLAM 작업 목록. P6PatrolPage가 페이지를 열거나(맵 전환 포함) 새로고침 버튼을
     눌렀을 때, robot_id + status=queued로 걸어 "지금 이 로봇이 SLAM 매핑 중인지"를
@@ -435,7 +437,7 @@ def list_slam_jobs(
 
 
 @slam_jobs_router.get("/{job_id}", response_model=SlamJobItem)
-def get_slam_job(job_id: int):
+def get_slam_job(job_id: int, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """

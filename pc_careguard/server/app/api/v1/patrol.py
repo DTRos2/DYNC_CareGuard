@@ -4,7 +4,8 @@ from typing import List, Optional
 
 import anyio
 import psycopg2.extras
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
+from ...core.auth import CurrentUser, require_roles
 
 from ...core import db
 from ...schemas import (
@@ -25,6 +26,7 @@ from ...schemas import (
     ShutdownRobotRequest,
 )
 from ...ws import dashboard_ws, robot_ws
+
 
 
 def _reject_charge_in_steps(cur, steps: List[int]) -> None:
@@ -57,7 +59,7 @@ runs_router = APIRouter(prefix="/patrol-runs", tags=["patrol"])
 
 
 @routes_router.get("", response_model=List[PatrolRouteItem])
-def list_patrol_routes(map_id: Optional[int] = Query(None, description="맵으로 필터링")):
+def list_patrol_routes(map_id: Optional[int] = Query(None, description="맵으로 필터링"), current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """순찰 경로 목록. steps는 방문할 waypoint id를 순서대로 담은 배열이다."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -76,7 +78,7 @@ def list_patrol_routes(map_id: Optional[int] = Query(None, description="맵으�
 
 
 @routes_router.post("", response_model=PatrolRouteItem, status_code=201)
-def create_patrol_route(payload: PatrolRouteCreate):
+def create_patrol_route(payload: PatrolRouteCreate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT id FROM patrol_route WHERE map_id = %s AND name = %s AND deregistered_at IS NULL",
@@ -110,7 +112,7 @@ def create_patrol_route(payload: PatrolRouteCreate):
 
 
 @routes_router.put("/{route_id}", response_model=PatrolRouteItem)
-def update_patrol_route(route_id: int, payload: PatrolRouteUpdate):
+def update_patrol_route(route_id: int, payload: PatrolRouteUpdate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     fields = payload.dict(exclude_unset=True)
     if not fields:
         raise HTTPException(status_code=400, detail="변경할 내용이 없습니다")
@@ -143,7 +145,7 @@ def update_patrol_route(route_id: int, payload: PatrolRouteUpdate):
 
 
 @routes_router.delete("/{route_id}", status_code=204)
-def delete_patrol_route(route_id: int):
+def delete_patrol_route(route_id: int, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """경로를 삭제한다. 이 경로를 쓰는 순찰 스케줄도 함께 비활성화한다."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -165,7 +167,7 @@ def delete_patrol_route(route_id: int):
 
 
 @schedules_router.get("", response_model=List[PatrolScheduleItem])
-def list_patrol_schedules(route_id: int = Query(..., description="대상 경로 id")):
+def list_patrol_schedules(route_id: int = Query(..., description="대상 경로 id"), current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """경로 실행 예약 목록. 한 경로에 여러 시각이 등록될 수 있다."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -184,7 +186,7 @@ def list_patrol_schedules(route_id: int = Query(..., description="대상 경로 
 
 
 @schedules_router.post("", response_model=PatrolScheduleItem, status_code=201)
-def create_patrol_schedule(payload: PatrolScheduleCreate):
+def create_patrol_schedule(payload: PatrolScheduleCreate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -213,7 +215,7 @@ def create_patrol_schedule(payload: PatrolScheduleCreate):
 
 
 @schedules_router.put("/{schedule_id}", response_model=PatrolScheduleItem)
-def update_patrol_schedule(schedule_id: int, payload: PatrolScheduleUpdate):
+def update_patrol_schedule(schedule_id: int, payload: PatrolScheduleUpdate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """run_time/days_of_week 수정 + enabled 토글(대시보드 ToggleSwitch).
 
     DB엔 별도 enabled 컬럼이 없어 deregistered_at으로 대신한다: False -> NOW(), True -> NULL.
@@ -248,7 +250,7 @@ def update_patrol_schedule(schedule_id: int, payload: PatrolScheduleUpdate):
 
 
 @schedules_router.delete("/{schedule_id}", status_code=204)
-def delete_patrol_schedule(schedule_id: int):
+def delete_patrol_schedule(schedule_id: int, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE patrol_schedule SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL",
@@ -348,6 +350,7 @@ async def start_patrol_run(
 def list_patrol_runs(
     robot_id: Optional[int] = Query(None, description="로봇으로 필터링"),
     status: Optional[str] = Query(None, description="patrol_run.status로 필터링(예: running)"),
+    current_user: CurrentUser = Depends(require_roles("admin", "operator")),
 ):
     """순찰/이동 실행 기록 목록. P6PatrolPage가 페이지를 열거나(맵 전환 포함) 새로고침
     버튼을 눌렀을 때, robot_id + status=running으로 걸어 "지금 이 로봇이 실제로
@@ -377,7 +380,7 @@ def list_patrol_runs(
 
 
 @runs_router.post("", response_model=PatrolRunItem, status_code=201)
-async def create_patrol_run(payload: PatrolRunCreate):
+async def create_patrol_run(payload: PatrolRunCreate, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     return await start_patrol_run(payload.robot_id, payload.route_id, payload.trigger)
 
 
@@ -418,7 +421,7 @@ async def dispatch_drive_to_point(
 
 
 @runs_router.post("/drive-to-point", response_model=DriveToPointResponse)
-async def drive_to_point(payload: DriveToPointRequest):
+async def drive_to_point(payload: DriveToPointRequest, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """P6 "이동" — dispatch_drive_to_point() 참고."""
     connected = await dispatch_drive_to_point(
         payload.robot_code, payload.code, payload.x, payload.y, payload.yaw, payload.map_id
@@ -448,7 +451,7 @@ async def _clear_running_patrol_run(robot_code: str) -> None:
 
 
 @runs_router.post("/cancel", response_model=DriveToPointResponse)
-async def cancel_patrol_run(payload: CancelPatrolRunRequest):
+async def cancel_patrol_run(payload: CancelPatrolRunRequest, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """P6 웨이포인트 팝오버 "주행 취소" — patrol_run.id를 몰라도(P6 "이동"은 run_id=0이라
     애초에 행이 없다) robot_code만으로 "지금 하고 있는 걸 멈춰라"를 표현한다. 로봇에
     실제로 취소 명령을 시도하는 것과, DB의 running 기록을 정리하는 것을 서로 무관하게
@@ -477,7 +480,7 @@ async def cancel_patrol_run(payload: CancelPatrolRunRequest):
 
 
 @runs_router.post("/prepare-navigation", response_model=DriveToPointResponse)
-async def prepare_navigation(payload: PrepareNavigationRequest):
+async def prepare_navigation(payload: PrepareNavigationRequest, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """P6 페이지가 열리거나(showEvent) 다른 로봇의 맵으로 전환될 때(loadMapData) —
     실제 순찰/이동 목표 없이 Nav2만 미리 준비시킨다. 로봇이 안 켜져 있거나 아직
     안 켜져 있어도 에러가 아니다(robot_connected: false로 조용히 알려줄 뿐) — GUI가
@@ -491,7 +494,7 @@ async def prepare_navigation(payload: PrepareNavigationRequest):
 
 
 @runs_router.post("/set-initial-pose", response_model=DriveToPointResponse)
-async def set_initial_pose(payload: SetInitialPoseRequest):
+async def set_initial_pose(payload: SetInitialPoseRequest, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """P6 "위치 보정" — 지도 클릭+드래그로 사용자가 직접 지정한 로봇의 실제 위치·
     방향으로 AMCL 초기 위치를 즉석에서 다시 잡는다. nav_prepare/drive-to-point와
     달리 Nav2를 새로 켜지 않는다(이미 떠 있다고 가정) — 자동 초기 위치 추정(충전
@@ -513,7 +516,7 @@ async def set_initial_pose(payload: SetInitialPoseRequest):
 
 
 @runs_router.post("/shutdown-robot", response_model=DriveToPointResponse)
-async def shutdown_robot(payload: ShutdownRobotRequest):
+async def shutdown_robot(payload: ShutdownRobotRequest, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     """P6 "로봇 종료" 버튼 — 베이스 구동(teleop_launch.py)·Nav2/SLAM·rviz2·업링크·
     다운링크를 전부 내린다. 명령을 처리하는 다운링크 자신도 마지막에 스스로
     끝나므로(downlink_node.py::_shutdown_everything), 이 호출 직후 로봇 연결이
@@ -553,6 +556,7 @@ def list_patrol_run_logs(
     start: Optional[date] = Query(None, description="조회 시작일. 생략하면 오늘부터 7일 전"),
     end: Optional[date] = Query(None, description="조회 종료일. 생략하면 오늘"),
     q: Optional[str] = Query(None, description="로봇·대상자·경로·상태 텍스트 검색어"),
+    current_user: CurrentUser = Depends(require_roles("admin", "operator")),
 ):
     """시스템 설정 > 경로순찰 로그 탭. patrol_run을 시각 역순으로, 사람이 읽을 이름과
     한글 라벨로 변환해 반환한다 — audit-log(GET /audit-log)와 같은 필터 관례
@@ -598,7 +602,7 @@ def list_patrol_run_logs(
 
 
 @runs_router.get("/{run_id}", response_model=PatrolRunItem)
-def get_patrol_run(run_id: int):
+def get_patrol_run(run_id: int, current_user: CurrentUser = Depends(require_roles("admin", "operator"))):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
             """

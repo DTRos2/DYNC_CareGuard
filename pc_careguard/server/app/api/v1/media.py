@@ -209,6 +209,7 @@ def upload_video(
 def upload_map_image(
     robot_code: str = Form(..., description="매핑을 수행한 로봇 code (예: R-04)"),
     file: UploadFile = File(..., description="업로드할 맵 이미지(.pgm 등) 파일"),
+    current_user: CurrentUser = Depends(require_roles("admin", "operator")),
 ):
     """SLAM으로 완성한(또는 파일로 직접 등록하는) 맵 이미지를 업로드해 files에
     entity_type='map_image'로 기록한다.
@@ -296,7 +297,7 @@ def write_map_yaml_sidecar(file_id: int, raw_yaml: Dict[str, Any]) -> None:
 
 
 @router.api_route("/files/{file_id}", methods=["GET", "HEAD"])
-def get_media_file(file_id: int):
+def get_media_file(file_id: int, current_user: CurrentUser = Depends(get_current_user)):
     """영상 재생/다운로드용 실제 바이트를 내려준다.
 
     files.storage_path는 서버 로컬 경로라 대시보드(다른 PC일 수 있음)가 직접 열 수
@@ -313,6 +314,23 @@ def get_media_file(file_id: int):
             (file_id,),
         )
         row = cur.fetchone()
+    
+    if current_user.role == "guardian":
+            cur.execute(
+                """
+                SELECT COALESCE(rc.guardian_user_id, rc_by_robot.guardian_user_id) AS owner_id
+                FROM camera_recording cr
+                LEFT JOIN care_event ce ON ce.id = cr.care_event_id
+                LEFT JOIN recipient rc ON rc.id = ce.recipient_id
+                LEFT JOIN recipient rc_by_robot
+                    ON rc_by_robot.robot_id = cr.robot_id AND rc_by_robot.deregistered_at IS NULL
+                WHERE cr.file_id = %s
+                """,
+                (file_id,),
+            )
+            owner = cur.fetchone()
+            if owner is None or owner["owner_id"] != current_user.id:
+                raise HTTPException(status_code=403, detail="접근 권한이 없습니다")
 
     if row is None:
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다")
@@ -335,6 +353,7 @@ def list_video_events(
     robot_id: Optional[int] = Query(None, description="특정 로봇으로 필터링"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """영상 카드 목록 조회.
 
@@ -354,6 +373,7 @@ def list_video_events(
                 cr.id AS camera_recording_id,
                 r.code AS robot_code,
                 COALESCE(rc.name, rc_by_robot.name) AS recipient_name,
+                COALESCE(rc.id, rc_by_robot.id) AS recipient_id,
                 ce.id AS care_event_id,
                 ce.event_uid AS event_uid,
                 ce.severity AS severity,
@@ -373,10 +393,19 @@ def list_video_events(
                 ON rc_by_robot.robot_id = cr.robot_id AND rc_by_robot.deregistered_at IS NULL
             WHERE cr.deleted_at IS NULL
                 AND (%(robot_id)s IS NULL OR cr.robot_id = %(robot_id)s)
+                AND (
+                    %(guardian_id)s IS NULL
+                    OR COALESCE(rc.guardian_user_id, rc_by_robot.guardian_user_id) = %(guardian_id)s
+                )
             ORDER BY cr.created_at DESC
             LIMIT %(limit)s OFFSET %(offset)s
             """,
-            {"robot_id": robot_id, "limit": limit, "offset": offset},
+            {
+                "robot_id": robot_id, 
+                "limit": limit, 
+                "offset": offset,
+                "guardian_id": current_user.id if current_user.role == "guardian" else None,
+            },
         )
         rows = cur.fetchall()
 
