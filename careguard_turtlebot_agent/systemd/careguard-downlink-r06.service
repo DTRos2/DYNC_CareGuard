@@ -12,6 +12,11 @@ Environment=TURTLEBOT3_MODEL=burger
 Environment=LDS_MODEL=LDS-03
 Environment=CAREGUARD_ROBOT_CODE=R-06
 Environment=CAREGUARD_SERVER_URL=http://100.107.185.97:8000
+# 2026-09-14: ~/turtlebot3_ws의 burger.yaml 원본은 nav2_navfn_planner/nav2_behaviors
+# 플러그인 이름을 최신(Iron+) "::" 컨벤션으로 쓰는데, 이 로봇의 apt Humble 패키지는
+# 아직 구버전 "/" 이름으로 등록돼 있어 planner_server가 FATAL로 죽는 문제가 있었다
+# (config/nav2_burger_params.yaml 헤더 주석 참고) — 그 수정본을 가리키도록 지정한다.
+Environment=CAREGUARD_NAV2_PARAMS_FILE=/home/yeyu/careguard_turtlebot_agent_ws/install/careguard_turtlebot_agent/share/careguard_turtlebot_agent/config/nav2_burger_params.yaml
 ExecStartPre=/bin/sleep 1
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/turtlebot3_ws/install/setup.bash && source ~/careguard_turtlebot_agent_ws/install/setup.bash && exec ros2 run careguard_turtlebot_agent downlink_node'
 Restart=on-failure
