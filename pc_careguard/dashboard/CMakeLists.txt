@@ -70,6 +70,8 @@ add_executable(careguard_dashboard
     src/widgets/checkable_list_widget.cpp
     src/dialogs/event_detail_modal.h
     src/dialogs/event_detail_modal.cpp
+    src/dialogs/robot_control_modal.h
+    src/dialogs/robot_control_modal.cpp
     src/dialogs/p5_map_file_register_dialog.h
     src/dialogs/p5_map_file_register_dialog.cpp
     src/dialogs/p5_map_preview_dialog.h
@@ -96,6 +98,8 @@ add_executable(careguard_dashboard
     src/pages/p6_patrol_page.cpp
     src/pages/p7_settings_page.h
     src/pages/p7_settings_page.cpp
+    src/pages/p8_logs_page.h
+    src/pages/p8_logs_page.cpp
     resources/resources.qrc
 )
 

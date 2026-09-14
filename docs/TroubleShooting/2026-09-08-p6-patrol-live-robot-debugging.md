@@ -1,5 +1,6 @@
 # 2026-09-08 트러블슈팅 — P6 순찰 실 로봇 연동 심화 디버깅 (좌표·스케줄·patrol_task)
 
+> 작성자: 강유나
 > `feature/p5-p6-map-patrol-pages` 브랜치, 실제 LIMO 로봇(R-04)으로 P6 순찰(WP 이동·경로 주행·순찰 스케줄)을 하루 종일 반복 테스트하며 나온 문제들의 증상·진단 과정·원인·해결을 정리한 기록. 전날(`2026-09-07-p5-p6-slam-nav-integration.md`)에 이어지는 세션 — 그날 고친 것들 위에 실제로 로봇을 계속 굴려보면서 나온 더 깊은 문제들.
 > 대상 파일: `pc_careguard/dashboard/src/{pages/p5_map_page.*, pages/p6_patrol_page.*, widgets/canvas_geometry.*, widgets/waypoint_canvas.*, widgets/camera_live_view.*, windows/mainwindow.cpp}`, `pc_careguard/server/app/services/scheduler.py`, `robot_careguard_ws/src/careguard_agent/careguard_agent/downlink_node.py`, `robot_careguard_ws/src/careguard_mission/careguard_mission/patrol_task.py`, `robot_careguard_ws/src/careguard_nav/careguard_nav/initial_pose_setter.py`
 

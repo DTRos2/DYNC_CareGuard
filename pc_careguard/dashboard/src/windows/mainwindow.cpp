@@ -19,6 +19,7 @@
 #include "pages/p5_map_page.h"
 #include "pages/p6_patrol_page.h"
 #include "pages/p7_settings_page.h"
+#include "pages/p8_logs_page.h"
 #include "theme/tokens.h"
 #include "widgets/simple_icons.h"
 
@@ -43,7 +44,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     body->addWidget(buildSidebar());
 
     pageStack_ = new QStackedWidget(central);
-    pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
+    auto* overviewPage = new P1OverviewPage(pageStack_);
+    pageStack_->addWidget(overviewPage);                     // idx 0
     auto* eventPage = new P2EventPage(pageStack_);
     pageStack_->addWidget(eventPage);                        // idx 1
     auto* recipientPage = new P3RecipientPage(pageStack_);
@@ -56,6 +58,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     pageStack_->addWidget(patrolPage);                       // idx 5
     settingsPage_ = new P7SettingsPage(pageStack_);
     pageStack_->addWidget(settingsPage_);                    // idx 6
+    pageStack_->addWidget(new P8LogsPage(pageStack_));       // idx 7
     body->addWidget(pageStack_, /*stretch=*/1);
 
     // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 반영한다. mapRegistered 시그널엔
@@ -90,6 +93,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 switchToPage(1);
                 eventPage->openEventByUid(eventUid);
             });
+
+    // P1 로봇 상세 모달의 "이벤트로 이동" → 검색어로 필터링해서 상세 모달까지 자동으로
+    // 여는 것 없이, P2로 페이지만 전환한다.
+    connect(overviewPage, &P1OverviewPage::eventNavigationRequested, this,
+            [this](const QString&) { switchToPage(1); });
 
     // 반대 방향 — P2 이벤트 상세 모달의 "사유 입력 후 열람" → 페이지 전환 없이 그 자리에
     // P4의 재생 모달을 그대로 띄운다(연결된 클립을 찾아서). eventDetailRequested와 달리
@@ -192,6 +200,10 @@ QWidget* MainWindow::buildSidebar() {
     addNavButton(layout, SimpleIcons::route(Tokens::TEXT_SECONDARY, 14), QStringLiteral("순찰·경로"), 5,
                  navGroup_);
     addNavButton(layout, SimpleIcons::settings(Tokens::TEXT_SECONDARY, 14), QStringLiteral("시스템"), 6,
+                 navGroup_);
+
+    addGroupLabel(QStringLiteral("로그"));
+    addNavButton(layout, SimpleIcons::list(Tokens::TEXT_SECONDARY, 14), QStringLiteral("통합 로그"), 7,
                  navGroup_);
 
     layout->addStretch();

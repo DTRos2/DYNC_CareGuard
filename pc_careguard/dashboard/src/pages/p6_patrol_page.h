@@ -1,6 +1,7 @@
 #pragma once
 #include <QImage>
 #include <QMap>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 #include <memory>
@@ -74,7 +75,8 @@ private:
         QVector<int> days;  // 0=월 .. 6=일
         bool enabled;
         int serverId = -1;  // POST /patrol-schedules로 만든 서버 행 id. 로컬 전용이면 -1
-        // routeName이 "medicine"일 때, 이 회차가 매칭된 medication_schedule.id. 0=매칭 안 함.
+        // 이 스케줄이 "복약 스케줄" 체크박스로 매칭된 medication_schedule.id.
+        // 0=복약 스케줄이 아니거나 매칭 안 함(경로 이름과는 무관하다).
         int medicationScheduleId = 0;
     };
 
@@ -193,18 +195,17 @@ private:
     // 연다. 저장 시 saveScheduleFromForm()이 scheduleEditIndex_로 추가/수정을 구분한다.
     // 경로(route_id)는 PUT /patrol-schedules가 지원하지 않아 편집 중엔 콤보를 잠근다.
     void startEditSchedule(int index);
-    // "복약 전달 경로" 체크박스 — 켜면 routeEditNameEdit_를 "medicine"으로 고정하고
-    // 잠근다(끄면 체크 전 입력값으로 되돌림). "주행 스케줄" 추가 폼이 경로 이름으로
-    // 복약 경로 여부를 판별하므로(onScheduleRouteComboChanged), 이 리터럴이 곧 그 판별
-    // 기준이 된다.
-    void onRouteMedicineToggled(bool checked);
-    // "주행 스케줄" 폼(추가·수정 둘 다)의 경로 콤보가 바뀌거나(추가) startEditSchedule이
-    // 프로그램적으로 세팅할 때(수정) 뜬다 — 선택된 경로가 "medicine"이면 복약 스케줄
-    // 콤보(scheduleMedCombo_)를 보이고 채운다. 수정 모드일 땐 지금 편집 중인
-    // schedules_[scheduleEditIndex_].medicationScheduleId를 loadMedicationSchedulesForCurrentRobot에
-    // 넘겨 그 id 그대로 자동 선택시킨다(patrol_schedule.medication_schedule_id — 값 비교가
-    // 아니라 id 매칭이라 이름·시각이 같은 다른 스케줄과 혼동될 일이 없다).
-    void onScheduleRouteComboChanged(const QString& routeName);
+    // "주행 스케줄" 폼의 "복약 스케줄" 체크박스 — 추가 폼에서 사용자가 직접 클릭하거나,
+    // startEditSchedule이 프로그램적으로 세팅할 때(수정, schedules_[i].medicationScheduleId>0
+    // 이면 체크된 것으로 간주) 뜬다. 켜면 복약 스케줄 콤보(scheduleMedCombo_)를 보이고
+    // 채운다. 수정 모드일 땐 지금 편집 중인 schedules_[scheduleEditIndex_].medicationScheduleId를
+    // loadMedicationSchedulesForCurrentRobot에 넘겨 그 id 그대로 자동 선택시킨다
+    // (patrol_schedule.medication_schedule_id — 값 비교가 아니라 id 매칭이라 이름·시각이
+    // 같은 다른 스케줄과 혼동될 일이 없다). 예전엔 경로 이름이 "medicine"인지로 복약
+    // 여부를 판별했는데(routeMedicineCheckbox_), 그러면 경로 하나당 복약 여부가
+    // 고정돼버려 "이 경로의 이 시각 스케줄만 복약용" 같은 조합이 안 됐다 — 요청 사양대로
+    // 스케줄(patrol_schedule) 하나하나의 속성으로 옮겼다.
+    void onScheduleMedicineToggled(bool checked);
     // 지금 맵(currentMapIndex_)의 로봇에 배정된 대상자를 찾아 그 복약 스케줄로
     // scheduleMedCombo_를 채운다. GET /recipients로 로봇코드 매칭 -> GET /recipients/{id}로
     // schedules 조회, 둘 다 이미 있는 API를 재사용한다(서버 변경 없음). 콤보 0번은
@@ -253,6 +254,18 @@ private:
     // 통째로 교체한다. 대시보드를 껐다 켜지 않아도 P3에서 바뀐 복약 스케줄 시각·요일이
     // 반영되게 하는 게 목적 — 로컬 편집 중(scheduleEditIndex_>=0)인 그 폼 자체는 안 건드린다.
     void refreshSchedulesForRoute(int routeId);
+    // 다른 대시보드가 이 맵의 웨이포인트/경로를 저장했을 수 있다(waypoints_changed/
+    // patrol_routes_changed WS) — 자동으로 캔버스를 갈아치우면 편집 중인 상태를 덮어쓸
+    // 위험이 있어(캔버스가 아직 안 뜬 시점의 좌표 변환 문제도 있고), 대신 새로고침
+    // 버튼 옆에 배지만 띄워두고 실제 재조회는 사용자가 그 버튼을 눌렀을 때만 한다.
+    // GET /waypoints + GET /patrol-routes로 지금 맵(currentMapIndex_)만 다시 받아
+    // waypoints_/routes_에 반영한다 — loadServerMapImageDone의 초기 로딩 경로와 같은
+    // 변환을 쓰되, 이미 떠 있는 캔버스라 designMapMetersToCanvas 대신 canvas_->
+    // mapMetersToCanvas()(live)를 쓴다.
+    void reloadCurrentMapWaypointsAndRoutes();
+    // refreshRobotStateBtn_ 옆 "웨이포인트/경로 변경됨" 배지를 staleMapIds_ 기준으로
+    // 보이거나 숨긴다 — 맵 전환(loadMapData)·WS 수신·재조회 완료 시점마다 부른다.
+    void updateRefreshBadge();
 
     // robotOfflineBanner_의 아이콘·문구·색을 (robotOnline_, isPatrolling_) 기준으로
     // 다시 그린다 — 오프라인(빨강) / 주행 중(청록, 온라인이지만 새 명령 불가) /
@@ -287,8 +300,15 @@ private:
     // 오프라인/주행 중 표시가 실제 상태와 어긋난 채로 안 바뀌는 경우(WS 메시지를
     // 놓쳤거나 patrol_done을 영영 못 받은 경우 등) 사용자가 직접 다시 맞출 수 있게 한다.
     QPushButton* refreshRobotStateBtn_;
+    // "웨이포인트/경로 변경됨" — refreshRobotStateBtn_ 옆에만 보이는 상태 배지
+    // (updateRefreshBadge()가 staleMapIds_ 기준으로 show/hide한다).
+    QLabel* refreshStaleBadge_;
     QVector<MapData> maps_;
     int currentMapIndex_;
+    // waypoints_changed/patrol_routes_changed WS로 "저장된 웨이포인트/경로가 이 맵
+    // (map_id)에서 바뀌었다"고 들은 서버 map id들 — 새로고침 버튼을 눌러야만 비워진다
+    // (자동 반영은 안 함, reloadCurrentMapWaypointsAndRoutes 주석 참고).
+    QSet<int> staleMapIds_;
 
     QWidget* wpListCard_;
     // "웨이포인트 N" — rebuildWpList()가 개수만 바꿔 다시 그린다(경로 카드의 정적인
@@ -326,14 +346,14 @@ private:
     QVector<QString> routeOrderEditSnapshot_;
     QLabel* routeStatsLabel_;
     QLineEdit* routeEditNameEdit_;
-    QCheckBox* routeMedicineCheckbox_;
-    // 체크박스를 켜기 직전 routeEditNameEdit_ 내용 — 끄면 이걸로 되돌린다.
-    QString routeNameBeforeMedicineCheck_;
     QVBoxLayout* routeEditListLayout_;
 
     QVBoxLayout* scheduleListLayout_;
     QWidget* scheduleForm_;
     QComboBox* scheduleRouteCombo_;
+    // "복약 스케줄" 체크박스 — 켜면 scheduleMedLabel_/scheduleMedCombo_가 나타난다
+    // (onScheduleMedicineToggled 참고).
+    QCheckBox* scheduleMedicineCheckbox_;
     QLabel* scheduleMedLabel_;
     QComboBox* scheduleMedCombo_;
     // scheduleMedCombo_의 각 항목이 어느 복약 스케줄인지 — applyMedicationScheduleSelection이

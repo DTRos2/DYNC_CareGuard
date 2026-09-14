@@ -289,6 +289,10 @@ def create_recipient(payload: RecipientCreate):
 
         conn.commit()
 
+    # 다른 대시보드가 이미 P3를 열어두고 있을 수 있다 — 재시작 없이도 새 카드가
+    # 보이도록 push한다(update_recipient의 patrol_schedules_changed와 같은 이유).
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "recipient_changed", "recipient_id": recipient_id})
+
     return get_recipient(recipient_id)
 
 
@@ -425,6 +429,10 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
     for route_id in touched_route_ids:
         anyio.from_thread.run(dashboard_ws.broadcast, {"type": "patrol_schedules_changed", "route_id": route_id})
 
+    # 이름·담당 로봇·보호자 등 카드 자체가 바뀌었을 수도 있다 — 위 patrol_schedules_changed와
+    # 별개로 항상 push한다(스케줄 변경이 없어도 반영되어야 함).
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "recipient_changed", "recipient_id": recipient_id})
+
     return get_recipient(recipient_id)
 
 
@@ -445,3 +453,5 @@ def deactivate_recipient(recipient_id: int):
             conn.rollback()
             raise HTTPException(status_code=404, detail="대상자를 찾을 수 없습니다")
         conn.commit()
+
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "recipient_changed", "recipient_id": recipient_id})

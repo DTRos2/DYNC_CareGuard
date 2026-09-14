@@ -2,26 +2,47 @@
 
 #include <QAbstractItemView>
 #include <QButtonGroup>
+#include <QDateTime>
 #include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPainter>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QTableWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <algorithm>
 
+#include "dialogs/robot_control_modal.h"
+#include "net/ws_client.h"
 #include "theme/tokens.h"
 
 namespace {
 
 constexpr int kBarColorRole = Qt::UserRole + 1;
+
+// ApiClient::parseEvent()가 하는 것과 같은 ISO 파싱(서버 datetime.isoformat()의
+// 마이크로초(6자리)를 QDateTime이 기대하는 밀리초(3자리)로 자름) — 그건 api_client.cpp
+// 익명 네임스페이스 안에 있어 여기서 못 가져다 쓴다. WS로 오는 event_created 하나만
+// 파싱하면 되므로, ApiClient에 새 public 함수를 추가하기보다 여기 짧게 복제한다.
+QDateTime parseIsoDateTimeLocal(const QString& raw) {
+    if (raw.isEmpty()) return QDateTime();
+    QString trimmed = raw;
+    static const QRegularExpression fracRe(QStringLiteral("\\.(\\d{3})\\d*"));
+    trimmed.replace(fracRe, QStringLiteral(".\\1"));
+    QDateTime dt = QDateTime::fromString(trimmed, Qt::ISODateWithMs);
+    if (!dt.isValid()) dt = QDateTime::fromString(trimmed, Qt::ISODate);
+    return dt;
+}
 
 void repolish(QWidget* widget) {
     widget->style()->unpolish(widget);
@@ -137,46 +158,24 @@ QLabel* makeBadge(const char* level, const QString& text) {
     return badge;
 }
 
+// server/app/schemas.py::RecipientItem.level 대응. p3_recipient_page.cpp::riskLevelFromCode와
+// 같은 매핑 — "offline"은 여기 없다(로봇 온라인 여부는 별도로 합성한다).
+Tokens::Level riskLevelFromCode(const QString& code) {
+    if (code == QStringLiteral("emergency")) return Tokens::Level::Emergency;
+    if (code == QStringLiteral("attention")) return Tokens::Level::Attention;
+    return Tokens::Level::Normal;
+}
+
 }  // namespace
 
 P1OverviewPage::P1OverviewPage(QWidget* parent) : QWidget(parent) {
-    rows_ = {
-        {QStringLiteral("R-01"), Tokens::Level::Emergency, QStringLiteral("서울시 강남구 역삼로 12"),
-         QStringLiteral("김영희"), 22, 1, QStringLiteral("긴급 알림 대응 중")},
-        {QStringLiteral("R-02"), Tokens::Level::Attention, QStringLiteral("서울시 마포구 합정동 45"),
-         QStringLiteral("박철수"), 35, 3, QStringLiteral("웨어러블 재연결 시도 중")},
-        {QStringLiteral("R-03"), Tokens::Level::Normal, QStringLiteral("서울시 송파구 잠실동 78"),
-         QStringLiteral("이순자"), 81, 3, QStringLiteral("정기 순찰 중 (구간 2)")},
-        {QStringLiteral("R-04"), Tokens::Level::Offline, QStringLiteral("서울시 노원구 상계동 34"),
-         QStringLiteral("최민준"), -1, -1, QStringLiteral("마지막 통신 09:12:03")},
-        {QStringLiteral("R-05"), Tokens::Level::Normal, QStringLiteral("서울시 강동구 천호동 21"),
-         QStringLiteral("정하늘"), 64, 3, QStringLiteral("정기 순찰 중 (구간 1)")},
-        {QStringLiteral("R-06"), Tokens::Level::Attention, QStringLiteral("서울시 서초구 방배동 9"),
-         QStringLiteral("한지민"), 18, 2, QStringLiteral("배터리 부족 — 충전 필요")},
-        {QStringLiteral("R-07"), Tokens::Level::Normal, QStringLiteral("서울시 은평구 불광동 56"),
-         QStringLiteral("오세훈"), 92, 3, QStringLiteral("대기 중")},
-        {QStringLiteral("R-08"), Tokens::Level::Normal, QStringLiteral("서울시 관악구 신림동 88"),
-         QStringLiteral("문지훈"), 77, 3, QStringLiteral("정기 순찰 중 (구간 3)")},
-        {QStringLiteral("R-09"), Tokens::Level::Offline, QStringLiteral("서울시 성북구 정릉동 14"),
-         QStringLiteral("강수진"), -1, -1, QStringLiteral("마지막 통신 08:47:22")},
-        {QStringLiteral("R-10"), Tokens::Level::Attention, QStringLiteral("서울시 중랑구 면목동 3"),
-         QStringLiteral("배도윤"), 41, 1, QStringLiteral("복약 미수령 — 확인 필요")},
-    };
+    apiClient_ = new ApiClient(this);
+    wsClient_ = new WsClient(this);
+    connect(wsClient_, &WsClient::messageReceived, this, &P1OverviewPage::handleWsMessage);
 
-    alerts_ = {
-        {QStringLiteral("09:42:11"), Tokens::Prop::EMERGENCY, QStringLiteral("R-01 심박 138bpm — 긴급 임계치 초과")},
-        {QStringLiteral("09:38:05"), Tokens::Prop::ATTENTION, QStringLiteral("R-01 복약 미수령 — 30분 경과")},
-        {QStringLiteral("09:31:47"), Tokens::Prop::ATTENTION, QStringLiteral("R-02 웨어러블 신호 약함 감지")},
-        {QStringLiteral("09:12:03"), Tokens::Prop::ATTENTION, QStringLiteral("R-04 통신 두절 — 마지막 응답 09:12:03")},
-        {QStringLiteral("09:05:40"), Tokens::Prop::INFO, QStringLiteral("R-03 순찰 구간 2 진입 완료")},
-        {QStringLiteral("08:58:12"), Tokens::Prop::ATTENTION, QStringLiteral("R-06 배터리 18% — 충전 필요")},
-        {QStringLiteral("08:47:22"), Tokens::Prop::ATTENTION, QStringLiteral("R-09 통신 두절 — 마지막 응답 08:47:22")},
-        {QStringLiteral("08:40:05"), Tokens::Prop::INFO, QStringLiteral("R-05 순찰 구간 1 진입 완료")},
-        {QStringLiteral("08:31:19"), Tokens::Prop::ATTENTION, QStringLiteral("R-10 복약 미수령 — 확인 필요")},
-        {QStringLiteral("08:20:44"), Tokens::Prop::INFO, QStringLiteral("R-07 대기 모드 전환")},
-        {QStringLiteral("08:10:03"), Tokens::Prop::INFO, QStringLiteral("R-08 순찰 구간 3 진입 완료")},
-        {QStringLiteral("08:02:51"), Tokens::Prop::INFO, QStringLiteral("R-02 웨어러블 신호 정상 복구")},
-    };
+    batteryRefreshTimer_ = new QTimer(this);
+    batteryRefreshTimer_->setSingleShot(true);
+    connect(batteryRefreshTimer_, &QTimer::timeout, this, &P1OverviewPage::rebuildRowsFromData);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(Tokens::Layout::PAGE_PADDING, Tokens::Layout::PAGE_PADDING,
@@ -184,12 +183,16 @@ P1OverviewPage::P1OverviewPage(QWidget* parent) : QWidget(parent) {
     layout->setSpacing(Tokens::Layout::CARD_GAP);
 
     layout->addWidget(buildHeaderRow());
-    layout->addWidget(buildKpiRow());
+    kpiRow_ = buildKpiRow();
+    layout->addWidget(kpiRow_);
     layout->addWidget(buildTableSection(), /*stretch=*/2);
     layout->addWidget(buildAlertSection(), /*stretch=*/1);
 
-    sortRows(SortMode::Risk);
+    populateKpiRow();
     populateTable();
+    populateAlertFeed();
+    loadFromServer();
+    wsClient_->connectToServer();
 }
 
 QWidget* P1OverviewPage::buildHeaderRow() {
@@ -203,42 +206,67 @@ QWidget* P1OverviewPage::buildHeaderRow() {
     rowLayout->addWidget(title);
     rowLayout->addStretch();
 
-    auto* returnHomeBtn = new QPushButton(QStringLiteral("충전 복귀"), row);
-    returnHomeBtn->setProperty("variant", "secondary");
-    rowLayout->addWidget(returnHomeBtn);
-
-    auto* cancelPatrolBtn = new QPushButton(QStringLiteral("순찰 취소"), row);
-    cancelPatrolBtn->setProperty("variant", "secondary");
-    rowLayout->addWidget(cancelPatrolBtn);
-
-    auto* estopAllBtn = new QPushButton(QStringLiteral("전체 비상정지"), row);
-    estopAllBtn->setProperty("variant", "danger");
-    rowLayout->addWidget(estopAllBtn);
-
     return row;
 }
 
 QWidget* P1OverviewPage::buildKpiRow() {
+    // 카드 내용은 실제 데이터가 로드되기 전에 populateKpiRow()가 채운다 — 여긴 빈
+    // 레이아웃만 만들어서 kpiRow_에 보관해두고, 데이터가 (재)로드될 때마다 자식을
+    // 지우고 다시 채운다(populateTable()과 같은 패턴).
     auto* row = new QWidget(this);
     auto* rowLayout = new QHBoxLayout(row);
     rowLayout->setContentsMargins(0, 0, 0, 0);
     rowLayout->setSpacing(Tokens::Layout::CARD_GAP);
+    return row;
+}
 
+void P1OverviewPage::populateKpiRow() {
+    auto* rowLayout = qobject_cast<QHBoxLayout*>(kpiRow_->layout());
+    QLayoutItem* item;
+    while ((item = rowLayout->takeAt(0)) != nullptr) {
+        delete item->widget();
+        delete item;
+    }
+
+    const int totalRobots = robots_.size();
+    int onlineRobots = 0, offlineRobots = 0;
+    for (const auto& robot : robots_) {
+        if (robot.isOnline) ++onlineRobots; else ++offlineRobots;
+    }
+
+    int unresolvedEmergency = 0;
+    for (const auto& event : events_) {
+        if (!event.resolved && event.severity == QStringLiteral("emergency")) ++unresolvedEmergency;
+    }
+
+    int medMissedRecipients = 0;
+    for (const auto& recipient : recipients_) {
+        for (const auto& med : recipient.medsToday) {
+            if (med.state == QStringLiteral("missed")) {
+                ++medMissedRecipients;
+                break;
+            }
+        }
+    }
+
+    // 2026-09-12 — "웨어러블 이상" 카드는 뺐다. 이 프로젝트에 웨어러블 기기·데이터
+    // 자체가 없어(DB 테이블도, API도 없음) 실제 값을 만들 방법이 없다.
     struct KpiSpec {
         QString label;
         QString value;
         const char* level;  // nullptr = 기본 흰 배경
     };
     const KpiSpec specs[] = {
-        {QStringLiteral("가동 로봇"), QStringLiteral("3/4"), nullptr},
-        {QStringLiteral("미처리 경보"), QStringLiteral("1"), Tokens::Prop::EMERGENCY},
-        {QStringLiteral("복약 미수령"), QStringLiteral("1"), Tokens::Prop::ATTENTION},
-        {QStringLiteral("웨어러블 이상"), QStringLiteral("1"), Tokens::Prop::ATTENTION},
-        {QStringLiteral("통신 두절"), QStringLiteral("1"), nullptr},
+        {QStringLiteral("가동 로봇"), QStringLiteral("%1/%2").arg(onlineRobots).arg(totalRobots), nullptr},
+        {QStringLiteral("미처리 경보"), QString::number(unresolvedEmergency),
+         unresolvedEmergency > 0 ? Tokens::Prop::EMERGENCY : nullptr},
+        {QStringLiteral("복약 미수령"), QString::number(medMissedRecipients),
+         medMissedRecipients > 0 ? Tokens::Prop::ATTENTION : nullptr},
+        {QStringLiteral("통신 두절"), QString::number(offlineRobots), nullptr},
     };
 
     for (const auto& spec : specs) {
-        auto* card = new QFrame(row);
+        auto* card = new QFrame(kpiRow_);
         card->setObjectName("kpiCard");
         if (spec.level != nullptr) {
             card->setProperty("level", spec.level);
@@ -262,8 +290,6 @@ QWidget* P1OverviewPage::buildKpiRow() {
 
         rowLayout->addWidget(card);
     }
-
-    return row;
 }
 
 QWidget* P1OverviewPage::buildTableSection() {
@@ -297,7 +323,8 @@ QWidget* P1OverviewPage::buildTableSection() {
         headerLayout->addWidget(btn);
     }
     connect(sortGroup, &QButtonGroup::idClicked, this, [this](int id) {
-        sortRows(static_cast<SortMode>(id));
+        currentSortMode_ = static_cast<SortMode>(id);
+        sortRows(currentSortMode_);
         populateTable();
     });
 
@@ -352,9 +379,40 @@ QWidget* P1OverviewPage::buildAlertSection() {
     alertList_->setFocusPolicy(Qt::NoFocus);
     alertList_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     alertList_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // 내용(alerts_)은 populateAlertFeed()가 채운다 — GET /events가 돌아오는 대로,
+    // 그리고 이후 로드마다 다시 채워야 해서(populateTable()과 같은 이유) 여기서는
+    // 빈 리스트만 만든다.
 
+    sectionLayout->addWidget(alertList_);
+    return section;
+}
+
+void P1OverviewPage::populateAlertFeed() {
+    // events_는 GET /events 응답 순서를 그대로 안 믿고(서버가 정렬을 보장 안 함) 여기서
+    // occurredAt 내림차순으로 다시 정렬한다 — 최신 알림이 위로 오는 게 이 피드의 목적.
+    QVector<ApiClient::EventInfo> sorted = events_;
+    std::stable_sort(sorted.begin(), sorted.end(), [](const ApiClient::EventInfo& a, const ApiClient::EventInfo& b) {
+        return a.occurredAt > b.occurredAt;
+    });
+
+    alerts_.clear();
+    constexpr int kMaxAlerts = 20;
+    for (const auto& event : sorted) {
+        if (alerts_.size() >= kMaxAlerts) break;
+        const char* level = Tokens::Prop::INFO;
+        if (event.severity == QStringLiteral("emergency")) level = Tokens::Prop::EMERGENCY;
+        else if (event.severity == QStringLiteral("attention")) level = Tokens::Prop::ATTENTION;
+
+        const QString who = !event.robotCode.isEmpty() ? event.robotCode : event.recipientName;
+        QString text = event.eventTypeLabel;
+        if (!event.summary.isEmpty()) text += QStringLiteral(" — ") + event.summary;
+        if (!who.isEmpty()) text = who + QStringLiteral(" ") + text;
+
+        alerts_.push_back({event.occurredAt.toString(QStringLiteral("HH:mm:ss")), level, text});
+    }
+
+    alertList_->clear();
     constexpr int kAlertRowH = 36;
-
     for (const auto& alert : alerts_) {
         auto* row = new QWidget(alertList_);
         row->setFixedHeight(kAlertRowH);
@@ -385,9 +443,6 @@ QWidget* P1OverviewPage::buildAlertSection() {
         alertList_->addItem(item);
         alertList_->setItemWidget(item, row);
     }
-
-    sectionLayout->addWidget(alertList_);
-    return section;
 }
 
 void P1OverviewPage::sortRows(SortMode mode) {
@@ -443,7 +498,17 @@ void P1OverviewPage::populateTable() {
             if (row.battery < 20) bar->setProperty("level", Tokens::Prop::EMERGENCY);
             else if (row.battery < 40) bar->setProperty("level", Tokens::Prop::ATTENTION);
             repolish(bar);
-            table_->setCellWidget(r, 2, wrapCellWidget(bar, rowBg));
+
+            auto* batteryCell = new QWidget();
+            auto* batteryLayout = new QHBoxLayout(batteryCell);
+            batteryLayout->setContentsMargins(0, 0, 0, 0);
+            batteryLayout->setSpacing(6);
+            batteryLayout->addWidget(bar);
+            auto* batteryLabel = new QLabel(QStringLiteral("%1%").arg(row.battery), batteryCell);
+            batteryLabel->setStyleSheet(QStringLiteral("color:%1;").arg(textColor.name()));
+            batteryLayout->addWidget(batteryLabel);
+
+            table_->setCellWidget(r, 2, wrapCellWidget(batteryCell, rowBg));
         } else {
             table_->setCellWidget(r, 2, wrapCellWidget(mutedDash(), rowBg));
         }
@@ -475,6 +540,28 @@ void P1OverviewPage::populateTable() {
         auto* detailBtn = new QPushButton(QStringLiteral("상세"));
         detailBtn->setObjectName("detailBtn");
         detailBtn->setProperty("variant", "secondary");
+        connect(detailBtn, &QPushButton::clicked, this, [this, row]() {
+            RobotControlModal::Data data;
+            data.robotCode = row.id;
+            data.headerTitle = QStringLiteral("%1  %2 · %3").arg(row.id, row.address, row.recipient);
+            data.urgencyBadge = (row.level == Tokens::Level::Emergency || row.level == Tokens::Level::Attention)
+                                     ? levelLabel(row.level)
+                                     : QString();
+            data.mapLabel = QStringLiteral("%1 맵").arg(row.address);
+            data.batteryPct = row.battery;
+            data.eventCode = row.eventCode;
+            data.eventText = row.eventText;
+            // 통신 지연(ms)·카메라/마이크/Nav2 개별 상태·현재 위치는 서버에 그 자체를
+            // 재는/보고하는 경로가 없어(§P1OverviewPage.h 상단 주석) 여전히 못 채운다.
+            // "최근 미션" 이력도 로봇별로 조회하는 API가 따로 없어 비워둔다 — 지어낸
+            // 값을 보여주는 것보단 빈 채로 두는 쪽이 낫다.
+
+            auto* modal = new RobotControlModal(data, this);
+            modal->setAttribute(Qt::WA_DeleteOnClose);
+            connect(modal, &RobotControlModal::eventNavigationRequested, this,
+                    &P1OverviewPage::eventNavigationRequested);
+            modal->show();
+        });
         table_->setCellWidget(r, 7, wrapCellWidget(detailBtn, rowBg));
 
         auto* estopBtn = new QPushButton(QStringLiteral("정지"));
@@ -482,7 +569,225 @@ void P1OverviewPage::populateTable() {
         if (offline) {
             estopBtn->setEnabled(false);
             estopBtn->setToolTip(QStringLiteral("통신 두절 — 정지 명령 전달 불가"));
+        } else {
+            // 로봇 개별 비상정지(모터 즉시 정지) API가 서버에 없어, 헤더의 "전체
+            // 비상정지"와 같은 이유로 순찰/이동 취소(cancelPatrolRun)로 대신한다.
+            connect(estopBtn, &QPushButton::clicked, this, [this, robotCode = row.id]() {
+                apiClient_->cancelPatrolRun(robotCode, [this, robotCode](bool ok, const QString& err) {
+                    if (ok) {
+                        markRobotIdle(robotCode);
+                    } else {
+                        QMessageBox::warning(this, QStringLiteral("정지 실패"),
+                                              err.isEmpty() ? QStringLiteral("%1 연결을 확인해주세요.").arg(robotCode)
+                                                            : err);
+                    }
+                });
+            });
         }
         table_->setCellWidget(r, 8, wrapCellWidget(estopBtn, rowBg));
     }
 }
+
+void P1OverviewPage::loadFromServer() {
+    // 셋 다 서로 독립적으로 로드되고, 하나가 도착할 때마다 rebuildRowsFromData()를
+    // 다시 불러 그때까지 모인 데이터로 화면을 갱신한다 — 셋 다 오기를 기다렸다가
+    // 한 번에 그리지 않는 이유는, 느린 쪽(대개 이벤트) 하나 때문에 나머지(로봇 목록 등)
+    // 까지 화면이 텅 빈 채로 오래 남는 걸 피하기 위해서다.
+    apiClient_->fetchRobots([this](bool ok, const QVector<ApiClient::RobotInfo>& items) {
+        if (!ok) return;
+        robots_ = items;
+        rebuildRowsFromData();
+        populateKpiRow();
+    });
+    apiClient_->fetchRecipients([this](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
+        if (!ok) return;
+        recipients_ = items;
+        rebuildRowsFromData();
+        populateKpiRow();
+    });
+    apiClient_->fetchEvents([this](bool ok, const QVector<ApiClient::EventInfo>& items) {
+        if (!ok) return;
+        events_ = items;
+        rebuildRowsFromData();
+        populateKpiRow();
+        populateAlertFeed();
+    });
+    refreshPatrolRunStatus();
+}
+
+void P1OverviewPage::refreshPatrolRunStatus() {
+    // robotId<=0 -> robot_id 필터 없이 전체 로봇의 실행 중(status=running) 목록을
+    // 한 번에 받아온다(ApiClient::fetchPatrolRuns 주석 참고).
+    apiClient_->fetchPatrolRuns(0, QStringLiteral("running"),
+                                [this](bool ok, const QVector<ApiClient::PatrolRunInfo>& runs) {
+        if (!ok) return;
+        patrollingRobotIds_.clear();
+        for (const auto& run : runs) patrollingRobotIds_.insert(run.robotId);
+        rebuildRowsFromData();
+    });
+}
+
+void P1OverviewPage::markRobotIdle(const QString& robotCode) {
+    for (const auto& robot : robots_) {
+        if (robot.code == robotCode) {
+            patrollingRobotIds_.remove(robot.id);
+            break;
+        }
+    }
+    rebuildRowsFromData();
+}
+
+void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
+    const QString type = message.value(QStringLiteral("type")).toString();
+    const QString robotCode = message.value(QStringLiteral("robot_code")).toString();
+
+    if (type == QStringLiteral("battery_state")) {
+        liveBattery_[robotCode] = static_cast<int>(message.value(QStringLiteral("percentage")).toDouble());
+        // 값은 이미 서버가 다듬어서 보내주지만(스무딩은 robot_ws.py 쪽으로 옮김),
+        // 테이블을 다시 그리는 것 자체는 계속 디바운스한다 — 여러 대가 동시에
+        // battery_state를 쏟아내도 다시 그리기는 최대 1초에 한 번만 일어난다(안 그러면
+        // 값이 안정적이어도 테이블 위젯이 자주 재생성되면서 호버 등이 깜빡였다).
+        if (!batteryRefreshTimer_->isActive()) batteryRefreshTimer_->start(1000);
+        return;
+    }
+
+    if (type == QStringLiteral("robot_status")) {
+        const bool online = message.value(QStringLiteral("online")).toBool();
+        for (auto& robot : robots_) {
+            if (robot.code == robotCode) {
+                robot.isOnline = online;
+                break;
+            }
+        }
+        rebuildRowsFromData();
+        populateKpiRow();
+        return;
+    }
+
+    if (type == QStringLiteral("nav_status")) {
+        const bool running = message.value(QStringLiteral("running")).toBool();
+        for (auto& robot : robots_) {
+            if (robot.code == robotCode) {
+                robot.isNavRunning = running;
+                break;
+            }
+        }
+        rebuildRowsFromData();
+        return;
+    }
+
+    if (type == QStringLiteral("patrol_run_created") || type == QStringLiteral("patrol_run_updated")) {
+        // 이 창에서 시작/취소한 것이든(낙관적 갱신은 이미 markRobotIdle이 처리) 다른
+        // 대시보드 창·scheduler.py 자동 트리거로 시작/취소된 것이든, 서버가 같은
+        // 이벤트로 브로드캐스트하므로 구분 없이 실제 상태를 다시 조회해 맞춘다.
+        refreshPatrolRunStatus();
+        return;
+    }
+
+    if (type == QStringLiteral("event_created")) {
+        // scheduler.py::_medication_tick()가 care_event를 새로 커밋한 직후 보내는
+        // 알림(2026-09-12 추가) — "실시간 알림"이라는 이름에 맞게, 페이지를 새로고침하지
+        // 않아도 방금 생긴 이벤트가 바로 목록에 뜨게 한다. 필드 이름은 GET /events가
+        // 내려주는 EventItem과 동일하게 맞췄다(ApiClient::parseEvent와 같은 매핑이지만,
+        // 그 함수가 api_client.cpp 안에 private이라 여기서 직접 파싱한다).
+        ApiClient::EventInfo event;
+        event.eventUid = message.value(QStringLiteral("event_uid")).toString();
+        event.severity = message.value(QStringLiteral("severity")).toString();
+        event.eventType = message.value(QStringLiteral("event_type")).toString();
+        event.eventTypeLabel = message.value(QStringLiteral("event_type_label")).toString();
+        event.summary = message.value(QStringLiteral("summary")).toString();
+        event.occurredAt = parseIsoDateTimeLocal(message.value(QStringLiteral("occurred_at")).toString());
+        event.resolved = message.value(QStringLiteral("resolved")).toBool();
+        event.robotCode = message.value(QStringLiteral("robot_code")).toString();
+        event.recipientName = message.value(QStringLiteral("recipient_name")).toString();
+
+        events_.push_front(event);
+        rebuildRowsFromData();
+        populateKpiRow();
+        populateAlertFeed();
+        return;
+    }
+
+    if (type == QStringLiteral("system_event_created")) {
+        // robot_ws.py가 배터리 임계값 등 로봇 쪽 시스템 이벤트를 감지했을 때 보내는
+        // 알림(robot_ws.py:462) — event_created(scheduler.py)와 달리 payload 없이 type만
+        // 오므로 바로 반영할 수 없어 목록을 통째로 다시 받아온다(P8LogsPage::handleWsMessage의
+        // fetchSystemEventLog()와 같은 이유). 이게 없으면 배터리 주의/복귀 필요 알림이
+        // 통합관제 화면에 새로고침 전까지 안 뜬다.
+        apiClient_->fetchEvents([this](bool ok, const QVector<ApiClient::EventInfo>& items) {
+            if (!ok) return;
+            events_ = items;
+            rebuildRowsFromData();
+            populateKpiRow();
+            populateAlertFeed();
+        });
+        return;
+    }
+}
+
+void P1OverviewPage::rebuildRowsFromData() {
+    // 로봇 코드 -> 대상자 1건. 이 시스템은 로봇 한 대에 대상자 한 명이 배정되는
+    // 구조라(RecipientInfo::robotCode) 1:1로 찾으면 된다.
+    QMap<QString, const ApiClient::RecipientInfo*> recipientByRobot;
+    for (const auto& recipient : recipients_) {
+        if (!recipient.robotCode.isEmpty()) recipientByRobot[recipient.robotCode] = &recipient;
+    }
+
+    // 로봇 코드 -> 가장 최근 미해결 이벤트. RobotControlModal이 "이벤트로 이동" 버튼에
+    // 쓸 이벤트 코드가 필요해서, 로봇별로 하나만 뽑아둔다(여러 건이면 제일 최신 것).
+    QMap<QString, const ApiClient::EventInfo*> latestUnresolvedEventByRobot;
+    for (const auto& event : events_) {
+        if (event.resolved || event.robotCode.isEmpty()) continue;
+        auto it = latestUnresolvedEventByRobot.find(event.robotCode);
+        if (it == latestUnresolvedEventByRobot.end() || event.occurredAt > (*it)->occurredAt) {
+            latestUnresolvedEventByRobot[event.robotCode] = &event;
+        }
+    }
+
+    rows_.clear();
+    for (const auto& robot : robots_) {
+        RobotRow row;
+        row.id = robot.code;
+
+        const ApiClient::RecipientInfo* recipient = recipientByRobot.value(robot.code, nullptr);
+        row.address = recipient && !recipient->homeAddress.isEmpty() ? recipient->homeAddress : QStringLiteral("-");
+        row.recipient = recipient && !recipient->name.isEmpty() ? recipient->name : QStringLiteral("미배정");
+
+        // 오프라인이면 배지 색을 무조건 OFFLINE으로 덮어쓴다(p3_recipient_page.cpp의
+        // 온라인/오프라인 전환 로직과 같은 규칙) — 긴급/주의 배지가 "지금 이 순간에도
+        // 유효한 경보"라는 뜻이라, 통신이 끊겨 최신 상태를 모르는 로봇에 그대로 남겨두면
+        // 오해를 준다.
+        row.level = robot.isOnline ? (recipient ? riskLevelFromCode(recipient->level) : Tokens::Level::Normal)
+                                    : Tokens::Level::Offline;
+
+        row.battery = liveBattery_.value(robot.code, -1);
+
+        row.medSteps = -1;
+        if (recipient) {
+            int done = 0;
+            bool hasSchedule = false;
+            for (const auto& med : recipient->medsToday) {
+                if (med.slotNo < 1 || med.slotNo > 3) continue;
+                hasSchedule = true;
+                if (med.state == QStringLiteral("done")) ++done;
+            }
+            if (hasSchedule) row.medSteps = done;
+        }
+
+        if (!robot.isOnline) row.mission = QStringLiteral("통신 두절");
+        else if (patrollingRobotIds_.contains(robot.id)) row.mission = QStringLiteral("순찰/이동 중");
+        else row.mission = QStringLiteral("대기 중");
+
+        if (const auto* event = latestUnresolvedEventByRobot.value(robot.code, nullptr)) {
+            row.eventCode = event->eventUid;
+            row.eventText = event->eventTypeLabel;
+            if (!event->summary.isEmpty()) row.eventText += QStringLiteral(" — ") + event->summary;
+        }
+
+        rows_.push_back(row);
+    }
+
+    sortRows(currentSortMode_);
+    populateTable();
+}
+
