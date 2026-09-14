@@ -10,14 +10,14 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QUrl>
 #include <QUrlQuery>
 
+#include "net/server_config.h"
+
 ApiClient::ApiClient(QObject* parent) : QObject(parent) {
-    serverUrl_ = QProcessEnvironment::systemEnvironment().value(
-        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    serverUrl_ = ServerConfig::resolveServerUrl();
     netManager_ = new QNetworkAccessManager(this);
 }
 
