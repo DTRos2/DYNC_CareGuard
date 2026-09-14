@@ -9,6 +9,38 @@ from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
 
+# person_label -> class_id 매핑. 사람이 추가되면 여기 한 곳만 고치면 된다.
+PERSON_CLASS_MAP = {
+    'person_A': 0,
+    'person_B': 1,
+    'person_C': 2,
+    'person_D': 3,
+}
+# 미등록자(unknown) 촬영 시 참고용 기본값 — 위 매핑의 값들과 절대 겹치면 안 된다.
+UNKNOWN_CLASS_ID = 99
+
+
+class ClassIdMismatchError(RuntimeError):
+    """person_label과 class_id 파라미터가 서로 맞지 않을 때 (촬영 시작 전에 막기 위함)."""
+
+
+def validate_person_class_mapping(person_label: str, class_id: int) -> None:
+    if person_label in PERSON_CLASS_MAP:
+        expected = PERSON_CLASS_MAP[person_label]
+        if class_id != expected:
+            raise ClassIdMismatchError(
+                f"class_id 불일치: person_label='{person_label}'이면 class_id={expected}이어야 "
+                f"하는데 {class_id}로 설정되어 있습니다. -p class_id:={expected} 로 맞춰서 다시 "
+                f"실행하세요."
+            )
+    elif class_id in PERSON_CLASS_MAP.values():
+        owner = next(p for p, c in PERSON_CLASS_MAP.items() if c == class_id)
+        raise ClassIdMismatchError(
+            f"person_label='{person_label}'은 등록된 사람이 아닌데 class_id={class_id}는 이미 "
+            f"{owner}용으로 예약된 값입니다. 미등록자는 겹치지 않는 값(예: {UNKNOWN_CLASS_ID})을 "
+            f"명시적으로 지정하세요."
+        )
+
 
 class AutoFaceCaptureNode(Node):
     def __init__(self):
@@ -16,7 +48,7 @@ class AutoFaceCaptureNode(Node):
 
         # ── 세션마다 바꿔줄 파라미터 ──
         self.declare_parameter('person_label', 'person_A')   # 이번 세션에서 찍을 사람
-        self.declare_parameter('class_id', 0)                 # person_A=0, B=1, C=2, D=3
+        self.declare_parameter('class_id', 0)                 # PERSON_CLASS_MAP 참고
         self.declare_parameter('save_dir', '/home/wego/careguard_data/face_dataset/')
         self.declare_parameter('capture_interval', 0.7)       # 저장 간격(초)
         self.declare_parameter('val_ratio', 0.2)
@@ -31,6 +63,17 @@ class AutoFaceCaptureNode(Node):
         self.interval = self.get_parameter('capture_interval').value
         self.val_ratio = self.get_parameter('val_ratio').value
         self.max_images = self.get_parameter('max_images').value
+
+        # person_label과 class_id가 안 맞으면(사람이 깜빡하고 안 바꾼 경우 등) 촬영을
+        # 시작하기 전에 바로 막는다 — 조용히 넘어가면 이미 한 번 데이터가 오염된 적 있음.
+        try:
+            validate_person_class_mapping(self.person_label, self.class_id)
+        except ClassIdMismatchError as e:
+            self.get_logger().fatal(str(e))
+            raise
+        self.get_logger().info(
+            f'=== 지금부터 {self.person_label} (class_id={self.class_id})로 저장합니다 ==='
+        )
 
         for split in ['train', 'val']:
             os.makedirs(f'{self.save_dir}/images/{split}', exist_ok=True)
