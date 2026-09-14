@@ -11,6 +11,11 @@ Environment=ROS_DOMAIN_ID=50
 Environment=TURTLEBOT3_MODEL=burger
 Environment=CAREGUARD_ROBOT_CODE=R-05
 Environment=CAREGUARD_SERVER_URL=http://100.107.185.97:8000
+# careguard-downlink-r06.service와 같은 이유(config/nav2_burger_params.yaml
+# 헤더 주석 참고) — R-05도 같은 burger.yaml/같은 apt Humble nav2 패키지를 쓰므로
+# 동일한 플러그인 이름 문제가 있을 수 있어 미리 같이 고쳐둔다(실 로봇 배포·검증은
+# 2026-09-14 시점엔 R-06에서만 했다).
+Environment=CAREGUARD_NAV2_PARAMS_FILE=/home/aurix/turtlebot_ws/install/careguard_turtlebot_agent/share/careguard_turtlebot_agent/config/nav2_burger_params.yaml
 ExecStartPre=/bin/sleep 1
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/turtlebot3_ws/install/setup.bash && source ~/medirun_ws/install/setup.bash && source ~/turtlebot_ws/install/setup.bash && exec ros2 run careguard_turtlebot_agent downlink_node'
 Restart=on-failure
