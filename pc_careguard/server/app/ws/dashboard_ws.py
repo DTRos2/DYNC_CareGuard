@@ -25,6 +25,8 @@ def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
 async def dashboard_ws_endpoint(websocket: WebSocket):
     await websocket.accept()
     _connections.add(websocket)
+    # TEMP DEBUG (원인 확인 후 제거)
+    print(f"[dashboard_ws DEBUG] client connected from {websocket.client!r}, now {len(_connections)} total")
 
     # 방금 접속한 대시보드는 로봇이 마침 안 움직이고 있으면 다음 position이 올 때까지
     # 화면에 위치가 하나도 안 뜬다 — robot_ws.py가 보관해둔 로봇별 마지막 위치로 한 번
@@ -55,15 +57,20 @@ async def dashboard_ws_endpoint(websocket: WebSocket):
         pass
     finally:
         _connections.discard(websocket)
+        # TEMP DEBUG (원인 확인 후 제거)
+        print(f"[dashboard_ws DEBUG] client disconnected {websocket.client!r}, now {len(_connections)} total")
 
 
 async def broadcast(message: dict) -> None:
     """연결된 모든 대시보드에 메시지를 보낸다. 끊긴 소켓은 조용히 제거한다."""
+    # TEMP DEBUG (recipient_changed/waypoints_changed 미수신 원인 진단용, 원인 확인 후 제거)
+    print(f"[dashboard_ws DEBUG] broadcast type={message.get('type')!r} to {len(_connections)} connection(s)")
     dead = []
     for ws in list(_connections):
         try:
             await ws.send_json(message)
-        except Exception:
+        except Exception as exc:
+            print(f"[dashboard_ws DEBUG] send failed on one connection: {exc!r}")
             dead.append(ws)
     for ws in dead:
         _connections.discard(ws)
