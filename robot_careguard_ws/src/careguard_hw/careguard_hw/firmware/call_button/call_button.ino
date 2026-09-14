@@ -39,7 +39,7 @@ const char* BUTTON_CODE = "BTN_BEDROOM";
 // MQTT 브로커 주소. 지금은 로컬 테스트용 PC(mosquitto, deploy/docker-compose.yml)의
 // 주소를 기본값으로 넣어뒀다 — 이 PC와 ESP32가 같은 와이파이에 붙어있어야 한다.
 // 실제 배포 시엔 운영 서버의 브로커 주소로 바꾼다.
-const char* MQTT_HOST = "192.168.230.27";
+const char* MQTT_HOST = "192.168.230.13";
 const int MQTT_PORT = 1883;
 
 const int BUTTON_PIN = 4;  // 배선에 맞춰 조정
