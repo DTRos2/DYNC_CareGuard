@@ -1,8 +1,10 @@
+import anyio
 import psycopg2
 from fastapi import APIRouter, HTTPException
 from typing import List
 
 from ...core import db
+from ...ws import dashboard_ws
 from ...ws.robot_ws import is_connected, nav_running
 from ...schemas import (
     AssignRobotRecipientRequest,
@@ -10,6 +12,7 @@ from ...schemas import (
     RegisterRobotResponse,
     RobotItem,
     RobotThresholds,
+    RobotUpdate,
 )
 
 router = APIRouter(prefix="/robots", tags=["robots"])
@@ -29,6 +32,20 @@ LIST_QUERY = """
     FROM robot r
     WHERE r.deregistered_at IS NULL
     ORDER BY r.id
+"""
+
+# update_robot이 UPDATE 직후 응답으로 돌려줄 갱신된 한 행을 다시 읽을 때 쓴다 —
+# LIST_QUERY와 컬럼 구성은 같고 대상 로봇 하나로만 좁힌다.
+_ROBOT_BY_ID_QUERY = """
+    SELECT r.id, r.code, r.name, r.model, r.ros_domain_id, r.ip,
+        (SELECT rec.name FROM recipient rec
+         WHERE rec.robot_id = r.id AND rec.deregistered_at IS NULL
+         LIMIT 1) AS recipient_name,
+        (SELECT m.name FROM map m
+         WHERE m.robot_id = r.id AND m.is_active = TRUE
+         ORDER BY m.created_at DESC LIMIT 1) AS map_name
+    FROM robot r
+    WHERE r.id = %s AND r.deregistered_at IS NULL
 """
 
 
@@ -97,6 +114,37 @@ def register_robot(payload: RegisterRobotRequest):
     )
 
 
+@router.put("/{robot_id}", response_model=RobotItem)
+def update_robot(robot_id: int, payload: RobotUpdate):
+    """로봇 수정 다이얼로그의 "저장" — 지금까지는 서버 호출 없이 대시보드 로컬 표시만
+    바뀌고 DB엔 반영이 안 됐다(RobotDialog::robotSaved 콜백 참고). code는 여기서 못
+    바꾼다(RobotUpdate에 필드 자체가 없음) — WebSocket 접속 식별자라 등록 해제 후
+    재등록으로만 바꿀 수 있다.
+
+    저장 후 dashboard_ws로 robot_updated를 브로드캐스트해, 이 로봇을 보고 있는 다른
+    대시보드 창(P7 로봇 목록 등)도 새로고침 없이 바뀐 값을 반영하게 한다.
+    """
+    fields = payload.dict(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="변경할 내용이 없습니다")
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM robot WHERE id = %s AND deregistered_at IS NULL", (robot_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
+
+        sets = ", ".join(f"{key} = %s" for key in fields)
+        params = list(fields.values()) + [robot_id]
+        cur.execute(f"UPDATE robot SET {sets} WHERE id = %s", params)
+
+        cur.execute(_ROBOT_BY_ID_QUERY, (robot_id,))
+        row = cur.fetchone()
+        conn.commit()
+
+    dashboard_ws.broadcast_threadsafe({"type": "robot_updated"})
+    return _row_to_item(row)
+
+
 @router.put("/{robot_id}/recipient", status_code=204)
 def assign_robot_recipient(robot_id: int, payload: AssignRobotRecipientRequest):
     """로봇 등록·수정 모달의 "담당 대상자" 선택을 저장한다.
@@ -128,6 +176,14 @@ def assign_robot_recipient(robot_id: int, payload: AssignRobotRecipientRequest):
                 raise HTTPException(status_code=404, detail="대상자를 찾을 수 없습니다")
 
         conn.commit()
+
+    # update_robot과 같은 이유 — 담당 대상자도 로봇 수정 다이얼로그의 일부라, 다른
+    # 대시보드 창의 로봇 목록·대상자 목록이 새로고침 없이 같이 바뀌어야 한다.
+    dashboard_ws.broadcast_threadsafe({"type": "robot_updated"})
+    # P6가 어느 로봇의 맵을 바로 찾아 새로고침(refreshMapForRobot)할 수 있도록
+    # robot_id가 실린 이벤트도 함께 보낸다 — robot_updated만으론 어느 로봇인지 몰라
+    # P6가 반응할 수 없다.
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "robot_recipient_changed", "robot_id": robot_id})
 
 
 THRESHOLD_COLUMNS = (
@@ -220,3 +276,5 @@ def deregister_robot(robot_id: int):
             conn.rollback()
             raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
         conn.commit()
+
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "robot_deregistered", "robot_id": robot_id})

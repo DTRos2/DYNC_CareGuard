@@ -1,5 +1,6 @@
 # 2026-09-09 트러블슈팅 — RobotItem 스키마 중복으로 인한 `GET /robots` 크래시
 
+> 작성자: 도희정
 > `develop` 브랜치, P5(맵·로봇 매핑)/P6(순찰·경로) 페이지 코드 리뷰 중 `feature/p5-p6-map-patrol-pages`(PR #36) 병합 직후 발견한 문제의 증상·원인·해결과, 재발 방지를 위해 추가한 flake8 pre-commit/CI 훅, 그 훅을 테스트하다 발견한 한계, 그리고 "이런 중복이 또 있나" 전수 조사하다 찾은 미해결 항목 하나를 정리한 기록.
 > 대상 파일: `pc_careguard/server/app/schemas.py`, `pc_careguard/server/app/robots.py`, `pc_careguard/server/app/api/v1/robots.py`(삭제), `pc_careguard/server/app/main.py`, `pc_careguard/server/app/api/v1/media.py`, `pc_careguard/server/app/api/v1/recipient.py`, `.githooks/pre-commit`, `.github/workflows/server-lint.yml`, `COMMIT_RULES.md`
 

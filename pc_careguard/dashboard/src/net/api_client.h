@@ -92,6 +92,8 @@ public:
     // server/app/schemas.py::PatrolRunItem 대응.
     struct PatrolRunInfo {
         int id = 0;
+        int robotId = 0;  // robot.id — P1OverviewPage가 robot_id 없이 조회할 때(전체
+                           // 로봇 대상 status=running) 어느 로봇의 실행인지 구분하는 용도.
         QString status;  // "running" / "completed" / "aborted" / "failed"
         int waypointsTotal = 0;
         int waypointsDone = 0;

@@ -1,5 +1,6 @@
 # 2026-09-09 트러블슈팅 — 복약 스케줄을 바꿔도 주행 스케줄에 반영되지 않음
 
+> 작성자: 도희정
 > P6 "주행 스케줄"에 복약 스케줄(`medication_schedule`) 매칭 기능(`patrol_schedule.medication_schedule_id`)을 새로 넣은 뒤, 실사용 테스트 중 "대상자 페이지에서 복약 스케줄 시각을 바꿔도 그 스케줄과 매칭된 주행 스케줄에는 반영이 안 된다"는 리포트로 발견한 문제. 원인이 두 겹으로 겹쳐 있었다 — 서버 DB 레벨에서 참조 자체가 끊어지는 문제와, DB는 맞아도 떠 있는 대시보드에 알려줄 방법이 없던 문제.
 > 대상 파일: `pc_careguard/server/app/api/v1/recipient.py`, `pc_careguard/server/app/api/v1/patrol.py`, `pc_careguard/server/app/schemas.py`, `pc_careguard/db/schema/careguard_schema_v1.sql`, `pc_careguard/dashboard/src/net/api_client.{h,cpp}`, `pc_careguard/dashboard/src/pages/p6_patrol_page.{h,cpp}`
 

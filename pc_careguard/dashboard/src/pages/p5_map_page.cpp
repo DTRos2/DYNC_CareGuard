@@ -578,6 +578,20 @@ void P5MapPage::updateMappingButtonState() {
 void P5MapPage::handleWsMessage(const QJsonObject& message) {
     const QString type = message.value(QStringLiteral("type")).toString();
 
+    if (type == QStringLiteral("map_changed")) {
+        // 다른 대시보드가 "파일로 등록"으로 이 로봇의 맵을 새로 올렸을 수 있다 —
+        // slam_done과 같은 이유로 GET /maps/active를 다시 받는다.
+        loadActiveMapsFromServer();
+        return;
+    }
+
+    if (type == QStringLiteral("robot_recipient_changed") || type == QStringLiteral("robot_deregistered")) {
+        // 담당 대상자 재배정·로봇 등록 해제 — 드롭다운의 "맵 · 대상자" 라벨이
+        // 갱신되도록 로봇 목록을 다시 받는다.
+        loadRobotsFromServer();
+        return;
+    }
+
     if (type == QStringLiteral("robot_status")) {
         // 로봇(downlink_node)이 서버와 실제로 붙어있는지 — connectionBanner_(PC<->서버)와
         // 별개다. 이게 없으면 와이파이가 불안정할 때 카메라(uplink)는 계속 잘 보이는데

@@ -1,5 +1,6 @@
 from typing import List, Optional
 
+import anyio
 from fastapi import APIRouter, HTTPException, Query
 
 import psycopg2.extras
@@ -16,7 +17,7 @@ from ...schemas import (
     WaypointItem,
     WaypointUpdate,
 )
-from ...ws import robot_ws
+from ...ws import dashboard_ws, robot_ws
 
 router = APIRouter(prefix="/maps", tags=["map"])
 
@@ -168,6 +169,11 @@ def create_map(payload: MapCreate):
     # 없어서 불가능하다.
     media.write_map_yaml_sidecar(payload.file_id, payload.raw_yaml)
 
+    # 다른 대시보드가 이미 P5/P6를 열어두고 있을 수 있다 — ws/robot_ws.py::_save_slam_result가
+    # SLAM 경로에서 slam_done을 쏘는 것과 같은 이유로, "파일로 등록" 경로도 재시작 없이
+    # 반영되도록 push한다.
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "map_changed", "robot_code": payload.robot_code})
+
     image_file_id = row["image_file_id"]
     return MapItem(**row, image_url=f"/media/files/{image_file_id}" if image_file_id else None)
 
@@ -220,6 +226,11 @@ def create_waypoint(payload: WaypointCreate):
         row = cur.fetchone()
         conn.commit()
 
+    # 다른 대시보드가 이미 이 맵(P6)을 열어두고 있을 수 있다 — 자동으로 캔버스를
+    # 갈아치우진 않고(위험 — reloadCurrentMapWaypointsAndRoutes 주석 참고), 새로고침
+    # 버튼 옆에 배지만 띄우도록 알린다.
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "waypoints_changed", "map_id": row["map_id"]})
+
     return _waypoint_row_to_item(row)
 
 
@@ -263,6 +274,8 @@ def update_waypoint(waypoint_id: int, payload: WaypointUpdate):
         row = cur.fetchone()
         conn.commit()
 
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "waypoints_changed", "map_id": row["map_id"]})
+
     return _waypoint_row_to_item(row)
 
 
@@ -270,13 +283,16 @@ def update_waypoint(waypoint_id: int, payload: WaypointUpdate):
 def delete_waypoint(waypoint_id: int):
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE waypoint SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL",
+            "UPDATE waypoint SET deregistered_at = NOW() WHERE id = %s AND deregistered_at IS NULL RETURNING map_id",
             (waypoint_id,),
         )
-        if cur.rowcount == 0:
+        row = cur.fetchone()
+        if row is None:
             conn.rollback()
             raise HTTPException(status_code=404, detail="웨이포인트를 찾을 수 없습니다")
         conn.commit()
+
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "waypoints_changed", "map_id": row["map_id"]})
 
 
 @slam_jobs_router.post("", response_model=SlamJobItem, status_code=201)
