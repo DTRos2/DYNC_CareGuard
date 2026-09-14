@@ -9,12 +9,20 @@ heartbeat 메시지는 필요 없다.
 연결 유지·재연결 로직은 robot_careguard_ws/src/careguard_agent/uplink_node.py
 (LIMO용)의 _connect_forever를 그대로 재사용했다.
 
-position 소스는 /odom(nav_msgs/Odometry)이다 — 실제 파이 조사 결과
-(2026-09-07) 이 로봇은 기본 bringup만으로는 AMCL/SLAM이 켜져있지 않아
-map->base_link TF도, /amcl_pose도 존재하지 않는다. 그래서 map 프레임 절대
-위치가 아니라 /odom 기준 상대 위치(로봇 부팅 시점이 원점)를 보낸다 — 범위를
-좁게 잡은 의도적 1단계 결정이다. AMCL/맵 정렬 위치가 필요해지면 LIMO의
-_on_slam_overlay_tick처럼 map->base_link TF 구독으로 교체하면 된다.
+2026-09-14까지는 position 소스가 /odom(nav_msgs/Odometry)이었다 — 그 시점엔
+이 로봇이 기본 bringup만으로는 AMCL/SLAM이 켜져있지 않아 map->base_link TF도,
+/amcl_pose도 존재하지 않았기 때문(2026-09-07 조사)에 map 프레임 절대 위치가
+아니라 /odom 기준 상대 위치(로봇 부팅 시점이 원점)를 보내는 좁은 범위의
+1단계 결정이었다.
+
+2026-09-14에 downlink_node.py가 Nav2(AMCL)를 실제로 띄울 수 있게 되면서(같은
+날짜 커밋들 참고) 그 전제가 깨졌다 — 대시보드 "초기 위치 설정"으로 AMCL pose를
+다시 잡아도 여기서 여전히 /odom(맵과 무관한 로봇 부팅 시점 기준 좌표)을 보내고
+있어서 화면상 로봇이 전혀 안 움직이는 것처럼 보이는 문제로 실제 재현·확인했다.
+그래서 LIMO(careguard_agent/uplink_node.py)의 순찰(P6) 단계와 동일하게 /amcl_pose
+구독으로 교체한다 — Nav2가 아직 안 떠서 /amcl_pose가 없으면 position 자체를
+안 보내는 것도 LIMO와 동일한 동작이다(맵과 무관한 좌표를 보내느니 안 보내는
+게 낫다).
 
 지도 등 다른 토픽 릴레이는 이번 범위 밖이라 구독하지 않는다 — 필요해지면
 careguard_agent/uplink_node.py를 참고해 여기에 추가하면 된다. /battery_state만
@@ -59,7 +67,7 @@ import cv2
 import numpy as np
 import rclpy
 import requests
-from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import BatteryState, CompressedImage
@@ -122,7 +130,7 @@ class UplinkNode(Node):
         self._reconnect_delay_sec = _fetch_reconnect_delay_sec(self.get_logger())
         self._last_camera_sent_at = 0.0
 
-        self.create_subscription(Odometry, '/odom', self._on_odom, 10)
+        self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self._on_pose, 10)
         self.create_subscription(BatteryState, '/battery_state', self._on_battery_state, 10)
         # 카메라 드라이버(camera_ros)도 센서 QoS로 퍼블리시해서(라이다와 같은 이유)
         # sensor QoS로 구독한다 — LIMO의 _on_camera_frame 구독과 동일한 이유.
@@ -132,7 +140,7 @@ class UplinkNode(Node):
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
 
-    def _on_odom(self, msg: Odometry):
+    def _on_pose(self, msg: PoseWithCovarianceStamped):
         yaw = _yaw_from_quaternion(msg.pose.pose.orientation)
         self._send({
             'type': 'position',
@@ -185,7 +193,13 @@ class UplinkNode(Node):
     async def _connect_forever(self):
         import websockets
 
-        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}'
+        # role=uplink를 명시해야 한다 — 안 보내면 서버(robot_ws.py)가 기본값인
+        # downlink로 취급해서, 이 연결이 나중에 맺어질 때 downlink_node의 명령
+        # 수신용 연결(_connections[robot_code])을 덮어써버린다. 그러면 서버가
+        # patrol_start/nav_prepare를 이 uplink 연결로 보내게 돼 downlink_node가
+        # 명령을 영영 못 받는다 — 2026-09-14 R-06에서 nav_prepare가 로봇까지
+        # 안 오는 문제로 실제 재현·확인했다(서버 로그에 role 없는 연결이 찍힘).
+        url = f'{ws_config.SERVER_WS_URL}/ws/robot?robot_code={ws_config.ROBOT_CODE}&role=uplink'
         while rclpy.ok():
             try:
                 async with websockets.connect(url) as ws:
