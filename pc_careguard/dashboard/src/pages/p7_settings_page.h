@@ -31,6 +31,10 @@ public:
     // 계정 삭제 체크박스/버튼 노출(isCurrentUserAdmin()) 판단의 기준이 된다.
     void setCurrentUserLoginId(const QString& loginId);
 
+    // MainWindow가 앱 전체에서 공유하는 WsClient 하나를 내려준다 — 페이지마다 자기
+    // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
+    void setWsClient(WsClient* client);
+
 private:
     struct RobotRow {
         int dbId = -1;  // robot.id — 등록 해제(DELETE /robots/{id}) API 호출에 필요

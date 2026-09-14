@@ -153,17 +153,18 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
 
     apiClient_ = new ApiClient(this);
     loadMapsFromServer();
+}
 
-    wsClient_ = new WsClient(this);
+void P6PatrolPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
     connect(wsClient_, &WsClient::messageReceived, this, &P6PatrolPage::handleWsMessage);
     connect(wsClient_, &WsClient::connectionStateChanged, this,
             [this](bool connected) { connectionBanner_->setVisible(!connected); });
-    wsClient_->connectToServer();
 }
 
 QFrame* P6PatrolPage::buildConnectionBanner() {
-    // P5MapPage::buildConnectionBanner()와 같은 이유·같은 패턴 — 이 페이지도 별도
-    // WsClient 연결을 쓰므로(P5와 독립) 끊김 표시도 각자 들고 있어야 한다.
+    // P5MapPage::buildConnectionBanner()와 같은 이유·같은 패턴 — WsClient는 앱 전체가
+    // 공유하지만, 끊김 배너는 페이지별 위젯이라 각자 들고 있어야 한다.
     auto* banner = new QFrame(this);
     banner->setObjectName("banner");
     banner->setProperty("level", "attention");

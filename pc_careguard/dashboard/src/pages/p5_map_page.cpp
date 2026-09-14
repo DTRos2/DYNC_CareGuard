@@ -81,12 +81,13 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
     apiClient_ = new ApiClient(this);
     loadActiveMapsFromServer();
     loadRobotsFromServer();
+}
 
-    wsClient_ = new WsClient(this);
+void P5MapPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
     connect(wsClient_, &WsClient::messageReceived, this, &P5MapPage::handleWsMessage);
     connect(wsClient_, &WsClient::connectionStateChanged, this,
             [this](bool connected) { connectionBanner_->setVisible(!connected); });
-    wsClient_->connectToServer();
 }
 
 QFrame* P5MapPage::buildRobotOfflineBanner() {

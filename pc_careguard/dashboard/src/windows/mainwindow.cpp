@@ -20,6 +20,7 @@
 #include "pages/p6_patrol_page.h"
 #include "pages/p7_settings_page.h"
 #include "pages/p8_logs_page.h"
+#include "net/ws_client.h"
 #include "theme/tokens.h"
 #include "widgets/simple_icons.h"
 
@@ -58,8 +59,23 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     pageStack_->addWidget(patrolPage);                       // idx 5
     settingsPage_ = new P7SettingsPage(pageStack_);
     pageStack_->addWidget(settingsPage_);                    // idx 6
-    pageStack_->addWidget(new P8LogsPage(pageStack_));       // idx 7
+    auto* logsPage = new P8LogsPage(pageStack_);
+    pageStack_->addWidget(logsPage);                          // idx 7
     body->addWidget(pageStack_, /*stretch=*/1);
+
+    // /ws/dashboard 연결 하나를 앱 전체가 공유한다 — 페이지마다 만들면 소켓이 페이지
+    // 수만큼 중복으로 열린다(§wsClient_ 주석 참고). 모든 페이지가 구독을 마친 뒤에
+    // connectToServer()를 불러야, 첫 연결이 이미 끝난 뒤에 뒤늦게 구독해서
+    // connectionStateChanged(true)를 못 받는 페이지(P5/P6/P7)가 생기지 않는다.
+    wsClient_ = new WsClient(this);
+    overviewPage->setWsClient(wsClient_);
+    recipientPage->setWsClient(wsClient_);
+    videoPage_->setWsClient(wsClient_);
+    mapPage->setWsClient(wsClient_);
+    patrolPage->setWsClient(wsClient_);
+    settingsPage_->setWsClient(wsClient_);
+    logsPage->setWsClient(wsClient_);
+    wsClient_->connectToServer();
 
     // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 반영한다. mapRegistered 시그널엔
     // 서버 map.id/resolution/origin이 안 실려 있어(이미지·이름만) upsertMap을 직접 못

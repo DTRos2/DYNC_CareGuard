@@ -498,14 +498,14 @@ P3RecipientPage::P3RecipientPage(QWidget* parent) : QWidget(parent) {
     });
     pulseTimer_->start(Tokens::Motion::PULSE_PERIOD_MS);
 
-    // robot_status(로봇 연결/해제) push를 구독해 OFFLINE 카드를 자동으로 갱신한다
-    // (P5/P6와 같은 패턴 — 페이지마다 자기 WsClient를 따로 둔다).
-    wsClient_ = new WsClient(this);
-    connect(wsClient_, &WsClient::messageReceived, this, &P3RecipientPage::handleWsMessage);
-    wsClient_->connectToServer();
-
     rebuildGrid();
     loadRecipientsFromServer();
+}
+
+void P3RecipientPage::setWsClient(WsClient* client) {
+    // robot_status(로봇 연결/해제) push를 구독해 OFFLINE 카드를 자동으로 갱신한다.
+    wsClient_ = client;
+    connect(wsClient_, &WsClient::messageReceived, this, &P3RecipientPage::handleWsMessage);
 }
 
 void P3RecipientPage::loadRecipientsFromServer() {
