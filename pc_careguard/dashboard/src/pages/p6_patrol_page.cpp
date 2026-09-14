@@ -21,6 +21,7 @@
 #include <QStackedLayout>
 #include <QStyle>
 #include <QTimeEdit>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtMath>
 #include <cmath>
@@ -100,6 +101,16 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     connect(canvas_, &WaypointCanvas::initialPoseCaptureFinished, this, &P6PatrolPage::handleInitialPoseCaptured);
     connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
             [this] { poseCaptureBtn_->setChecked(false); });
+
+    // handleInitialPoseCaptured가 시작하는 "위치 설정 중" 구간을 끝내는 타이머 —
+    // poseCaptureSettling_ 주석 참고.
+    poseCaptureSettleTimer_ = new QTimer(this);
+    poseCaptureSettleTimer_->setSingleShot(true);
+    connect(poseCaptureSettleTimer_, &QTimer::timeout, this, [this] {
+        poseCaptureSettling_ = false;
+        poseCaptureBtn_->setEnabled(true);
+        poseCaptureBtn_->setText(QStringLiteral("초기 위치 설정"));
+    });
     connect(canvas_, &WaypointCanvas::routeWaypointClicked, this, &P6PatrolPage::handleRouteWaypointClicked);
     connect(canvas_, &WaypointCanvas::chargeClickBlocked, this, [this] {
         QMessageBox::information(this, QStringLiteral("충전 스테이션"),
@@ -1812,11 +1823,32 @@ void P6PatrolPage::handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg
     const MapData& current = maps_[currentMapIndex_];
     if (current.serverMapId <= 0 || current.robotId.isEmpty()) return;
 
+    // 방금 지정한 자리를 바로 보여준다(응답을 기다리지 않음) — 로봇이 실제로 이
+    // 좌표를 받아 AMCL 재수렴을 마치기까지는 짧게 걸리는데, 그동안 들어오는
+    // robot_position은 파티클이 다시 모이는 중간값이라 마커가 흔들려 보인다.
+    // 아래 poseCaptureSettleTimer_가 도는 동안은 그 중간값들을 무시하고 이 자리를
+    // 그대로 유지한다(handleWsMessage의 robot_position 분기 참고).
+    canvas_->setCurrentRobotPosition(canvasPos, headingDeg);
+    poseCaptureSettling_ = true;
+    poseCaptureBtn_->setEnabled(false);
+    poseCaptureBtn_->setText(QStringLiteral("위치 설정 중..."));
+    // careguard_nav/initial_pose_setter.py가 구독자 확인 후 0.2초 간격으로 5회
+    // (약 1초) 재발행한다(2026-09-14, 15회/약 3초에서 축소 — 아래 파일 주석 참고).
+    // 그 구간 + 여유를 더한 값 — 실제 재수렴이 이보다 오래 걸리면 버튼이 먼저
+    // 풀려서 그 뒤에 오는 마지막 흔들림이 다시 보일 수 있다(실 로봇 검증 필요).
+    poseCaptureSettleTimer_->start(1800);
+
     const QPointF meters = canvas_->canvasToMapMeters(canvasPos);
     apiClient_->setInitialPose(current.robotId, current.serverMapId, meters.x(), meters.y(),
                                 CanvasGeometry::canvasYawDegToMapYawRad(headingDeg),
                                 [this](bool ok, const QString& err) {
                                     if (!ok) {
+                                        // 실패(로봇 미연결 등)했으면 실제로 재수렴이 일어나지
+                                        // 않으므로 굳이 기다릴 이유가 없다 — 바로 되돌린다.
+                                        poseCaptureSettleTimer_->stop();
+                                        poseCaptureSettling_ = false;
+                                        poseCaptureBtn_->setEnabled(true);
+                                        poseCaptureBtn_->setText(QStringLiteral("초기 위치 설정"));
                                         QMessageBox::warning(
                                             this, QStringLiteral("초기 위치 설정 실패"),
                                             err.isEmpty() ? QStringLiteral("로봇 ws 연결을 확인해주세요.") : err);
@@ -2143,6 +2175,12 @@ void P6PatrolPage::loadMapData(int index) {
     canvas_->setBackgroundImage(m.backgroundImage);
     canvas_->setMapMeta(m.resolution, m.originMeters);
     canvas_->setWaypoints(waypoints_);
+    // 이전 로봇(맵)의 "현재 위치" 마커를 먼저 지운다 — 아래에서 이 맵에 충전
+    // 웨이포인트가 있으면 바로 다시 채워지므로 화면상 깜빡임은 없다. 이걸 안 하면
+    // 이 맵에 아직 충전 웨이포인트가 없는 경우(findWaypoint(chargeId)==nullptr) 아래
+    // 블록이 스킵되어 이전 로봇의 마커가 좌표 그대로 남아있는다(오프라인 로봇으로
+    // 전환했는데 엉뚱한 위치에 로봇이 있는 것처럼 보이던 버그, 2026-09-14 리포트).
+    canvas_->clearRobotPosition();
     // 이 맵으로 (다시) 전환할 때마다, 다음 실제로 그려지는 시점에 웨이포인트 좌표를
     // metersPos(서버 원본 미터)로부터 확실하게 다시 계산하도록 예약한다 —
     // WaypointCanvas::showEvent 주석 참고(이 위젯이 이미 한 번 보여진 뒤라면
@@ -2639,7 +2677,7 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
     }
 
     if (type != QStringLiteral("robot_position") && type != QStringLiteral("camera_frame") &&
-        type != QStringLiteral("patrol_path_update"))
+        type != QStringLiteral("patrol_path_update") && type != QStringLiteral("slam_scan_update"))
         return;
     if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
 
@@ -2660,6 +2698,22 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
+    if (type == QStringLiteral("slam_scan_update")) {
+        // uplink_node.py가 P5(SLAM)뿐 아니라 map->base_link TF가 존재하는 동안(=AMCL로
+        // 순찰 중일 때도) 계속 보내는 라이다 스캔 오버레이 — P5MapPage::handleWsMessage의
+        // 같은 처리와 동일하게 파싱해 캔버스에 그대로 넘긴다. 로봇 초기 위치(AMCL)를
+        // 아직 안 잡았으면 로봇 쪽에서 TF 조회가 실패해 이 메시지 자체가 안 오므로,
+        // "초기 위치 설정 후 자연히 나타난다"는 동작은 이 페이지에서 별도 처리 없이 그대로 이어진다.
+        const QJsonArray flat = message.value(QStringLiteral("points")).toArray();
+        QVector<QPointF> scanMeters;
+        scanMeters.reserve(flat.size() / 2);
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            scanMeters.append(QPointF(flat.at(i).toDouble(), flat.at(i + 1).toDouble()));
+        }
+        canvas_->setLiveScan(scanMeters);
+        return;
+    }
+
     if (type == QStringLiteral("camera_frame")) {
         // /camera/color/image_raw/compressed를 uplink_node가 재인코딩 없이 그대로
         // base64로 실어 보낸 것 — JPEG라서 QImage가 바로 디코딩한다.
@@ -2671,6 +2725,11 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         }
         return;
     }
+
+    // "위치 보정" 직후 정착 구간(poseCaptureSettling_) 동안은 AMCL이 재수렴 중인
+    // 중간값을 무시한다 — handleInitialPoseCaptured가 이미 사용자가 지정한 자리를
+    // 보여주고 있으므로, 여기서 계속 갱신하면 그 자리가 흔들리는 것처럼 보인다.
+    if (poseCaptureSettling_) return;
 
     const qreal xMeters = message.value(QStringLiteral("x")).toDouble();
     const qreal yMeters = message.value(QStringLiteral("y")).toDouble();

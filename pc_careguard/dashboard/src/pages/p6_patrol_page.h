@@ -29,6 +29,7 @@ class WsClient;
 class QJsonObject;
 class TeleopPanel;
 class QKeyEvent;
+class QTimer;
 
 // P6 순찰·경로 — 웨이포인트 편집 캔버스 + WP 목록/경로/스케줄.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 5), §7 참고.
@@ -373,6 +374,15 @@ private:
     WaypointPopover* popover_;
     QWidget* canvasToolbarRow_;
     QPushButton* poseCaptureBtn_;
+    // "위치 보정" 전송 직후 잠깐(수 초 이하) AMCL이 파티클을 다시 수렴시키는 동안
+    // robot_position이 튀어 마커가 흔들려 보인다는 피드백 — 그 구간 동안은
+    // handleWsMessage의 robot_position 갱신을 무시하고, 사용자가 방금 지정한
+    // 자리를 그대로 보여준다(poseCaptureSettleTimer_ 만료 시 정상 갱신 재개).
+    // careguard_nav/initial_pose_setter.py의 재발행 구간(15회/약 3초 -> 5회/약
+    // 1초로 축소, 2026-09-14)에 맞춰 이 타이머 값도 같이 줄였다 — initial_pose_setter.py
+    // 주석 참고.
+    bool poseCaptureSettling_ = false;
+    QTimer* poseCaptureSettleTimer_;
     // P5MapPage와 같은 방향키패드+속도 프리셋 위젯 — 순찰 페이지에서도 원격 조종이
     // 필요하다는 요청으로 추가. velocityChanged를 현재 맵의 로봇 코드로
     // apiClient_->sendTeleop()에 그대로 연결한다.
