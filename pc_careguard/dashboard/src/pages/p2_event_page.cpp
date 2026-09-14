@@ -163,7 +163,7 @@ QWidget* P2EventPage::buildFilterBar() {
     applyPeriodPreset(0);  // 초기 상태: 오늘 ~ 오늘, 읽기 전용
 
     searchEdit_ = new LiveSearchLineEdit(bar);
-    searchEdit_->setPlaceholderText(QStringLiteral("로봇·대상자·담당자 검색"));
+    searchEdit_->setPlaceholderText(QStringLiteral("이벤트 ID·로봇·대상자·담당자 검색"));
     connect(searchEdit_, &LiveSearchLineEdit::liveTextChanged, proxy_,
             &EventFilterProxyModel::setSearchKeyword);
     layout->addWidget(searchEdit_, /*stretch=*/1);
