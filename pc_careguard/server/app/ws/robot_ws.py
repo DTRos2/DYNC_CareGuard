@@ -474,15 +474,19 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
         if new_state == previous_state:
             return None
 
+        # "정상 회복" 로그는 남기지 않는다 — 사용자 요청(2026-09-14): 주의/복귀 알림만
+        # 있으면 되고, 그게 풀렸다는 별도 로그는 필요 없다고 판단됨. 상태 추적
+        # (_battery_alert_state)은 히스테리시스 판정에 계속 필요해서 위에서 그대로
+        # 갱신하고, system_event만 안 남긴다.
+        if new_state == "normal":
+            return None
+
         if new_state == "attention":
             event_type, severity = "battery_attention", "warn"
             event_message = f"배터리 {percentage:.0f}% — 주의 임계값({attention_pct}%) 이하"
-        elif new_state == "return_needed":
+        else:
             event_type, severity = "battery_return_needed", "error"
             event_message = f"배터리 {percentage:.0f}% — 복귀 임계값({return_pct}%) 이하, 충전 복귀 시작"
-        else:
-            event_type, severity = "battery_recovered", "info"
-            event_message = f"배터리 {percentage:.0f}% — 정상 범위로 회복"
 
         cur.execute(
             "INSERT INTO system_event (robot_id, event_type, severity, message) VALUES (%s, %s, %s, %s)",

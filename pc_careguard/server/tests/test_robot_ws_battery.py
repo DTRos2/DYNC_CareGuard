@@ -133,13 +133,37 @@ def test_battery_return_needed_requires_recovery_margin(client, cleanup_robot):
         assert len(events) == 1
         assert events[0]["event_type"] == "battery_return_needed"
 
-        # 여유분을 확실히 넘기면(34% > 28+5) 비로소 정상으로 복귀.
+        # 여유분을 확실히 넘기면(34% > 28+5) 비로소 정상으로 복귀 — 다만 "정상 회복"
+        # 로그는 더 이상 안 남긴다(2026-09-14 사용자 요청, 아래 covers 참고).
         robot_ws._handle_battery_state(code, 34)
         assert robot_ws._battery_alert_state[code] == "normal"
 
         events = _system_events_for(robot_id)
-        assert len(events) == 2
-        assert events[1]["event_type"] == "battery_recovered"
+        assert len(events) == 1
+    finally:
+        _cleanup_system_events(robot_id)
+        robot_ws._battery_alert_state.pop(code, None)
+
+
+def test_battery_recovered_event_is_not_logged(client, cleanup_robot):
+    """2026-09-14 사용자 요청 — "배터리 주의"/"배터리 복귀 필요"는 로그로 남기되,
+    거기서 정상으로 돌아왔다는 "배터리 정상 회복" 로그는 필요 없다고 해서 뺐다.
+    상태 추적(_battery_alert_state)은 히스테리시스 판정에 계속 필요해 그대로 갱신되지만
+    system_event는 안 남아야 한다."""
+    code = _unique_code()
+    cleanup_robot.append(code)
+    robot_id = client.post("/robots", json={"code": code, "name": "배터리 정상회복 로그 제외 테스트"}).json()["id"]
+    _set_battery_thresholds(client, robot_id, attention_pct=30, return_pct=15)
+
+    try:
+        robot_ws._handle_battery_state(code, 25)
+        assert robot_ws._battery_alert_state[code] == "attention"
+        assert len(_system_events_for(robot_id)) == 1
+
+        robot_ws._handle_battery_state(code, 80)
+        assert robot_ws._battery_alert_state[code] == "normal"
+        # 상태는 normal로 바뀌었지만 system_event는 추가되지 않는다.
+        assert len(_system_events_for(robot_id)) == 1
     finally:
         _cleanup_system_events(robot_id)
         robot_ws._battery_alert_state.pop(code, None)
@@ -168,13 +192,13 @@ def test_battery_attention_requires_recovery_margin(client, cleanup_robot):
         assert len(events) == 1
         assert events[0]["event_type"] == "battery_attention"
 
-        # 여유분을 확실히 넘기면(36% > 30+5) 비로소 정상으로 복귀.
+        # 여유분을 확실히 넘기면(36% > 30+5) 비로소 정상으로 복귀 — "정상 회복" 로그는
+        # 안 남긴다(test_battery_recovered_event_is_not_logged 참고).
         robot_ws._handle_battery_state(code, 36)
         assert robot_ws._battery_alert_state[code] == "normal"
 
         events = _system_events_for(robot_id)
-        assert len(events) == 2
-        assert events[1]["event_type"] == "battery_recovered"
+        assert len(events) == 1
     finally:
         _cleanup_system_events(robot_id)
         robot_ws._battery_alert_state.pop(code, None)
