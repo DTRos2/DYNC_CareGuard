@@ -53,6 +53,15 @@ constexpr qreal kPxPerMeter = 40.0;
 // 맞춘 값(24px). routeOrderList_->setFixedHeight(120)도 같은 24px 기준의 5줄.
 constexpr int kWpListRowHeightPx = 24;
 constexpr int kWpListVisibleRows = 5;
+
+// "위치 보정" 정착 판단 — robot_position의 pos_std_m(위치 표준편차, 미터)이 이
+// 값 이하로 내려오면 AMCL이 충분히 수렴했다고 본다. 시작값은 추정치 — 실
+// 로봇(R-07)에서 `ros2 topic echo /amcl_pose`로 수렴 전/후 공분산을 직접 보고
+// 맞춰야 한다(AMCL 파라미터·환경마다 다르다).
+constexpr double kPoseConvergedStdMeters = 0.3;
+// pos_std_m이 끝까지 임계값 밑으로 안 내려오는 경우(필드 유실, 환경이 안 좋아
+// AMCL이 못 붙는 경우 등)에 대비한 안전판 — 정상 경로에서는 거의 안 걸린다.
+constexpr int kPoseCaptureSettleFallbackMs = 8000;
 }
 
 P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(0), routeEditMode_(false) {
@@ -102,15 +111,12 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
             [this] { poseCaptureBtn_->setChecked(false); });
 
-    // handleInitialPoseCaptured가 시작하는 "위치 설정 중" 구간을 끝내는 타이머 —
-    // poseCaptureSettling_ 주석 참고.
+    // handleInitialPoseCaptured가 시작하는 "위치 설정 중" 구간의 안전판 —
+    // poseCaptureSettling_ 주석 참고. 정상 경로는 handleWsMessage가 pos_std_m으로
+    // 먼저 끝내므로, 이 타이머는 그게 안 될 때만 발동한다.
     poseCaptureSettleTimer_ = new QTimer(this);
     poseCaptureSettleTimer_->setSingleShot(true);
-    connect(poseCaptureSettleTimer_, &QTimer::timeout, this, [this] {
-        poseCaptureSettling_ = false;
-        poseCaptureBtn_->setEnabled(true);
-        poseCaptureBtn_->setText(QStringLiteral("초기 위치 설정"));
-    });
+    connect(poseCaptureSettleTimer_, &QTimer::timeout, this, &P6PatrolPage::finishPoseCaptureSettling);
     connect(canvas_, &WaypointCanvas::routeWaypointClicked, this, &P6PatrolPage::handleRouteWaypointClicked);
     connect(canvas_, &WaypointCanvas::chargeClickBlocked, this, [this] {
         QMessageBox::information(this, QStringLiteral("충전 스테이션"),
@@ -1854,19 +1860,15 @@ void P6PatrolPage::handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg
     if (current.serverMapId <= 0 || current.robotId.isEmpty()) return;
 
     // 방금 지정한 자리를 바로 보여준다(응답을 기다리지 않음) — 로봇이 실제로 이
-    // 좌표를 받아 AMCL 재수렴을 마치기까지는 짧게 걸리는데, 그동안 들어오는
-    // robot_position은 파티클이 다시 모이는 중간값이라 마커가 흔들려 보인다.
-    // 아래 poseCaptureSettleTimer_가 도는 동안은 그 중간값들을 무시하고 이 자리를
-    // 그대로 유지한다(handleWsMessage의 robot_position 분기 참고).
+    // 좌표를 받아 AMCL 재수렴을 마치기까지 걸리는 동안 들어오는 robot_position은
+    // 파티클이 다시 모이는 중간값이라 마커가 흔들려 보인다. handleWsMessage가
+    // pos_std_m(위치 표준편차)으로 실제 수렴을 확인할 때까지 그 중간값들을
+    // 무시하고 이 자리를 그대로 유지한다 — poseCaptureSettling_ 주석 참고.
     canvas_->setCurrentRobotPosition(canvasPos, headingDeg);
     poseCaptureSettling_ = true;
     poseCaptureBtn_->setEnabled(false);
     poseCaptureBtn_->setText(QStringLiteral("위치 설정 중..."));
-    // careguard_nav/initial_pose_setter.py가 구독자 확인 후 0.2초 간격으로 5회
-    // (약 1초) 재발행한다(2026-09-14, 15회/약 3초에서 축소 — 아래 파일 주석 참고).
-    // 그 구간 + 여유를 더한 값 — 실제 재수렴이 이보다 오래 걸리면 버튼이 먼저
-    // 풀려서 그 뒤에 오는 마지막 흔들림이 다시 보일 수 있다(실 로봇 검증 필요).
-    poseCaptureSettleTimer_->start(1800);
+    poseCaptureSettleTimer_->start(kPoseCaptureSettleFallbackMs);
 
     const QPointF meters = canvas_->canvasToMapMeters(canvasPos);
     apiClient_->setInitialPose(current.robotId, current.serverMapId, meters.x(), meters.y(),
@@ -1875,15 +1877,19 @@ void P6PatrolPage::handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg
                                     if (!ok) {
                                         // 실패(로봇 미연결 등)했으면 실제로 재수렴이 일어나지
                                         // 않으므로 굳이 기다릴 이유가 없다 — 바로 되돌린다.
-                                        poseCaptureSettleTimer_->stop();
-                                        poseCaptureSettling_ = false;
-                                        poseCaptureBtn_->setEnabled(true);
-                                        poseCaptureBtn_->setText(QStringLiteral("초기 위치 설정"));
+                                        finishPoseCaptureSettling();
                                         QMessageBox::warning(
                                             this, QStringLiteral("초기 위치 설정 실패"),
                                             err.isEmpty() ? QStringLiteral("로봇 ws 연결을 확인해주세요.") : err);
                                     }
                                 });
+}
+
+void P6PatrolPage::finishPoseCaptureSettling() {
+    poseCaptureSettleTimer_->stop();
+    poseCaptureSettling_ = false;
+    poseCaptureBtn_->setEnabled(true);
+    poseCaptureBtn_->setText(QStringLiteral("초기 위치 설정"));
 }
 
 void P6PatrolPage::keyPressEvent(QKeyEvent* event) {
@@ -2756,10 +2762,19 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
-    // "위치 보정" 직후 정착 구간(poseCaptureSettling_) 동안은 AMCL이 재수렴 중인
-    // 중간값을 무시한다 — handleInitialPoseCaptured가 이미 사용자가 지정한 자리를
-    // 보여주고 있으므로, 여기서 계속 갱신하면 그 자리가 흔들리는 것처럼 보인다.
-    if (poseCaptureSettling_) return;
+    // "위치 보정" 직후 정착 구간(poseCaptureSettling_) 동안은 pos_std_m(위치
+    // 표준편차, 미터)이 kPoseConvergedStdMeters 이하로 내려온 값이 올 때까지
+    // AMCL이 재수렴 중인 중간값을 무시한다 — handleInitialPoseCaptured가 이미
+    // 사용자가 지정한 자리를 보여주고 있으므로, 여기서 신뢰 못 할 값으로 계속
+    // 갱신하면 그 자리가 흔들리는 것처럼 보인다. pos_std_m이 없는 값(예: 필드
+    // 유실)도 아직 못 믿는 값으로 취급해 계속 무시한다 — 안전판 타이머
+    // (poseCaptureSettleTimer_)가 그런 경우를 대비한다.
+    if (poseCaptureSettling_) {
+        const QJsonValue posStd = message.value(QStringLiteral("pos_std_m"));
+        if (!posStd.isDouble() || posStd.toDouble() > kPoseConvergedStdMeters) return;
+        // 충분히 수렴했다 — 정착을 끝내고 이 값을 그대로 마커에 반영한다(아래로 계속).
+        finishPoseCaptureSettling();
+    }
 
     const qreal xMeters = message.value(QStringLiteral("x")).toDouble();
     const qreal yMeters = message.value(QStringLiteral("y")).toDouble();

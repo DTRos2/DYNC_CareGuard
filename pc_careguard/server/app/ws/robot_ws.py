@@ -201,7 +201,17 @@ async def _handle_message(robot_code: str, message: dict) -> None:
     msg_type = message.get("type")
 
     if msg_type == "position":
-        position = {"x": message.get("x"), "y": message.get("y"), "yaw": message.get("yaw")}
+        # pos_std_m(위치 표준편차, 미터) — LIMO uplink_node._on_pose가 /amcl_pose
+        # 공분산에서 뽑아 보낸다. P6 "위치 보정" 직후 AMCL이 실제로 수렴했는지
+        # 판단하는 데 쓴다(P6PatrolPage::poseCaptureSettling_). TF 기반 경로
+        # (_on_slam_overlay_tick, P5 SLAM 전용)는 공분산이 없어 이 필드를 안 보내며,
+        # 그때는 None으로 그대로 넘어간다.
+        position = {
+            "x": message.get("x"),
+            "y": message.get("y"),
+            "yaw": message.get("yaw"),
+            "pos_std_m": message.get("pos_std_m"),
+        }
         _latest_positions[robot_code] = position
         await dashboard_ws.broadcast({"type": "robot_position", "robot_code": robot_code, **position})
 

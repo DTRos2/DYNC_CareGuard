@@ -23,6 +23,11 @@ amcl이 안 떠 있어 그 토픽에 퍼블리셔가 전혀 없다 — 매핑 �
 보이게 하기 위함이다. /amcl_pose 구독은 매핑이 끝난 뒤 amcl로 위치를 잡는
 순찰(P6) 단계를 위해 그대로 남겨둔다.
 
+2026-09-14에 position 메시지에 pos_std_m(x/y 공분산 대각 성분에서 뽑은 위치
+표준편차, 미터)을 추가했다 — _on_pose 참고. _on_slam_overlay_tick(TF 기반)
+경로는 공분산이 없어 이 필드를 안 보낸다(그 경로는 P5 SLAM 뷰 전용이라 P6의
+수렴 판단과 무관).
+
 /camera/color/image_raw/compressed(orbbec_camera, sensor_msgs/CompressedImage)도
 같은 방식으로 relay한다 — 이미 JPEG로 압축되어 있어 재인코딩 없이 그대로
 base64만 씌워 보낸다(대시보드 P5/P6 우측 상단 카메라 라이브 박스용).
@@ -69,6 +74,16 @@ MAP_SEND_INTERVAL_SEC = 2.0
 # SLAM 중 실시간 로봇 위치·라이다 스캔 오버레이(대시보드 rviz2 스타일 뷰) 갱신 간격.
 # /map보다는 자주 갱신해야 "실시간"처럼 보인다.
 SLAM_OVERLAY_INTERVAL_SEC = 0.3
+
+# _on_slam_overlay_tick(TF 기반, 공분산 없음)이 자기 position을 보낼지 판단하는
+# 기준 — 이 시간 안에 /amcl_pose(_on_pose, 공분산 있음)가 실제로 온 적이 있으면
+# 건너뛴다. AMCL이 뜨면 map->odom TF도 계속 갱신되어 이 tick이 SLAM_OVERLAY_INTERVAL_SEC
+# 마다 꼬박꼬박 성공하는데, 로봇이 멈춰 있으면(AMCL은 움직임 임계값 이상일 때만
+# /amcl_pose를 새로 낸다) 공분산 없는 이 tick이 공분산 있는 _on_pose를 사실상
+# 완전히 덮어써서, P6 "위치 보정"의 pos_std_m 기반 정착 판단이 항상 None만 받는
+# 문제로 실 로봇(R-07)에서 재현·확인됐다(2026-09-14). SLAM_OVERLAY_INTERVAL_SEC
+# 보다 넉넉히 크게 잡아 정상적인 tick 주기에서는 서로 안 겹치게 한다.
+AMCL_POSE_RECENCY_SEC = 1.0
 
 # 스캔 포인트를 그대로 다 보내면 메시지가 커진다 — 화면에 뿌릴 용도로는 이 정도로 충분하다.
 MAX_SCAN_POINTS = 450
@@ -141,6 +156,9 @@ class UplinkNode(Node):
         self._connected = False
         self._last_map_sent_at = 0.0
         self._last_camera_sent_at = 0.0
+        # _on_slam_overlay_tick이 자기 position을 보낼지 판단하는 데 쓴다 —
+        # _on_pose 주석 및 _on_slam_overlay_tick 주석 참고.
+        self._last_amcl_pose_at = 0.0
 
         self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self._on_pose, 10)
         self.create_subscription(OccupancyGrid, '/map', self._on_map, 1)
@@ -178,11 +196,22 @@ class UplinkNode(Node):
 
     def _on_pose(self, msg: PoseWithCovarianceStamped):
         yaw = _yaw_from_quaternion(msg.pose.pose.orientation)
+        # 6x6 행-우선 공분산 행렬(geometry_msgs/PoseWithCovariance)에서 x/y 분산은
+        # 대각 성분 [0](x,x)·[7](y,y)에 있다 — P6 대시보드가 "위치 보정" 직후 AMCL이
+        # 실제로 수렴했는지 판단하는 데 쓴다(고정 시간 타이머로 흔들림을 가리던
+        # 방식은 실 로봇에서 수렴 시간이 그보다 길면 타이머가 먼저 풀려 흔들림이
+        # 그대로 보이는 문제가 있었다 — P6PatrolPage::poseCaptureSettling_ 주석 참고).
+        # max(cov_x, cov_y, 0.0)로 더 불확실한 축 기준으로 보수적으로 잡는다.
+        cov_x = msg.pose.covariance[0]
+        cov_y = msg.pose.covariance[7]
+        pos_std_m = math.sqrt(max(cov_x, cov_y, 0.0))
+        self._last_amcl_pose_at = time.monotonic()
         self._send({
             'type': 'position',
             'x': msg.pose.pose.position.x,
             'y': msg.pose.pose.position.y,
             'yaw': yaw,
+            'pos_std_m': pos_std_m,
         })
 
     def _on_map(self, msg: OccupancyGrid):
@@ -247,16 +276,21 @@ class UplinkNode(Node):
 
         TF가 아직 없으면(SLAM 시작 전) 예외를 조용히 삼키고 스킵한다 — /amcl_pose와
         달리 이 경로는 map 프레임이 생기기 전엔 항상 실패하는 게 정상이기 때문이다.
+
+        position은 /amcl_pose(_on_pose)가 최근(AMCL_POSE_RECENCY_SEC 이내)에 이미
+        보낸 적이 있으면 건너뛴다 — AMCL_POSE_RECENCY_SEC 주석 참고. 스캔 오버레이는
+        공분산과 무관하니 이 조건과 상관없이 항상 보낸다.
         """
         try:
             tf = self._tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
             return
 
-        x = tf.transform.translation.x
-        y = tf.transform.translation.y
-        yaw = _yaw_from_quaternion(tf.transform.rotation)
-        self._send({'type': 'position', 'x': x, 'y': y, 'yaw': yaw})
+        if time.monotonic() - self._last_amcl_pose_at >= AMCL_POSE_RECENCY_SEC:
+            x = tf.transform.translation.x
+            y = tf.transform.translation.y
+            yaw = _yaw_from_quaternion(tf.transform.rotation)
+            self._send({'type': 'position', 'x': x, 'y': y, 'yaw': yaw})
         self._send_scan_overlay()
 
     def _send_scan_overlay(self):
