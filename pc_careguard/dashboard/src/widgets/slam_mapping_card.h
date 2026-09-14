@@ -42,6 +42,9 @@ public:
     void setLivePose(qreal xMeters, qreal yMeters, qreal yawRad);
     // 우상단 카메라 라이브 화면에 실제 프레임을 흘려보낸다(camera_frame WS 메시지).
     void setCameraFrame(const QImage& frame);
+    // 로봇 전환 시 호출 — 이전 로봇의 마지막 프레임이 남아있지 않도록 카메라
+    // 화면을 "카메라 연결 중" placeholder로 되돌린다.
+    void clearCameraFrame();
     // 실시간 라이다 스캔점(map 프레임, 미터 좌표 목록).
     void setLiveScan(const QVector<QPointF>& pointsMeters);
 
