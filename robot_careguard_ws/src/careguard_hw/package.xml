@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>careguard_hw</name>
+  <version>0.1.0</version>
+  <description>하드웨어 계층 — 약통 서보·응급 호출 버튼 등 아두이노/ESP32 주변기기와 로봇 사이의 시리얼·MQTT 브리지. firmware/ 하위엔 기기별 .ino 스케치를 둔다(콜콘 빌드 대상 아님, CONVENTIONS.md 3.1 참고).</description>
+  <maintainer email="careguard@example.com">CareGuard Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <!-- pillbox_controller.py가 생기면 pyserial과, DeliverMedication 액션을 쓴다면
+       careguard_msgs 의존성도 여기 추가한다 — 지금은 실제로 쓰는 코드가 없어
+       비워둔다(추측성 의존성 금지). -->
+
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
