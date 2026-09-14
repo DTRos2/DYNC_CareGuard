@@ -56,8 +56,8 @@ bool EventFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex& s
             return sourceModel()->data(idx, Qt::DisplayRole).toString().contains(keyword,
                                                                                   Qt::CaseInsensitive);
         };
-        if (!matches(EventTableModel::ColRobot) && !matches(EventTableModel::ColRecipient) &&
-            !matches(EventTableModel::ColAssignee)) {
+        if (!matches(EventTableModel::ColEventId) && !matches(EventTableModel::ColRobot) &&
+            !matches(EventTableModel::ColRecipient) && !matches(EventTableModel::ColAssignee)) {
             return false;
         }
     }

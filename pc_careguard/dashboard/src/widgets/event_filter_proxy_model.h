@@ -14,7 +14,11 @@ public:
     void setUnresolvedOnly(bool unresolvedOnly);
     bool unresolvedOnly() const { return unresolvedOnly_; }
 
-    // 로봇/대상자/담당자만 대상으로 대소문자 무시 부분일치 검색.
+    // 이벤트 ID(event_uid)/로봇/대상자/담당자를 대상으로 대소문자 무시 부분일치 검색.
+    // event_uid는 P2EventPage::openEventByUid(P4 "이벤트 상세로 이동")가 검색창에
+    // 그대로 채워 넣는데, 예전엔 이 필터가 그 값을 매칭 대상에서 빼놓고 있어서
+    // 상세 모달은 (소스 모델을 직접 훑어) 정상적으로 열려도 뒤에 남는 테이블 자체는
+    // 그 이벤트가 필터에 안 걸려 안 보이는 것처럼 보였다.
     void setSearchKeyword(const QString& keyword);
 
     // [start, end] 포함 범위. 둘 다 유효해야 필터가 걸린다.
