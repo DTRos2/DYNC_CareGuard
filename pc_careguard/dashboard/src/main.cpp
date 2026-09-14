@@ -118,7 +118,8 @@ int main(int argc, char* argv[]) {
     auto* login = new LoginWindow();
     MainWindow* mainWindow = nullptr;
 
-    QObject::connect(login, &LoginWindow::loginSucceeded, [&](const QString& username, const QString) {
+    QObject::connect(login, &LoginWindow::loginSucceeded,
+                      [&](const QString& username, const QString& role, const QString& token) {
         if (!mainWindow) {
             mainWindow = new MainWindow();
             QObject::connect(mainWindow, &MainWindow::logoutRequested, [&]() {
@@ -127,8 +128,8 @@ int main(int argc, char* argv[]) {
             });
         }
         mainWindow->setUserName(username);
-        // mainWindow->setUserRole(role);   // 다음 단계에서 mainwindow.cpp에 추가할 함수
-        // mainWindow->setAuthToken(token); // 다음 단계에서 mainwindow.cpp에 추가할 함수
+        mainWindow->setUserRole(role);  
+        mainWindow->setAuthToken(token); 
         mainWindow->show();
         login->hide();
     });

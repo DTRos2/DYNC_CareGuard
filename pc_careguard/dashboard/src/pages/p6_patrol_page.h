@@ -34,6 +34,7 @@ class QKeyEvent;
 class P6PatrolPage : public QWidget {
     Q_OBJECT
 public:
+    void setAuthToken(const QString& token) { apiClient_->setAuthToken(token); }
     explicit P6PatrolPage(QWidget* parent = nullptr);
 
 public slots:

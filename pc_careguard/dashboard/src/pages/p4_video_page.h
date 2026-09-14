@@ -67,6 +67,8 @@ public:
     // §7 열람 이력에 "누가 열람했는지" 기록할 때 이 값을 쓴다.
     void setUserName(const QString& name);
 
+    void setAuthToken(const QString& token) { authToken_ = token; }
+
     // P2 이벤트 상세 모달의 "사유 입력 후 열람" 진입점. eventUid에 연동된 클립을 clips_에서
     // 찾아 재생 모달(사유 입력 잠금 포함, openVideoPlayer()와 완전히 동일)을 그대로 띄운다.
     // 못 찾으면 목록을 한 번 새로 받아온 뒤 재시도하고, 그래도 없으면 안내만 띄운다 —
@@ -141,6 +143,7 @@ private:
     // CAREGUARD_SERVER_URL, 없으면 http://127.0.0.1:8000.
     QNetworkAccessManager* netManager_ = nullptr;
     QString serverUrl_;
+    QString authToken_;
 
     // 실시간 새로고침용. handleWsMessage() 참고.
     WsClient* wsClient_ = nullptr;

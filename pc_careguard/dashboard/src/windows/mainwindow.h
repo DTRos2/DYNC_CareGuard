@@ -6,8 +6,13 @@ class QStackedWidget;
 class QButtonGroup;
 class QTimer;
 class QIcon;
+class P2EventPage;
+class P3RecipientPage;
+class P5MapPage;
+class P6PatrolPage;
 class P4VideoPage;
 class P7SettingsPage;
+class P8LogsPage;
 
 // 공통 셸: TopBar + Sidebar + QStackedWidget.
 // CareGuard_DESIGN_SYSTEM.md §3(공통 셸 구조), §4-2(objectName), §6(페이지 인벤토리) 참고.
@@ -20,6 +25,8 @@ public:
     void setUserName(const QString& name);
     void setEmergencyCount(int count);
     void setAttentionCount(int count);
+    void setUserRole(const QString& role);
+    void setAuthToken(const QString& token);    
 
 signals:
     void logoutRequested();
@@ -35,8 +42,13 @@ private:
 
     QStackedWidget* pageStack_;
     QButtonGroup* navGroup_ = nullptr;
+    P2EventPage* eventPage_ = nullptr;
+    P3RecipientPage* recipientPage_ = nullptr;
+    P5MapPage* mapPage_ = nullptr;
+    P6PatrolPage* patrolPage_ = nullptr;
     P4VideoPage* videoPage_ = nullptr;
     P7SettingsPage* settingsPage_ = nullptr;
+    P8LogsPage* logsPage_ = nullptr;
     QLabel* clockLabel_;
     QLabel* userLabel_;
     QLabel* emergencyBadge_;

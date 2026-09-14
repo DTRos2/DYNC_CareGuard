@@ -228,7 +228,11 @@ void P8LogsPage::fetchAuditLog() {
     }
     url.setQuery(query);
 
-    QNetworkReply* reply = netManager_->get(QNetworkRequest(url));
+    QNetworkRequest request(url);
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
+    QNetworkReply* reply = netManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         handleAuditLogReply(reply);
         reply->deleteLater();
@@ -429,7 +433,11 @@ void P8LogsPage::fetchSystemEventLog() {
     }
     url.setQuery(query);
 
-    QNetworkReply* reply = netManager_->get(QNetworkRequest(url));
+    QNetworkRequest request(url);
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
+    QNetworkReply* reply = netManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         handleSystemEventLogReply(reply);
         reply->deleteLater();
@@ -632,7 +640,11 @@ void P8LogsPage::fetchPatrolRunLog() {
     }
     url.setQuery(query);
 
-    QNetworkReply* reply = netManager_->get(QNetworkRequest(url));
+    QNetworkRequest request(url);
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
+    QNetworkReply* reply = netManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         handlePatrolRunLogReply(reply);
         reply->deleteLater();

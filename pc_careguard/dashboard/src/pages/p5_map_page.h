@@ -25,6 +25,7 @@ class QJsonObject;
 class P5MapPage : public QWidget {
     Q_OBJECT
 public:
+    void setAuthToken(const QString& token) { apiClient_->setAuthToken(token); }
     explicit P5MapPage(QWidget* parent = nullptr);
 
 signals:

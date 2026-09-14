@@ -31,6 +31,9 @@ public:
     // 계정 삭제 체크박스/버튼 노출(isCurrentUserAdmin()) 판단의 기준이 된다.
     void setCurrentUserLoginId(const QString& loginId);
 
+    // 로그인 성공 시 받은 세션 토큰. /robots, /accounts 등 요청에 Authorization 헤더로 실어 보낸다.
+    void setAuthToken(const QString& token) { authToken_ = token; }
+
 private:
     struct RobotRow {
         int dbId = -1;  // robot.id — 등록 해제(DELETE /robots/{id}) API 호출에 필요
@@ -128,6 +131,7 @@ private:
 
     QNetworkAccessManager* netManager_ = nullptr;
     QString serverUrl_;
+    QString authToken_;
 
     std::vector<RobotRow> robots_;
     std::vector<AccountRow> accounts_;

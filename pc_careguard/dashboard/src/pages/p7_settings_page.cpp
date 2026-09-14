@@ -504,6 +504,9 @@ void P7SettingsPage::refreshRobotTable() {
 
 void P7SettingsPage::fetchRobots() {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/robots")));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         handleRobotsReply(reply);
@@ -544,6 +547,9 @@ void P7SettingsPage::handleRobotsReply(QNetworkReply* reply) {
 
 void P7SettingsPage::registerRobot(const RobotDialog::RobotData& data) {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/robots")));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     const QJsonObject body{
@@ -579,6 +585,9 @@ void P7SettingsPage::registerRobot(const RobotDialog::RobotData& data) {
 
 void P7SettingsPage::assignRobotRecipient(int robotDbId, int recipientId) {
     QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2/recipient").arg(serverUrl_).arg(robotDbId)));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     const QJsonObject body{{"recipient_id", recipientId}};
     QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());
@@ -597,6 +606,9 @@ void P7SettingsPage::assignRobotRecipient(int robotDbId, int recipientId) {
 
 void P7SettingsPage::deregisterRobot(int dbId) {
     QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2").arg(serverUrl_).arg(dbId)));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->deleteResource(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -833,6 +845,9 @@ void P7SettingsPage::refreshAccountTable() {
 
 void P7SettingsPage::fetchAccounts() {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/accounts")));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         handleAccountsReply(reply);
@@ -870,6 +885,9 @@ void P7SettingsPage::handleAccountsReply(QNetworkReply* reply) {
 
 void P7SettingsPage::registerAccount(const AccountDialog::AccountData& data) {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/accounts")));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     const QJsonObject body{
@@ -906,6 +924,9 @@ void P7SettingsPage::registerAccount(const AccountDialog::AccountData& data) {
 void P7SettingsPage::updateAccount(int rowIndex, const AccountDialog::AccountData& data) {
     const int dbId = accounts_[static_cast<size_t>(rowIndex)].dbId;
     QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2").arg(serverUrl_).arg(dbId)));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     const QJsonObject body{
@@ -941,6 +962,9 @@ void P7SettingsPage::updateAccount(int rowIndex, const AccountDialog::AccountDat
 
 void P7SettingsPage::changePassword(int userId, const QString& newPassword) {
     QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2/password").arg(serverUrl_).arg(userId)));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     const QJsonObject body{{"new_password", newPassword}};
@@ -960,6 +984,9 @@ void P7SettingsPage::changePassword(int userId, const QString& newPassword) {
 void P7SettingsPage::activateAccount(int rowIndex) {
     const AccountRow& acc = accounts_[static_cast<size_t>(rowIndex)];
     QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2").arg(serverUrl_).arg(acc.dbId)));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     const QJsonObject body{
@@ -1021,6 +1048,9 @@ void P7SettingsPage::handleDeleteAccountsClicked() {
 
 void P7SettingsPage::deleteAccounts(const QVector<int>& userIds) {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/accounts/delete")));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     QJsonArray idsArray;
@@ -1041,6 +1071,9 @@ void P7SettingsPage::deleteAccounts(const QVector<int>& userIds) {
 
 void P7SettingsPage::fetchRecipients() {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/accounts/recipients")));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         handleRecipientsReply(reply);
@@ -1081,6 +1114,9 @@ void P7SettingsPage::assignRecipients(int userId, const QVector<int>& recipientI
     : QStringLiteral("/accounts/%1/recipients").arg(userId);
     QNetworkRequest request(QUrl(serverUrl_ + path));
     //하드코딩 QNetworkRequest request(QUrl(QStringLiteral("%1/accounts/%2/recipients").arg(serverUrl_).arg(userId)));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     QJsonArray idsArray;
@@ -1186,6 +1222,9 @@ void P7SettingsPage::refreshThresholdRobotCombo() {
 
 void P7SettingsPage::fetchRobotThresholds(int robotDbId) {
     QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2/thresholds").arg(serverUrl_).arg(robotDbId)));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -1222,6 +1261,9 @@ void P7SettingsPage::saveThresholdsForCurrentRobot() {
     const QJsonObject body = collectThresholdBody(batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
                                                    reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_);
     QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2/thresholds").arg(serverUrl_).arg(robotDbId)));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
@@ -1237,6 +1279,9 @@ void P7SettingsPage::applyThresholdsToAllRobots() {
     const QJsonObject body = collectThresholdBody(batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
                                                    reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_);
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/robots/thresholds/apply-all")));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, this, [this, reply] {

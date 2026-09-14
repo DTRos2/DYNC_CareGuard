@@ -1291,6 +1291,9 @@ void P4VideoPage::handleWsMessage(const QJsonObject& message) {
 
 void P4VideoPage::fetchVideoClips(std::function<void()> onLoaded) {
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/video-events")));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->get(request);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, onLoaded] {
@@ -1518,6 +1521,9 @@ void P4VideoPage::recordVideoView(int clipIndex, const QString& reason) {
     QNetworkRequest request(
         QUrl(QStringLiteral("%1/video-events/%2/view").arg(serverUrl_).arg(cameraRecordingId)));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
 
     const QJsonObject body{{"login_id", currentUserName_}, {"reason", reason}};
     QNetworkReply* reply = netManager_->post(request, QJsonDocument(body).toJson());

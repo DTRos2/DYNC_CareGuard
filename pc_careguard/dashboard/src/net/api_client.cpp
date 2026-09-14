@@ -23,6 +23,9 @@ ApiClient::ApiClient(QObject* parent) : QObject(parent) {
 
 void ApiClient::getJsonArray(const QString& path, std::function<void(bool, const QByteArray&)> callback) {
     QNetworkRequest request(QUrl(serverUrl_ + path));
+    if (!authToken_.isEmpty()){
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->get(request);
     connect(reply, &QNetworkReply::finished, this, [reply, callback] {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -63,6 +66,9 @@ void ApiClient::postJson(const QString& path, const QJsonObject& body,
                           std::function<void(bool, const QByteArray&, const QString&)> callback) {
     QNetworkRequest request(QUrl(serverUrl_ + path));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    if (!authToken_.isEmpty()) {
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->post(request, QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, this, [reply, callback] {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -77,6 +83,9 @@ void ApiClient::putJson(const QString& path, const QJsonObject& body,
                          std::function<void(bool, const QByteArray&, const QString&)> callback) {
     QNetworkRequest request(QUrl(serverUrl_ + path));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    if (!authToken_.isEmpty()){
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->sendCustomRequest(request, "PUT", QJsonDocument(body).toJson());
     connect(reply, &QNetworkReply::finished, this, [reply, callback] {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -89,6 +98,9 @@ void ApiClient::putJson(const QString& path, const QJsonObject& body,
 
 void ApiClient::sendDelete(const QString& path, SimpleCallback callback) {
     QNetworkRequest request(QUrl(serverUrl_ + path));
+    if (!authToken_.isEmpty()){
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->deleteResource(request);
     connect(reply, &QNetworkReply::finished, this, [reply, callback] {
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -414,6 +426,9 @@ void ApiClient::uploadMapFile(const QString& robotCode, const QString& pgmFilePa
     multiPart->append(filePart);
 
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/media/upload-map")));
+    if (!authToken_.isEmpty()){
+        request.setRawHeader("Authorization", ("Bearer " + authToken_).toUtf8());
+    }
     QNetworkReply* reply = netManager_->post(request, multiPart);
     multiPart->setParent(reply);
     connect(reply, &QNetworkReply::finished, this, [reply, callback] {

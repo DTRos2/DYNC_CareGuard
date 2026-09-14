@@ -22,6 +22,10 @@ class P8LogsPage : public QWidget {
 public:
     explicit P8LogsPage(QWidget* parent = nullptr);
 
+    // 로그인 성공 시 받은 세션 토큰. /audit-log, /system-events, /patrol-runs/log 요청에
+    // Authorization 헤더로 실어 보낸다.
+    void setAuthToken(const QString& token) { authToken_ = token; }
+
 protected:
     // 기간 세그먼트가 "직접"이 아닐 때 읽기 전용 날짜 칸을 클릭하면 "직접"로 전환한다.
     // (P2EventPage::eventFilter, 분리 전 P7SettingsPage::eventFilter와 동일한 패턴)
@@ -108,6 +112,7 @@ private:
 
     QNetworkAccessManager* netManager_ = nullptr;
     QString serverUrl_;
+    QString authToken_;
 
     std::vector<AuditRow> auditLog_;
     std::vector<SystemEventLogRow> systemEventLog_;

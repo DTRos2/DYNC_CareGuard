@@ -5,6 +5,7 @@
 #include <QVector>
 #include <QWidget>
 
+#include "net/api_client.h"
 #include "theme/tokens.h"
 
 class QLabel;
@@ -15,7 +16,6 @@ class QFrame;
 class QResizeEvent;
 class QTimer;
 class LiveSearchLineEdit;
-class ApiClient;
 class WsClient;
 class QJsonObject;
 class QLineEdit;
@@ -135,6 +135,7 @@ void installLivePhoneFormatting(QLineEdit* phoneEdit);
 class P3RecipientPage : public QWidget {
     Q_OBJECT
 public:
+    void setAuthToken(const QString& token) { apiClient_->setAuthToken(token); }
     explicit P3RecipientPage(QWidget* parent = nullptr);
 
 signals:

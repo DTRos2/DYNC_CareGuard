@@ -45,19 +45,20 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     pageStack_ = new QStackedWidget(central);
     pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
-    auto* eventPage = new P2EventPage(pageStack_);
-    pageStack_->addWidget(eventPage);                        // idx 1
-    auto* recipientPage = new P3RecipientPage(pageStack_);
-    pageStack_->addWidget(recipientPage);                    // idx 2
+    eventPage_ = new P2EventPage(pageStack_);
+    pageStack_->addWidget(eventPage_);                        // idx 1
+    recipientPage_ = new P3RecipientPage(pageStack_);
+    pageStack_->addWidget(recipientPage_);                    // idx 2
     videoPage_ = new P4VideoPage(pageStack_);
     pageStack_->addWidget(videoPage_);                       // idx 3
-    auto* mapPage = new P5MapPage(pageStack_);
-    pageStack_->addWidget(mapPage);                          // idx 4
-    auto* patrolPage = new P6PatrolPage(pageStack_);
-    pageStack_->addWidget(patrolPage);                       // idx 5
+    mapPage_ = new P5MapPage(pageStack_);
+    pageStack_->addWidget(mapPage_);                          // idx 4
+    patrolPage_ = new P6PatrolPage(pageStack_);
+    pageStack_->addWidget(patrolPage_);                       // idx 5
     settingsPage_ = new P7SettingsPage(pageStack_);
     pageStack_->addWidget(settingsPage_);                    // idx 6
-    pageStack_->addWidget(new P8LogsPage(pageStack_));       // idx 7
+    logsPage_ = new P8LogsPage(pageStack_);
+    pageStack_->addWidget(logsPage_);                        // idx 7
     body->addWidget(pageStack_, /*stretch=*/1);
 
     // P5에서 파일로 맵을 등록하면 P6의 맵 선택지에도 반영한다. mapRegistered 시그널엔
@@ -67,36 +68,36 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // 이렇게 해야 P6이 지금 이 맵을 보고 있을 때 로봇에 새 map_id로 nav_prepare가
     // 나가서 Nav2(그 안의 rviz2)도 새 지도로 다시 뜬다 — 예전엔 이미지만 바뀌고
     // 로봇은 계속 이전 맵으로 알고 있었다.
-    connect(mapPage, &P5MapPage::mapRegistered, patrolPage,
-            [patrolPage](const QImage&, const QString&, const QString& robotId, const QString&) {
-                patrolPage->refreshMapForRobot(robotId);
+    connect(mapPage_, &P5MapPage::mapRegistered, patrolPage_,
+            [this](const QImage&, const QString&, const QString& robotId, const QString&) {
+                patrolPage_->refreshMapForRobot(robotId);
             });
 
     // P2의 미처리 이벤트 집계를 TopBar 뱃지에 반영한다.
-    connect(eventPage, &P2EventPage::unresolvedCountsChanged, this,
+    connect(eventPage_, &P2EventPage::unresolvedCountsChanged, this,
             [this](int emergencyCount, int attentionCount) {
                 setEmergencyCount(emergencyCount);
                 setAttentionCount(attentionCount);
             });
 
     // P3 긴급 카드의 "이벤트 확인" → P2로 전환하고 그 대상자의 이벤트만 보이게 필터링.
-    connect(recipientPage, &P3RecipientPage::eventCheckRequested, this,
-            [this, eventPage](const QString& recipientName) {
+    connect(recipientPage_, &P3RecipientPage::eventCheckRequested, this,
+            [this](const QString& recipientName) {
                 switchToPage(1);
-                eventPage->filterToRecipient(recipientName);
+                eventPage_->filterToRecipient(recipientName);
             });
 
     // P4 재생 모달의 "이벤트 상세로 이동" → P2로 전환하고 그 이벤트의 상세 모달을 바로 연다.
     connect(videoPage_, &P4VideoPage::eventDetailRequested, this,
-            [this, eventPage](const QString& eventUid) {
+            [this](const QString& eventUid) {
                 switchToPage(1);
-                eventPage->openEventByUid(eventUid);
+                eventPage_->openEventByUid(eventUid);
             });
 
     // 반대 방향 — P2 이벤트 상세 모달의 "사유 입력 후 열람" → 페이지 전환 없이 그 자리에
     // P4의 재생 모달을 그대로 띄운다(연결된 클립을 찾아서). eventDetailRequested와 달리
     // 여기선 switchToPage를 안 부른다 — 이미 P2를 보고 있는 채로 재생 모달이 그 위에 뜬다.
-    connect(eventPage, &P2EventPage::videoViewRequested, this,
+    connect(eventPage_, &P2EventPage::videoViewRequested, this,
             [this](const QString& eventUid) { videoPage_->openVideoPlayerByEventUid(eventUid); });
 
     rootLayout->addLayout(body, /*stretch=*/1);
@@ -242,6 +243,20 @@ void MainWindow::setUserName(const QString& name) {
     // name은 로그인 폼에 입력한 login_id 그대로다(LoginWindow::loginSucceeded 참고).
     // 계정 관리 탭의 삭제 권한(관리자만) 판단에 실제 로그인 ID가 필요해 여기서 전달한다.
     settingsPage_->setCurrentUserLoginId(name);
+}
+
+void MainWindow::setUserRole(const QString& role) {
+    // 지금은 저장만 해두고, 쓰는 곳(사이드바 role 분기)은 다음 단계에서 추가
+}
+
+void MainWindow::setAuthToken(const QString& token) {
+    eventPage_->setAuthToken(token);
+    recipientPage_->setAuthToken(token);
+    videoPage_->setAuthToken(token);
+    mapPage_->setAuthToken(token);
+    patrolPage_->setAuthToken(token);
+    settingsPage_->setAuthToken(token);
+    logsPage_->setAuthToken(token);
 }
 
 void MainWindow::setEmergencyCount(int count) {

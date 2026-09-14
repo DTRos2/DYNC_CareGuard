@@ -8,6 +8,7 @@
 
 class QNetworkAccessManager;
 class QNetworkReply;
+class QNetworkRequest;
 
 // 서버 API 클라이언트. loginwindow.cpp의 QNetworkAccessManager 사용 패턴을 따른다 —
 // 서버 주소는 환경변수 CAREGUARD_SERVER_URL, 없으면 http://127.0.0.1:8000.

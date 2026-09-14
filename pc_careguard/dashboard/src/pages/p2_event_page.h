@@ -3,6 +3,8 @@
 
 #include <QWidget>
 
+#include "net/api_client.h"
+
 class QLabel;
 class QPushButton;
 class QButtonGroup;
@@ -15,7 +17,6 @@ class EventTableModel;
 class EventFilterProxyModel;
 class EventRowDelegate;
 class LiveSearchLineEdit;
-class ApiClient;
 
 // P2 이벤트 관제. gui/wireframe/v1/p2_event_queue_wireframe_v2.html,
 // CareGuard_DESIGN_SYSTEM.md §4-3(테이블 규약)·§6(P2 행) 기준.
