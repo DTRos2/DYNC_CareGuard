@@ -25,6 +25,7 @@ import yaml
 from geometry_msgs.msg import Twist
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from std_msgs.msg import String
 
 from careguard_msgs.action import Patrol
 from careguard_msgs.msg import Waypoint as WaypointMsg
@@ -67,6 +68,13 @@ VOICE_ANNOUNCER_READY_TIMEOUT_SEC = 10.0
 # 확인하는 용도로만 쓴다(이 노드가 직접 publish하지는 않음, patrol_task.py가 한다).
 VOICE_TOPIC = '/careguard/voice/announce'
 
+# careguard_perception/config.py의 TRIGGER_TOPIC과 같은 문자열 — PATROL_RECORDING_TOPIC과
+# 같은 이유·같은 방식으로 중복 정의한다. PATROL_RECORDING_TOPIC과 달리 이건 이
+# 노드가 직접 publish한다 — SOS 호출 버튼처럼 care_event_id/severity가 실려 온
+# patrol_start(_start_patrol 참고)를 받으면, video_recorder.py가 이벤트 클립
+# 녹화를 켜도록 이 토픽으로 신호를 보낸다.
+RECORD_TRIGGER_TOPIC = '/careguard/perception/record_trigger'
+
 
 class DownlinkNode(Node):
     def __init__(self):
@@ -106,6 +114,9 @@ class DownlinkNode(Node):
         # P5 방향키 패널 -> 실제 구동. limo_base(/limo/limo_base)가 이미 /cmd_vel을
         # 구독하고 있다(실 로봇에서 topic info로 확인됨) — 네임스페이스 없이 그대로 쓴다.
         self._cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        # SOS 호출 버튼 등 care_event_id가 실린 patrol_start를 받았을 때
+        # video_recorder.py에 이벤트 클립 녹화를 켜라고 알리는 용도(_start_patrol 참고).
+        self._record_trigger_pub = self.create_publisher(String, RECORD_TRIGGER_TOPIC, 10)
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
@@ -276,6 +287,21 @@ class DownlinkNode(Node):
         self._ensure_video_recorder_running()
         # 같은 이유로 audio_player도 patrol_task보다 먼저 떠 있어야 한다.
         self._ensure_voice_announcer_running()
+
+        # SOS 호출 버튼 자동 출동(patrol.py::dispatch_drive_to_point)만 severity를
+        # 실어 보낸다 — P6 "이동"/일반 순찰은 이 필드가 없으므로 녹화가 안 켜진다.
+        # video_recorder.py가 이미(위에서) 뜬 상태라 구독도 이미 잡혀 있다(__init__에서
+        # 노드 기동 즉시 먼저 띄워두는 이유 참고) — 여기서 또 late-joiner를 걱정할
+        # 필요는 없다.
+        severity = message.get('severity')
+        if severity:
+            trigger_msg = String()
+            trigger_msg.data = json.dumps({
+                'care_event_id': message.get('care_event_id'),
+                'severity': severity,
+                'reason': message.get('reason'),
+            })
+            self._record_trigger_pub.publish(trigger_msg)
 
         # patrol_task도 Nav2처럼 map_id 기준으로 (재)기동을 보장한다 — 아래 이유 참고.
         if map_id > 0:
