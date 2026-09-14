@@ -6,6 +6,7 @@
 
 class QLineEdit;
 class QComboBox;
+class QLabel;
 
 // P3 대상자 상세 모달. gui/wireframe/v1/p3_modal_tab1_basic_info_v2_photo.html(기본 정보),
 // p3_modal_tab3_medication.html(복약) 대응.
@@ -32,6 +33,16 @@ signals:
     // "대상자 비활성화" 확인 후. 호출부(P3RecipientPage)가 POST /recipients/{id}/deactivate로
     // 실제 처리하고, 성공하면 카드를 목록에서 뺀다.
     void deactivateRequested(int recipientId);
+
+public:
+    // 이 모달이 열려 있는 동안 다른 곳(다른 PC의 P3, 또는 이 창의 P1)에서 같은 대상자
+    // 정보를 저장해 WS recipient_changed가 왔을 때, 호출부(P3RecipientPage)가 GET
+    // /recipients/{id}로 새로 받아온 값을 여기로 넘긴다. 보호자·복약 스케줄 행을 지금
+    // 막 추가/수정 중이면(💾 저장 전, autoEditGuardianIndex_/autoEditScheduleIndex_) 그
+    // 입력을 덮어써 잃어버리게 되므로 이번 갱신은 건너뛴다 — 모달을 닫았다 다시 열면
+    // 최신값이 보인다. 최근 28일 복약 이력 히트맵(buildHistoryHeatmap())은 생성 시 한
+    // 번만 그려지는 위젯이라 여기서는 갱신하지 않는다(닫았다 다시 열어야 최신 이력이 보임).
+    void applyRemoteUpdate(const RecipientDetail& fresh);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -63,6 +74,10 @@ private:
     int autoEditGuardianIndex_ = -1;  // addGuardian() 직후 이 행을 자동으로 수정 모드로 연다
     QWidget* scheduleTableBox_ = nullptr;
     int autoEditScheduleIndex_ = -1;  // addSchedule() 직후 이 행을 자동으로 수정 모드로 연다
+
+    // 헤더의 이름·"코드 · 로봇 · 주소" 표시 — applyRemoteUpdate()가 폼 입력칸과 같이 갱신한다.
+    QLabel* headerNameLabel_ = nullptr;
+    QLabel* headerIdInfoLabel_ = nullptr;
 
     QLineEdit* nameEdit_ = nullptr;
     QLineEdit* birthYearEdit_ = nullptr;
