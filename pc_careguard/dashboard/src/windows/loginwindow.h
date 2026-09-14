@@ -13,7 +13,7 @@ class QNetworkReply;
 
 // 로그인 화면. gui/wireframe/v1/p0_login_final_wireframe.html 기준.
 // POST {서버주소}/auth/login (shared/api_contract/auth.yaml 참고)로 인증한다.
-// 서버 주소는 환경변수 CAREGUARD_SERVER_URL, 없으면 http://127.0.0.1:8000.
+// 서버 주소 결정 방식은 net/server_config.h::resolveServerUrl() 참고.
 // 실패 잠금(5회)은 서버가 아닌 클라이언트 로컬 상태로만 관리한다.
 class LoginWindow : public QWidget {
     Q_OBJECT

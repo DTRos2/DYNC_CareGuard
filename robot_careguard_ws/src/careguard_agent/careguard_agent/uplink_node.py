@@ -27,6 +27,12 @@ amcl이 안 떠 있어 그 토픽에 퍼블리셔가 전혀 없다 — 매핑 �
 같은 방식으로 relay한다 — 이미 JPEG로 압축되어 있어 재인코딩 없이 그대로
 base64만 씌워 보낸다(대시보드 P5/P6 우측 상단 카메라 라이브 박스용).
 
+/limo_status(limo_base, limo_msgs/msg/LimoStatus)도 relay한다 — 터틀봇(R-05/R-06,
+careguard_turtlebot_agent/uplink_node.py)은 sensor_msgs/BatteryState를 그대로 쓰지만,
+LIMO(wego 패키지 limo_base)는 표준 BatteryState가 아니라 자체 메시지로 battery_voltage
+(실수, 볼트)만 준다 — 퍼센트가 아니다. 그래서 여기서 직접 전압 -> % 환산이 필요하다.
+_LIMO_BATTERY_VOLTAGE_MIN/MAX 상수 참고.
+
 /plan(nav2_planner, nav_msgs/Path)도 relay한다 — 순찰(Nav2) 중 로봇이 실제로
 따라가려는 전역 경로를 대시보드 P6에 rviz2처럼 선으로 그려주기 위함
 (2026-09-08 요청으로 추가, 실 로봇 미검증).
@@ -45,6 +51,7 @@ import numpy as np
 import rclpy
 import tf2_ros
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from limo_msgs.msg import LimoStatus
 from nav_msgs.msg import OccupancyGrid, Path
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -70,6 +77,16 @@ MAX_SCAN_POINTS = 450
 # 원본 카메라 프레임레이트 그대로 보낼 필요는 없다. 이 정도면 "실시간"으로 보이면서도
 # WS 대역폭 부담이 적다.
 CAMERA_SEND_INTERVAL_SEC = 0.2
+
+# LIMO(3S 리튬이온 팩) 완충/컷오프 전압. MAX(12.6V=4.2V/cell)는 3S 리튬이온의
+# 화학적 완충 전압이라 실측 없이도 신뢰할 수 있어 그대로 둔다. MIN은 원래
+# 일반 스펙(3.5V/cell=10.5V) 추정치였는데, 2026-09-13 실 로봇에서 물리 배터리
+# 게이지(4칸, 칸당 25%)와 실측 전압을 대조해 다시 잡았다: 게이지 3번째 칸이
+# 깜빡이는 시점(칸당 25% 기준 50% 경계로 봄)의 실측 전압이 11.3V였다 —
+# 이 한 지점만으로 MAX=12.6V 고정 하에 역산한 값(10.0V)이라 다른 지점(예: 완충
+# 시점 실측치)으로 다시 확인해보면 더 정확해질 수 있다.
+LIMO_BATTERY_VOLTAGE_MAX = 12.6
+LIMO_BATTERY_VOLTAGE_MIN = 10.0
 
 
 def _yaw_from_quaternion(q) -> float:
@@ -116,6 +133,7 @@ class UplinkNode(Node):
         # 퍼블리시하는 경우가 많아(ydlidar /scan과 같은 이유) sensor QoS로 구독한다.
         self.create_subscription(CompressedImage, '/camera/color/image_raw/compressed',
                                   self._on_camera_frame, qos_profile_sensor_data)
+        self.create_subscription(LimoStatus, '/limo_status', self._on_limo_status, 10)
 
         # SLAM(Cartographer) 중에는 /amcl_pose가 없다 — map->base_link TF로 직접 위치를
         # 구해 대시보드의 실시간 rviz2 스타일 뷰(화살표+라이다 스캔)에 넘긴다.
@@ -192,6 +210,16 @@ class UplinkNode(Node):
             'type': 'camera_frame',
             'jpeg_base64': base64.b64encode(bytes(msg.data)).decode('ascii'),
         })
+
+    def _on_limo_status(self, msg: LimoStatus):
+        # battery_voltage(V) -> percentage 환산 — 위 LIMO_BATTERY_VOLTAGE_MIN/MAX 참고.
+        # 서버(robot_ws.py::_handle_battery_state)와 대시보드는 터틀봇/LIMO 구분 없이
+        # {"type": "battery_state", "percentage": 0~100}만 기대하므로, 환산은 여기서
+        # 끝내고 나머지 파이프라인(스무딩·임계값 판단·브로드캐스트)은 그대로 재사용한다.
+        span = LIMO_BATTERY_VOLTAGE_MAX - LIMO_BATTERY_VOLTAGE_MIN
+        ratio = (msg.battery_voltage - LIMO_BATTERY_VOLTAGE_MIN) / span
+        percentage = max(0.0, min(100.0, ratio * 100.0))
+        self._send({'type': 'battery_state', 'percentage': percentage})
 
     def _on_slam_overlay_tick(self):
         """map->base_link TF가 있을 때만(=SLAM 진행 중) 위치·스캔을 내보낸다.

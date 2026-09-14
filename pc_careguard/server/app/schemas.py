@@ -406,6 +406,16 @@ class RegisterRobotResponse(RobotItem):
     pass
 
 
+class RobotUpdate(BaseModel):
+    # 로봇 수정 다이얼로그의 "저장" — code(연결 식별자)는 여기 없다. RobotDialog가 Edit
+    # 모드에서 코드 입력칸을 읽기 전용으로 잠가두는 것과 같은 이유(바꾸려면 등록 해제 후
+    # 재등록해야 WebSocket 접속의 robot_code와 어긋나지 않는다).
+    name: Optional[str] = None
+    model: Optional[str] = None
+    ros_domain_id: Optional[int] = Field(default=None, ge=0, le=232)
+    ip: Optional[str] = Field(default=None, max_length=45)
+
+
 class AssignRobotRecipientRequest(BaseModel):
     recipient_id: Optional[int] = None  # None이면 배정 해제
 

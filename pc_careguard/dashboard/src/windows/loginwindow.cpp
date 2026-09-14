@@ -16,7 +16,6 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
-#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QStyle>
 #include <QSvgWidget>
@@ -24,6 +23,7 @@
 #include <QVBoxLayout>
 #include <QVariant>
 
+#include "net/server_config.h"
 #include "theme/tokens.h"
 #include "widgets/icon_line_edit.h"
 #include "widgets/simple_icons.h"
@@ -74,8 +74,7 @@ private:
 }  // namespace
 
 LoginWindow::LoginWindow(QWidget* parent) : QWidget(parent) {
-    serverUrl_ = QProcessEnvironment::systemEnvironment().value(
-        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    serverUrl_ = ServerConfig::resolveServerUrl();
     netManager_ = new QNetworkAccessManager(this);
 
     setWindowTitle(QStringLiteral("CareGuard 로그인"));

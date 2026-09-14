@@ -44,7 +44,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     body->addWidget(buildSidebar());
 
     pageStack_ = new QStackedWidget(central);
-    pageStack_->addWidget(new P1OverviewPage(pageStack_));   // idx 0
+    auto* overviewPage = new P1OverviewPage(pageStack_);
+    pageStack_->addWidget(overviewPage);                     // idx 0
     eventPage_ = new P2EventPage(pageStack_);
     pageStack_->addWidget(eventPage_);                        // idx 1
     recipientPage_ = new P3RecipientPage(pageStack_);
@@ -93,6 +94,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                 switchToPage(1);
                 eventPage_->openEventByUid(eventUid);
             });
+
+    // P1 로봇 상세 모달의 "이벤트로 이동" → 검색어로 필터링해서 상세 모달까지 자동으로
+    // 여는 것 없이, P2로 페이지만 전환한다.
+    connect(overviewPage, &P1OverviewPage::eventNavigationRequested, this,
+            [this](const QString&) { switchToPage(1); });
 
     // 반대 방향 — P2 이벤트 상세 모달의 "사유 입력 후 열람" → 페이지 전환 없이 그 자리에
     // P4의 재생 모달을 그대로 띄운다(연결된 클립을 찾아서). eventDetailRequested와 달리

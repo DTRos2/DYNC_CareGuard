@@ -16,6 +16,7 @@ from ..schemas import (
     RegisterAccountResponse,
     UpdateAccountRequest,
 )
+from ..ws import dashboard_ws
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -237,6 +238,7 @@ def update_account(user_id: int, payload: UpdateAccountRequest):
         )
 
         conn.commit()
+        dashboard_ws.broadcast_threadsafe({"type": "audit_log_created"})
 
         cur.execute(
             """
@@ -273,6 +275,7 @@ def change_password(user_id: int, payload: ChangePasswordRequest):
             (user_id, user_id),
         )
         conn.commit()
+        dashboard_ws.broadcast_threadsafe({"type": "audit_log_created"})
 
 
 @router.post("/delete", status_code=204)
@@ -309,3 +312,5 @@ def delete_accounts(payload: DeleteAccountsRequest):
                 (uid, uid),
             )
         conn.commit()
+        if deleted_ids:
+            dashboard_ws.broadcast_threadsafe({"type": "audit_log_created"})

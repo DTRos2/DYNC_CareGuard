@@ -20,6 +20,10 @@
   <!-- save_map(map_saver_cli 실행)이 nav2_map_server를 서브프로세스로 부른다 —
        나머지 nav2 의존성은 careguard_bringup package.xml에 있다. -->
   <depend>nav2_map_server</depend>
+  <!-- LIMO/wego 강의용 스택이 이미 설치되어 있다는 전제(로봇 쪽 ~/wego_ws에 실제로
+       존재) — careguard_bringup package.xml의 같은 주석 참고. rosdep에 없을 수
+       있어 빌드 실패시 무시해도 됨. /limo_status(battery_voltage) relay용. -->
+  <exec_depend>limo_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

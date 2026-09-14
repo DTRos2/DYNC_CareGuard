@@ -1,6 +1,7 @@
 import asyncio
+import math
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import psycopg2.extras
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -53,6 +54,50 @@ _telemetry_connections: Dict[str, WebSocket] = {}
 # 하나도 안 떴다. 여기 보관해두고 dashboard_ws.py가 신규 접속 시 한 번 뿌려준다.
 _latest_positions: Dict[str, dict] = {}
 
+# robot.code -> 대시보드에 실제로 내려준(화면에 안정적으로 표시되는) 배터리 정수 %.
+# 2026-09-12까지는 battery_state를 저배터리 자동 복귀 판단(_handle_battery_state)에만
+# 쓰고 대시보드로는 아예 안 보냈다 — P1 통합관제 카드에 배터리 %를 실제 값으로
+# 보여주려면 필요해서 추가했다. _latest_positions와 같은 이유로 신규 접속 hydration에도
+# 쓴다. 원본이 아니라 _smooth_battery_percent()를 거친 값이라는 점에 주의 — 아래 참고.
+_latest_battery: Dict[str, int] = {}
+
+# robot.code -> (지수이동평균으로 다듬은 원시값, 그 값을 계산한 시각(monotonic)).
+# _smooth_battery_percent()가 관리하는 내부 상태로, _latest_battery(표시용 정수)와는
+# 별개다.
+_battery_filter_state: Dict[str, Tuple[float, float]] = {}
+
+# aurix_medirun(RosBatteryTelemetryProvider, 이 로봇들의 원래 프로젝트)에서 이미 검증된
+# 값을 그대로 가져왔다.
+_BATTERY_PERCENT_TAU_SEC = 5.0
+_BATTERY_PERCENT_HYSTERESIS = 0.75
+
+
+def _smooth_battery_percent(robot_code: str, raw_percent: float) -> int:
+    """배터리 % 떨림 방지 — 원본 percentage는 모터 부하에 따른 순간 전압 처짐 때문에
+    몇 초 사이에도 82→84→82%처럼 튄다(2026-09-12, 대시보드에서 실제로 확인). 이건
+    배터리의 물리적 특성이라 로봇 쪽 원본 신호 자체를 안 튀게 만들 수는 없다.
+
+    aurix_medirun의 RosBatteryTelemetryProvider와 동일한 2단계 방식을 그대로 옮겼다:
+    1. 경과 시간(dt) 기반 지수이동평균(EMA)으로 순간 튐을 누그러뜨린다. 고정 alpha가
+       아니라 dt로 계산하는 이유는, battery_state가 로봇마다·상황마다 다른 주기로
+       들어와도(예: 0.2초 간격 vs 1초 간격) 필터가 "시간당 같은 정도로" 반응하게
+       하기 위해서다 — 고정 alpha면 메시지가 자주 올수록 필터가 실제보다 더 굼떠진다.
+    2. 화면에 보여줄 정수값은 필터링된 값이 일정 폭(반올림 0.5 + 히스테리시스 0.75
+       = 1.25%p) 이상 벗어날 때만 바꾼다 — 이게 없으면 필터링을 거친 값도 반올림
+       경계(예: 83.4 ↔ 83.6) 근처에서 표시 숫자가 83↔84로 깜빡일 수 있다.
+    """
+    now = time.monotonic()
+    filtered, last_at = _battery_filter_state.get(robot_code, (raw_percent, now))
+    dt = max(0.0, now - last_at)
+    alpha = 1.0 - math.exp(-dt / _BATTERY_PERCENT_TAU_SEC)
+    filtered = filtered + alpha * (raw_percent - filtered)
+    _battery_filter_state[robot_code] = (filtered, now)
+
+    displayed = _latest_battery.get(robot_code)
+    if displayed is None or abs(filtered - displayed) >= (0.5 + _BATTERY_PERCENT_HYSTERESIS):
+        displayed = round(filtered)
+    return displayed
+
 
 def is_connected(robot_code: str) -> bool:
     return robot_code in _connections
@@ -69,6 +114,10 @@ def connected_robot_codes() -> list:
 
 def latest_positions() -> Dict[str, dict]:
     return dict(_latest_positions)
+
+
+def latest_battery() -> Dict[str, int]:
+    return dict(_latest_battery)
 
 
 def nav_running(robot_code: str) -> bool:
@@ -226,6 +275,17 @@ async def _handle_message(robot_code: str, message: dict) -> None:
 
     elif msg_type == "battery_state":
         percentage = message.get("percentage")
+        if percentage is not None:
+            # 예전엔 대시보드(P1OverviewPage) 쪽에서 각자 스무딩했는데, 그러면 배터리를
+            # 보여주는 화면이 하나 늘 때마다 스무딩도 따로 구현해야 해서 여기(단일 소스)로
+            # 옮겼다 — 이후로 모든 대시보드 클라이언트는 이미 다듬어진 값만 받는다.
+            smoothed = _smooth_battery_percent(robot_code, percentage)
+            _latest_battery[robot_code] = smoothed
+            # 저배터리 임계값 확인(DB 조회)과 달리 대시보드 중계는 가벼운 broadcast
+            # 하나뿐이라, 5초 스로틀 없이 메시지가 오는 대로 그대로 보낸다.
+            await dashboard_ws.broadcast(
+                {"type": "battery_state", "robot_code": robot_code, "percentage": smoothed}
+            )
         now = time.monotonic()
         last_checked = _last_battery_check.get(robot_code, 0.0)
         if percentage is not None and now - last_checked >= _battery_check_interval_sec:
@@ -397,6 +457,9 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
             (robot_id, event_type, severity, event_message),
         )
         conn.commit()
+        # 이 함수는 asyncio.to_thread로 스레드풀에서 도니(위 호출부 참고) 그 스레드엔
+        # 실행 중인 이벤트 루프가 없다 — accounts.py와 같은 이유로 broadcast_threadsafe를 쓴다.
+        dashboard_ws.broadcast_threadsafe({"type": "system_event_created"})
 
         if new_state != "return_needed":
             return None

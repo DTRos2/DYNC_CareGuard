@@ -20,6 +20,8 @@ add_executable(careguard_dashboard
     src/net/api_client.cpp
     src/net/ws_client.h
     src/net/ws_client.cpp
+    src/net/server_config.h
+    src/net/server_config.cpp
     src/theme/tokens.h
     src/theme/calendar_style.h
     src/widgets/simple_icons.h
@@ -70,6 +72,8 @@ add_executable(careguard_dashboard
     src/widgets/checkable_list_widget.cpp
     src/dialogs/event_detail_modal.h
     src/dialogs/event_detail_modal.cpp
+    src/dialogs/robot_control_modal.h
+    src/dialogs/robot_control_modal.cpp
     src/dialogs/p5_map_file_register_dialog.h
     src/dialogs/p5_map_file_register_dialog.cpp
     src/dialogs/p5_map_preview_dialog.h
@@ -108,6 +112,10 @@ target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Q
 # 환경변수 CAREGUARD_SERVER_DIR로 재정의 가능 (main.cpp 참고).
 # 파일로 맵 등록할 때 .pgm/.yaml 파일 선택 다이얼로그가 처음 열리는 기본 경로.
 # 환경변수 CAREGUARD_MAPS_DIR로 재정의 가능 (p5_map_file_register_dialog.cpp 참고).
+# 팀원마다 다른 서버(PC)를 가리켜야 할 때 쓰는 .env(CAREGUARD_SERVER_URL=...) 위치.
+# 빌드 디렉터리가 아니라 소스 디렉터리를 가리켜야 rm -rf build를 해도 설정이 안 날아간다.
+# 환경변수 CAREGUARD_DASHBOARD_DIR로 재정의 가능 (net/server_config.cpp 참고).
 target_compile_definitions(careguard_dashboard PRIVATE
     CAREGUARD_SERVER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../server"
-    CAREGUARD_MAPS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../robot_careguard_ws/src/careguard_bringup/maps")
+    CAREGUARD_MAPS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../robot_careguard_ws/src/careguard_bringup/maps"
+    CAREGUARD_DASHBOARD_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

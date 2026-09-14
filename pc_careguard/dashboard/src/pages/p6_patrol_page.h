@@ -1,6 +1,7 @@
 #pragma once
 #include <QImage>
 #include <QMap>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 #include <memory>
@@ -254,6 +255,18 @@ private:
     // 통째로 교체한다. 대시보드를 껐다 켜지 않아도 P3에서 바뀐 복약 스케줄 시각·요일이
     // 반영되게 하는 게 목적 — 로컬 편집 중(scheduleEditIndex_>=0)인 그 폼 자체는 안 건드린다.
     void refreshSchedulesForRoute(int routeId);
+    // 다른 대시보드가 이 맵의 웨이포인트/경로를 저장했을 수 있다(waypoints_changed/
+    // patrol_routes_changed WS) — 자동으로 캔버스를 갈아치우면 편집 중인 상태를 덮어쓸
+    // 위험이 있어(캔버스가 아직 안 뜬 시점의 좌표 변환 문제도 있고), 대신 새로고침
+    // 버튼 옆에 배지만 띄워두고 실제 재조회는 사용자가 그 버튼을 눌렀을 때만 한다.
+    // GET /waypoints + GET /patrol-routes로 지금 맵(currentMapIndex_)만 다시 받아
+    // waypoints_/routes_에 반영한다 — loadServerMapImageDone의 초기 로딩 경로와 같은
+    // 변환을 쓰되, 이미 떠 있는 캔버스라 designMapMetersToCanvas 대신 canvas_->
+    // mapMetersToCanvas()(live)를 쓴다.
+    void reloadCurrentMapWaypointsAndRoutes();
+    // refreshRobotStateBtn_ 옆 "웨이포인트/경로 변경됨" 배지를 staleMapIds_ 기준으로
+    // 보이거나 숨긴다 — 맵 전환(loadMapData)·WS 수신·재조회 완료 시점마다 부른다.
+    void updateRefreshBadge();
 
     // robotOfflineBanner_의 아이콘·문구·색을 (robotOnline_, isPatrolling_) 기준으로
     // 다시 그린다 — 오프라인(빨강) / 주행 중(청록, 온라인이지만 새 명령 불가) /
@@ -288,8 +301,15 @@ private:
     // 오프라인/주행 중 표시가 실제 상태와 어긋난 채로 안 바뀌는 경우(WS 메시지를
     // 놓쳤거나 patrol_done을 영영 못 받은 경우 등) 사용자가 직접 다시 맞출 수 있게 한다.
     QPushButton* refreshRobotStateBtn_;
+    // "웨이포인트/경로 변경됨" — refreshRobotStateBtn_ 옆에만 보이는 상태 배지
+    // (updateRefreshBadge()가 staleMapIds_ 기준으로 show/hide한다).
+    QLabel* refreshStaleBadge_;
     QVector<MapData> maps_;
     int currentMapIndex_;
+    // waypoints_changed/patrol_routes_changed WS로 "저장된 웨이포인트/경로가 이 맵
+    // (map_id)에서 바뀌었다"고 들은 서버 map id들 — 새로고침 버튼을 눌러야만 비워진다
+    // (자동 반영은 안 함, reloadCurrentMapWaypointsAndRoutes 주석 참고).
+    QSet<int> staleMapIds_;
 
     QWidget* wpListCard_;
     // "웨이포인트 N" — rebuildWpList()가 개수만 바꿔 다시 그린다(경로 카드의 정적인

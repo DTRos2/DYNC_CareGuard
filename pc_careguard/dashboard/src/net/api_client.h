@@ -11,7 +11,7 @@ class QNetworkReply;
 class QNetworkRequest;
 
 // 서버 API 클라이언트. loginwindow.cpp의 QNetworkAccessManager 사용 패턴을 따른다 —
-// 서버 주소는 환경변수 CAREGUARD_SERVER_URL, 없으면 http://127.0.0.1:8000.
+// 서버 주소 결정 방식은 net/server_config.h::resolveServerUrl() 참고.
 class ApiClient : public QObject {
     Q_OBJECT
 public:
@@ -93,6 +93,8 @@ public:
     // server/app/schemas.py::PatrolRunItem 대응.
     struct PatrolRunInfo {
         int id = 0;
+        int robotId = 0;  // robot.id — P1OverviewPage가 robot_id 없이 조회할 때(전체
+                           // 로봇 대상 status=running) 어느 로봇의 실행인지 구분하는 용도.
         QString status;  // "running" / "completed" / "aborted" / "failed"
         int waypointsTotal = 0;
         int waypointsDone = 0;

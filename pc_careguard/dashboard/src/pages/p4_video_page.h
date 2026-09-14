@@ -139,8 +139,7 @@ private:
     CareGuardDateEdit* startDateEdit_ = nullptr;
     CareGuardDateEdit* endDateEdit_ = nullptr;
 
-    // GET /video-events 호출용. 서버 주소는 loginwindow.cpp와 동일하게 환경변수
-    // CAREGUARD_SERVER_URL, 없으면 http://127.0.0.1:8000.
+    // GET /video-events 호출용. 서버 주소 결정 방식은 net/server_config.h::resolveServerUrl() 참고.
     QNetworkAccessManager* netManager_ = nullptr;
     QString serverUrl_;
     QString authToken_;

@@ -48,6 +48,9 @@ INVALID_CREDENTIALS = "아이디 또는 비밀번호가 올바르지 않습니�
 async def start_background_tasks():
     # patrol_schedule을 주기적으로 확인해 시각이 되면 자동으로 순찰을 시작한다.
     asyncio.create_task(run_scheduler_loop())
+    # accounts.py 같은 동기 경로 함수가 dashboard_ws.broadcast_threadsafe()로 통합 로그
+    # 갱신을 알릴 때 필요 — 그 코드는 스레드풀에서 실행돼 자기 이벤트 루프가 없다.
+    dashboard_ws.set_event_loop(asyncio.get_running_loop())
 
 
 @app.get("/health")

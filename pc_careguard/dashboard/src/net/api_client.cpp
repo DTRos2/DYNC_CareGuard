@@ -10,14 +10,14 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QUrl>
 #include <QUrlQuery>
 
+#include "net/server_config.h"
+
 ApiClient::ApiClient(QObject* parent) : QObject(parent) {
-    serverUrl_ = QProcessEnvironment::systemEnvironment().value(
-        QStringLiteral("CAREGUARD_SERVER_URL"), QStringLiteral("http://127.0.0.1:8000"));
+    serverUrl_ = ServerConfig::resolveServerUrl();
     netManager_ = new QNetworkAccessManager(this);
 }
 
@@ -473,6 +473,7 @@ void ApiClient::createMap(const MapCreateParams& params, ItemCallback<MapInfo> c
 ApiClient::PatrolRunInfo ApiClient::parsePatrolRun(const QJsonObject& o) {
     PatrolRunInfo run;
     run.id = o.value(QStringLiteral("id")).toInt();
+    run.robotId = o.value(QStringLiteral("robot_id")).toInt();
     run.status = o.value(QStringLiteral("status")).toString();
     run.trigger = o.value(QStringLiteral("trigger")).toString();
     run.waypointsTotal = o.value(QStringLiteral("waypoints_total")).toInt();
