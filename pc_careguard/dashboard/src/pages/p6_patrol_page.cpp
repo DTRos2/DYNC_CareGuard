@@ -2119,6 +2119,10 @@ void P6PatrolPage::loadMapData(int index) {
     navRunning_ = false;
     updateRobotStatusBanner();
     updateDrivingButtonsEnabled();
+    // 카메라도 마찬가지 — 이전 로봇의 마지막 프레임이 남아있으면 새 로봇 화면인데
+    // 정지된 이전 영상 + "연결 끊김" 배지가 뜬다. 이 로봇의 camera_frame이 새로
+    // 도착하기 전까지는 "카메라 연결 중" placeholder로 되돌려 둔다.
+    canvas_->clearCameraFrame();
     // WS 이벤트만 기다리면 페이지를 새로 열었을 때(또는 이 로봇으로 막 전환했을 때)
     // "지금 실제로 어떤 상태인지"를 알 길이 없다 — DB/실시간 연결 기준으로 다시
     // 맞춘다(새로고침 버튼과 같은 함수).

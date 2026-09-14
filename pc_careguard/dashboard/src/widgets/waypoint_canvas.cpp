@@ -135,6 +135,8 @@ void WaypointCanvas::setCurrentRobotPositionToChargingStation(QPointF canvasPos)
 
 void WaypointCanvas::setCameraFrame(const QImage& frame) { cameraView_->setFrame(frame); }
 
+void WaypointCanvas::clearCameraFrame() { cameraView_->clearFrame(); }
+
 void WaypointCanvas::setBackgroundImage(const QImage& image) {
     backgroundImage_ = image;
     update();

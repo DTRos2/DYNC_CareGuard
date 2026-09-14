@@ -137,6 +137,9 @@ public:
     void setCurrentRobotPositionToChargingStation(QPointF canvasPos);
     // 우상단 카메라 라이브 화면에 실제 프레임을 흘려보낸다(camera_frame WS 메시지).
     void setCameraFrame(const QImage& frame);
+    // 로봇/맵 전환 시 호출 — 이전 로봇의 마지막 프레임이 남아있지 않도록 카메라
+    // 화면을 "카메라 연결 중" placeholder로 되돌린다.
+    void clearCameraFrame();
 
     // P5에서 파일로 등록한 실제 pgm 맵 이미지를 배경으로 표시한다 (없으면 목업 평면도).
     void setBackgroundImage(const QImage& image);
