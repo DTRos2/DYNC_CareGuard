@@ -287,6 +287,7 @@ QWidget* RobotControlModal::buildStatCard(const QString& label, const QString& v
 
     auto* labelWidget = new QLabel(label, card);
     labelWidget->setProperty("role", "caption");
+    labelWidget->setAlignment(Qt::AlignHCenter);
     layout->addWidget(labelWidget);
 
     auto* valueWidget = new QLabel(value, card);
@@ -296,6 +297,7 @@ QWidget* RobotControlModal::buildStatCard(const QString& label, const QString& v
     valueFont.setWeight(QFont::DemiBold);
     valueWidget->setFont(valueFont);
     valueWidget->setStyleSheet(QStringLiteral("color:%1;").arg(valueColor.name()));
+    valueWidget->setAlignment(Qt::AlignHCenter);
     layout->addWidget(valueWidget);
 
     return card;
@@ -402,9 +404,6 @@ QWidget* RobotControlModal::buildRightColumn() {
                                           data_.batteryPct >= 0 ? QStringLiteral("%1%").arg(data_.batteryPct)
                                                                 : QStringLiteral("-"),
                                           batteryColor));
-    statsLayout->addWidget(buildStatCard(QStringLiteral("통신 지연"),
-                                          data_.latencySec >= 0 ? QStringLiteral("%1s").arg(data_.latencySec, 0, 'f', 1)
-                                                                : QStringLiteral("-")));
     layout->addWidget(statsRow);
 
     layout->addWidget(buildStatusDotsRow());

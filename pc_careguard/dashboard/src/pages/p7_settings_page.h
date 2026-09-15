@@ -133,7 +133,6 @@ private:
     QLineEdit* batteryAttentionEdit_ = nullptr;
     QLineEdit* batteryReturnEdit_ = nullptr;
     QLineEdit* voiceWaitEdit_ = nullptr;
-    QLineEdit* reconnectRetryEdit_ = nullptr;
     QLineEdit* medMissedWaitEdit_ = nullptr;
     QLineEdit* medReannounceEdit_ = nullptr;
     QPushButton* saveThresholdsBtn_ = nullptr;

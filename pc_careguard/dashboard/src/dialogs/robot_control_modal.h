@@ -14,7 +14,7 @@ class QJsonObject;
 class MiniMapView;
 class WsClient;
 
-// P1 통합관제 로봇 카드 "상세" 버튼이 여는 모달 — 배터리·통신 지연·상태·진행 중
+// P1 통합관제 로봇 카드 "상세" 버튼이 여는 모달 — 배터리·상태·진행 중
 // 이벤트·최근 미션을 한 화면에서 보고, 그 자리에서 순찰 취소/비상정지/이벤트 이동을
 // 할 수 있게 한다. 2026-09-12 디자인 확정본에는 스피커 통화·웨어러블 상태·충전 복귀가
 // 없다 — 웨어러블은 이 카드가 다룰 정보가 아니라는 판단, 충전 복귀는 "순찰 취소" 안에
@@ -35,7 +35,6 @@ public:
         QString mapLabel;       // 예: "행복빌라 302 맵"
         QString positionLabel;  // 예: "현재 위치  WP_01 거실 · 헤딩 42°". 비어있으면 숨긴다.
         int batteryPct = -1;    // -1 = 알 수 없음
-        double latencySec = -1.0;
         bool cameraOk = false;
         bool micOk = false;
         bool nav2Ok = false;
