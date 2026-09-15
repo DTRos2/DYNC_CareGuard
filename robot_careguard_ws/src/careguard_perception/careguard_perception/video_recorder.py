@@ -63,6 +63,17 @@ _ANNOUNCE_TEXT = {
     'attention': '주의 이벤트 발생! 영상 녹화를 시작합니다',
 }
 
+# _announce_severity가 발행 전에 audio_player 구독을 기다리는 최대 시간(초).
+# downlink_node.py가 이 노드(video_recorder)를 막 띄운 직후 곧바로 record_trigger를
+# 보내는 경우(_ensure_video_recorder_running 참고), 이 노드의 VOICE_TOPIC 발행자가
+# audio_player의 구독자한테 아직 발견(discovery)되지 않은 채로 publish가 나가면
+# 조용히 유실된다 — patrol_recording 쪽에서 이미 겪은 것과 같은 late-joiner 문제가
+# 반대 방향(이번엔 이 노드가 늦게 join한 발행자)으로 일어난 것(2026-09-15 R-07 실기
+# 확인: 녹화는 되는데 음성만 안 나옴). 구독자가 하나도 안 잡히면 이 시간만큼 짧게
+# 기다렸다 발행한다 — audio_player 자체가 안 떠 있는 경우까지 순찰/녹화를 막을
+# 이유는 없으므로 타임아웃 후에는 그냥 발행하고 넘어간다(안내만 못 나갈 뿐).
+VOICE_SUBSCRIBER_WAIT_TIMEOUT_SEC = 2.0
+
 
 class _ActiveRecording:
     """트리거 이후 진행 중인 녹화 하나의 상태. 동시에 하나만 허용한다(최소 구현)."""
@@ -182,6 +193,13 @@ class VideoRecorder(Node):
         text = _ANNOUNCE_TEXT.get(severity)
         if text is None:
             return  # severity 없음(순찰과 무관한 옛 방식 호출) 또는 안내 대상이 아닌 값
+
+        # VOICE_SUBSCRIBER_WAIT_TIMEOUT_SEC 주석 참고 — audio_player가 아직
+        # 발견되지 않았으면 잠깐 대기했다가 발행한다.
+        deadline = time.monotonic() + VOICE_SUBSCRIBER_WAIT_TIMEOUT_SEC
+        while self.count_subscribers(config.VOICE_TOPIC) == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+
         msg = String()
         msg.data = json.dumps({'text': text})
         self._voice_pub.publish(msg)
