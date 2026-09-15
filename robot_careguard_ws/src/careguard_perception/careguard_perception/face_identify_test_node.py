@@ -28,6 +28,19 @@
   씁니다. 완전히 새로운(학습에 안 쓰인) 낯선 사람에 대한 open-set 거부 성능은
   검증되지 않았습니다 — face_embedding_adapter_finetune.py의 "중요한 한계" 참고.
 
+⚠️ 2026-09-15 진단에서 확인된, 구조적으로 남아있는 crop 방식 차이 (코드로 완전히
+  없앨 수 없음 — 참고만 할 것):
+  학습/진단 파이프라인(face_embedding_diagnostic.py 등)은 **사람이 검수한 라벨의
+  ground-truth bbox**로 크롭하는 반면, 이 실시간 노드는 **YOLO 검출 박스**로 크롭한다
+  (실시간에는 ground truth가 없으므로 불가피함). YOLO 얼굴 검출기(face_detect_v4_burstsafe,
+  mAP50=0.951)가 완벽하지 않아서 박스 위치/크기가 라벨과 약간 다를 수 있고, 정렬(landmark
+  alignment) 없이 crop만 하는 파이프라인 특성상 이 미세한 차이가 임베딩에 꽤 크게
+  반영될 수 있다 — 학습 때 unknown_2->person_B in-sample 거리(threshold=0.40 기준
+  전부 0.73 이상, 오수용 0%)와 실시간에서 관측되는 값이 크게 다르다면 이 박스 출처
+  차이가 유력한 원인이다. margin 공식(25%)과 160x160 리사이즈 알고리즘(PIL 기본
+  BICUBIC)은 코드로 정확히 맞춰뒀다(아래 embed_crop() 참고) — 남은 차이는 detection
+  박스 자체의 정확도뿐이다.
+
 파이프라인:
   1. camera_topic(CompressedImage) 구독
   2. YOLO(face_detect_v4_burstsafe/best.pt)로 얼굴 검출
@@ -60,13 +73,25 @@
 `ros2 run careguard_perception face_identify_test_node`만 실행해도 됩니다.
 window_size/enter_threshold/exit_threshold/track_match_max_dist/track_max_missed_frames로
 멀티프레임 안정화 동작을 재빌드 없이 조정할 수 있습니다.)
+
+raw 유사도 점수 캡처 (2026-09-15 추가, 진단③용):
+  기본적으로 매 프레임 매 검출의 raw_label/stable_label/dist_person_A/dist_person_B가
+  `~/careguard_data/face_identify_test_raw_scores.csv`에 누적 기록됩니다
+  (log_raw_scores:=false로 끌 수 있고, raw_score_log_path로 경로 변경 가능).
+  unknown_2가 person_B로 뜨는 순간을 재현한 뒤 이 CSV에서 그 구간의 dist_person_B
+  값을 뽑아 학습 때 in-sample 검증 수치(같은 threshold=0.40 기준, unknown_2->B 최소
+  거리 0.73)와 비교하면 됨 — compute_unknown2_vs_B_centroid.py(dev-machine
+  scratchpad) 참고.
 """
+import csv
 import sys
+import time
 from collections import Counter, deque
 from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image as PILImage
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -89,10 +114,15 @@ DEFAULT_YOLO_WEIGHTS = str(Path.home() / "careguard_data/runs/face_detect_v4_bur
 DEFAULT_ADAPTER_PATH = str(Path.home() / "careguard_data/runs/face_embedding_adapter/adapter.pt")
 DEFAULT_CENTROIDS_PATH = str(Path.home() / "careguard_data/runs/face_embedding_adapter/person_centroids.pt")
 
+DECIDING_LABEL = "판정중"  # 콜드스타트: window가 아직 덜 찬 트랙의 상태(사람도, unknown도 아님)
+LOW_CONF_LABEL = "검출불안정"  # YOLO confidence가 threshold 미만이라 식별 파이프라인에 안 넘긴 프레임
+
 BOX_COLOR_BGR = {
     "person_A": (60, 180, 75),
     "person_B": (66, 133, 244),
     "unknown": (60, 60, 220),
+    DECIDING_LABEL: (0, 215, 255),   # 주황 — 아직 판정 보류 중
+    LOW_CONF_LABEL: (128, 128, 128),  # 회색 — 이번 프레임 검출 자체를 신뢰 안 함
 }
 EMBED_SIZE = 160
 CROP_MARGIN = 0.25
@@ -106,6 +136,17 @@ DEFAULT_EXIT_THRESHOLD = 0.40
 # 매칭이라 값이 크게 정교하지 않아도 됨(테스트/디버깅 도구 스코프).
 DEFAULT_TRACK_MATCH_MAX_DIST = 80.0  # px
 DEFAULT_TRACK_MAX_MISSED_FRAMES = 10  # 이 프레임 수만큼 연속으로 안 잡히면 트랙 제거
+
+# ── 2026-09-15 완화 로직 ①: sliding window 콜드스타트 — window가 이 비율만큼 안
+# 채워지면 A/B/unknown 중 하나로 확정하지 않고 DECIDING_LABEL로만 표시한다.
+# enter_threshold(기본 0.70)와 같은 비율을 기본값으로 써서 기존 다수결 기준과 맞춤
+# (예: window_size=10이면 최소 7개는 쌓여야 판정 시작).
+DEFAULT_MIN_WINDOW_FILL_RATIO = DEFAULT_ENTER_THRESHOLD
+
+# ── 완화 로직 ②: YOLO confidence 하한선 — 이 값 미만인 검출은 임베딩/거리비교
+# 자체를 안 하고 LOW_CONF_LABEL로만 표시(사람이 화면에 막 들어오는 순간의 불완전한
+# 검출이 신원 판정에 아예 안 들어가게 막음).
+DEFAULT_MIN_YOLO_CONFIDENCE = 0.5
 
 
 def crop_with_margin(image_bgr, box, margin=CROP_MARGIN):
@@ -172,7 +213,7 @@ class FaceTrack:
     def __init__(self, center, window_size):
         self.center = center
         self.window = deque(maxlen=window_size)
-        self.stable_label = "unknown"
+        self.stable_label = DECIDING_LABEL  # 완화① — 갓 생긴 트랙은 아직 아무 판정도 안 함
         self.stable_frac = 0.0
         self.missed_frames = 0
 
@@ -192,6 +233,13 @@ class FaceIdentifyTestNode(Node):
         self.declare_parameter("exit_threshold", DEFAULT_EXIT_THRESHOLD)
         self.declare_parameter("track_match_max_dist", DEFAULT_TRACK_MATCH_MAX_DIST)
         self.declare_parameter("track_max_missed_frames", DEFAULT_TRACK_MAX_MISSED_FRAMES)
+        self.declare_parameter("log_raw_scores", True)
+        self.declare_parameter(
+            "raw_score_log_path",
+            str(Path.home() / "careguard_data/face_identify_test_raw_scores.csv"),
+        )
+        self.declare_parameter("min_window_fill_ratio", DEFAULT_MIN_WINDOW_FILL_RATIO)
+        self.declare_parameter("min_yolo_confidence", DEFAULT_MIN_YOLO_CONFIDENCE)
 
         camera_topic = self.get_parameter("camera_topic").value
         yolo_weights = self.get_parameter("yolo_weights").value
@@ -207,11 +255,33 @@ class FaceIdentifyTestNode(Node):
         self.tracks = {}
         self._next_track_id = 0
 
+        self.min_window_fill_ratio = float(self.get_parameter("min_window_fill_ratio").value)
+        self.min_window_fill = max(1, round(self.window_size * self.min_window_fill_ratio))
+        self.min_yolo_confidence = float(self.get_parameter("min_yolo_confidence").value)
+
+        self.log_raw_scores = self.get_parameter("log_raw_scores").value
+        self.raw_score_log_path = Path(self.get_parameter("raw_score_log_path").value).expanduser()
+
         self.get_logger().warn(
             "⚠️  [테스트/디버깅 전용] 이 identity 판단은 unknown_1/2 단 두 명(32장)만으로 "
             "negative 학습된 adapter를 씁니다 — 완전히 새로운 낯선 사람에 대한 open-set 거부 "
             "성능은 검증되지 않았습니다. 프로덕션 순찰 로직에 연결하지 마세요."
         )
+        if self.log_raw_scores:
+            self.raw_score_log_path.parent.mkdir(parents=True, exist_ok=True)
+            is_new_file = not self.raw_score_log_path.exists()
+            self._raw_score_file = open(self.raw_score_log_path, "a", newline="")
+            self._raw_score_writer = csv.writer(self._raw_score_file)
+            if is_new_file:
+                self._raw_score_writer.writerow([
+                    "timestamp", "frame_count", "track_id",
+                    "raw_label", "stable_label", "stable_frac",
+                    "dist_person_A", "dist_person_B", "identity_threshold",
+                ])
+            self.get_logger().info(
+                f"raw 유사도 점수를 매 프레임 CSV로 기록합니다: {self.raw_score_log_path} "
+                "(진단③ — 학습 때 in-sample 검증 수치와 실시간 점수를 나중에 비교하기 위함)"
+            )
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"device={self.device}")
@@ -245,6 +315,15 @@ class FaceIdentifyTestNode(Node):
             f"track_match_max_dist={self.track_match_max_dist}px "
             f"track_max_missed_frames={self.track_max_missed_frames}"
         )
+        self.get_logger().info(
+            f"[완화①] 콜드스타트 게이팅: window가 {self.min_window_fill}/{self.window_size}개 "
+            f"(min_window_fill_ratio={self.min_window_fill_ratio}) 이상 찰 때까지 "
+            f"'{DECIDING_LABEL}'로만 표시 — 다수결 로직 자체는 그대로."
+        )
+        self.get_logger().info(
+            f"[완화②] YOLO confidence 하한선: min_yolo_confidence={self.min_yolo_confidence} "
+            f"미만 검출은 임베딩/거리비교 없이 '{LOW_CONF_LABEL}'로만 표시."
+        )
 
         self.bridge = CvBridge()
         self.frame_count = 0
@@ -269,8 +348,14 @@ class FaceIdentifyTestNode(Node):
             )
 
     def embed_crop(self, face_bgr) -> torch.Tensor:
+        # ── face_embedding_diagnostic.py(학습/진단 파이프라인)와 리사이즈 알고리즘을
+        # 맞추기 위해 cv2.resize(기본 INTER_LINEAR/bilinear) 대신 PIL Image.resize를
+        # 쓴다 — PIL은 인자 생략 시 기본이 BICUBIC(Pillow>=9.1)이라 diagnostic 스크립트의
+        # crop.resize((EMBED_SIZE, EMBED_SIZE))와 동일한 보간 알고리즘이 됨. 2026-09-15
+        # 진단에서 발견: 이전엔 두 파이프라인의 리사이즈 알고리즘이 서로 달랐음(불일치
+        # 원인 중 하나, crop bbox 출처 차이와는 별개).
         face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
-        face_rgb = cv2.resize(face_rgb, (EMBED_SIZE, EMBED_SIZE))
+        face_rgb = np.asarray(PILImage.fromarray(face_rgb).resize((EMBED_SIZE, EMBED_SIZE)))
         t = torch.from_numpy(face_rgb).permute(2, 0, 1).float().unsqueeze(0).to(self.device)
         t = self.standardize(t)
         with torch.no_grad():
@@ -279,20 +364,27 @@ class FaceIdentifyTestNode(Node):
         return emb[0]
 
     def identify(self, emb: torch.Tensor):
-        """centroid까지 코사인 거리가 가장 가까운 사람을 찾고, threshold를 넘으면 unknown."""
-        best_name, best_dist = None, None
-        for name, centroid in self.centroids.items():
-            dist = float(1.0 - torch.dot(emb, centroid))
-            if best_dist is None or dist < best_dist:
-                best_name, best_dist = name, dist
-        if best_dist is None or best_dist > self.threshold:
-            return "unknown", best_dist
-        return best_name, best_dist
+        """centroid까지 코사인 거리가 가장 가까운 사람을 찾고, threshold를 넘으면 unknown.
+
+        Returns: (best_name_or_unknown, best_dist, dists) — dists는
+        {"person_A": dist, "person_B": dist} 전체(로그/진단용, best만으론 부족).
+        """
+        dists = {name: float(1.0 - torch.dot(emb, centroid)) for name, centroid in self.centroids.items()}
+        best_name, best_dist = min(dists.items(), key=lambda kv: kv[1])
+        if best_dist > self.threshold:
+            return "unknown", best_dist, dists
+        return best_name, best_dist, dists
 
     def _update_tracks(self, detections):
         """detections(이번 프레임의 raw 판정들)를 기존 track에 bbox 중심 거리로
         매칭하고, 매칭된 track의 sliding window에 raw_label을 넣어 매 프레임
-        다시 집계한다. detections의 각 dict에 "track"을 채워 넣어 반환한다."""
+        다시 집계한다. detections의 각 dict에 "track"을 채워 넣어 반환한다.
+
+        완화②(YOLO confidence 하한선)로 인해 raw_label이 None인 검출(det["low_conf"]
+        True)은 이번 프레임의 위치 추적(중심좌표 갱신, missed_frames 리셋)에는
+        반영하되, window에는 아무것도 넣지 않고 track.stable_label/stable_frac도
+        건드리지 않는다 — 신뢰 못 할 프레임 하나 때문에 기존에 쌓인 판정이 흔들리거나
+        트랙이 끊기지 않게 하기 위함."""
         unmatched_track_ids = set(self.tracks.keys())
 
         for det in detections:
@@ -312,10 +404,25 @@ class FaceIdentifyTestNode(Node):
 
             track.center = det["center"]
             track.missed_frames = 0
-            track.window.append(det["raw_label"])
-            track.stable_label, track.stable_frac = compute_stable_label(
-                track.window, track.stable_label, self.enter_threshold, self.exit_threshold
-            )
+
+            if det["raw_label"] is not None:
+                track.window.append(det["raw_label"])
+                # ── 완화① 콜드스타트 게이팅: window가 min_window_fill개 미만으로 쌓였으면
+                # 기존 다수결(compute_stable_label)을 아예 호출하지 않고 DECIDING_LABEL로
+                # 고정한다 — 기존 다수결/hysteresis 로직 자체는 변경하지 않음, 그 앞에
+                # 게이트만 하나 추가하는 것.
+                if len(track.window) < self.min_window_fill:
+                    track.stable_label = DECIDING_LABEL
+                    track.stable_frac = len(track.window) / self.window_size
+                else:
+                    # DECIDING_LABEL에서 막 벗어나는 시점엔 compute_stable_label이 모르는
+                    # 상태이므로 "unknown"에서 시작한 것처럼 취급(진입 기준 enter_threshold부터
+                    # 정상 적용됨 — 곧바로 A/B로 확정되려면 그때도 enter_threshold를 넘어야 함).
+                    current_state = track.stable_label if track.stable_label != DECIDING_LABEL else "unknown"
+                    track.stable_label, track.stable_frac = compute_stable_label(
+                        track.window, current_state, self.enter_threshold, self.exit_threshold
+                    )
+
             det["track"] = track
 
         # 이번 프레임에 매칭 안 된 track은 "안 보임"이지 "unknown으로 확인됨"이 아니라서
@@ -346,29 +453,70 @@ class FaceIdentifyTestNode(Node):
         detections = []
         for box in results.boxes:
             x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
+            conf = float(box.conf[0])
+            center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+            # ── 완화② YOLO confidence 하한선: 미달 검출은 크롭/임베딩/거리비교를 아예
+            # 안 하고 건너뛴다 (연산 낭비도 줄고, 신뢹 못 할 검출이 신원 판정에 안 들어감).
+            if conf < self.min_yolo_confidence:
+                detections.append({
+                    "box": (x1, y1, x2, y2), "center": center, "conf": conf,
+                    "raw_label": None, "dist": None, "dists": None, "low_conf": True,
+                })
+                continue
+
             face = crop_with_margin(image, (x1, y1, x2, y2))
             if face.size == 0:
                 continue
 
             emb = self.embed_crop(face)
-            raw_label, dist = self.identify(emb)
-            center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+            raw_label, dist, dists = self.identify(emb)
             detections.append({
-                "box": (x1, y1, x2, y2), "center": center, "raw_label": raw_label, "dist": dist,
+                "box": (x1, y1, x2, y2), "center": center, "conf": conf,
+                "raw_label": raw_label, "dist": dist, "dists": dists, "low_conf": False,
             })
 
         self._update_tracks(detections)
 
+        if self.log_raw_scores:
+            now = time.time()
+            for det in detections:
+                # low_conf 프레임은 임베딩/거리 계산 자체를 안 했으므로(dists=None) 기록할
+                # raw score가 없다 — 건너뜀 (진단③ CSV는 실제 계산된 거리만 남긴다).
+                if det["dists"] is None:
+                    continue
+                track = det["track"]
+                self._raw_score_writer.writerow([
+                    f"{now:.3f}", self.frame_count, id(track),
+                    det["raw_label"], track.stable_label, f"{track.stable_frac:.4f}",
+                    f"{det['dists']['person_A']:.4f}", f"{det['dists']['person_B']:.4f}",
+                    self.threshold,
+                ])
+            self._raw_score_file.flush()
+
         for det in detections:
             x1, y1, x2, y2 = det["box"]
             track = det["track"]
-            stable_label, stable_frac = track.stable_label, track.stable_frac
-            color = BOX_COLOR_BGR.get(stable_label, BOX_COLOR_BGR["unknown"])
-            dist_s = f"{det['dist']:.2f}" if det["dist"] is not None else "n/a"
-            # 화면엔 안정화된(sliding-window+hysteresis) 라벨을 주로 보여주고, 괄호 안에
-            # 이번 프레임 raw 판정(원래 방식)도 같이 보여줘서 둘이 언제 갈리는지 눈으로
-            # 비교할 수 있게 함.
-            label = f"{stable_label} {stable_frac * 100:.0f}% (raw:{det['raw_label']} {dist_s})"
+            conf_s = f"yolo_conf={det['conf']:.2f}"
+
+            if det["low_conf"]:
+                # 완화②: 이번 프레임은 confidence 미달이라 식별 파이프라인에 안 넘겼음 —
+                # track에 쌓여 있던 기존 판정과 무관하게 이번 프레임만 회색으로 표시.
+                color = BOX_COLOR_BGR[LOW_CONF_LABEL]
+                label = f"{LOW_CONF_LABEL} ({conf_s} < {self.min_yolo_confidence:.2f})"
+            elif track.stable_label == DECIDING_LABEL:
+                # 완화①: window가 아직 min_window_fill만큼 안 쌓여서 확정 보류 중.
+                color = BOX_COLOR_BGR[DECIDING_LABEL]
+                label = (f"{DECIDING_LABEL}... ({len(track.window)}/{self.min_window_fill}) "
+                         f"(raw:{det['raw_label']} {conf_s})")
+            else:
+                stable_label, stable_frac = track.stable_label, track.stable_frac
+                color = BOX_COLOR_BGR.get(stable_label, BOX_COLOR_BGR["unknown"])
+                dist_s = f"{det['dist']:.2f}" if det["dist"] is not None else "n/a"
+                # 화면엔 안정화된(sliding-window+hysteresis) 라벨을 주로 보여주고, 괄호 안에
+                # 이번 프레임 raw 판정(원래 방식)도 같이 보여줘서 둘이 언제 갈리는지 눈으로
+                # 비교할 수 있게 함.
+                label = f"{stable_label} {stable_frac * 100:.0f}% (raw:{det['raw_label']} {dist_s} {conf_s})"
 
             cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
@@ -395,6 +543,8 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    if getattr(node, "log_raw_scores", False):
+        node._raw_score_file.close()
     cv2.destroyAllWindows()
     node.destroy_node()
     if rclpy.ok():
