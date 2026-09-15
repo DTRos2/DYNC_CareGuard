@@ -94,6 +94,59 @@ raw 유사도 점수 캡처 (2026-09-15 추가, 진단③용):
   ③window_fill이 min_window_fill 미만(=완화① 콜드스타트 게이팅이 실제로 작동
   중)인지를 CSV만으로 바로 확인할 수 있다. 스키마가 바뀌면(컬럼 추가 등) 기존
   CSV는 자동으로 `_old_schema_<timestamp>`로 보존되고 새 파일로 다시 시작한다.
+
+⚠️ 2026-09-15 leave-one-out 진단에서 확인된 "B-attractor": 학습에 안 쓴 사람이
+  person_B로 극단적으로 오수용되는 왜곡이 adapter(v2)에 있음이 실증됨
+  (face_embedding_adapter_loo_test.py 참고 — held-out unknown_1이 dist_person_B
+  0.03 근처로 100% 오수용). 같은 세션에서 시도한 L2 anchor 정규화(실험 B,
+  face_embedding_adapter_finetune.pairwise_contrastive_loss의 reg_lambda)는
+  λ=0.01~1.0 전 구간에서 이 왜곡을 거의 완화하지 못했다(최악 오수용율이 93.8~100%
+  범위에 머묾) — 정규화만으로는 근본 해결이 안 된다는 뜻.
+
+실험 C — zero-shot 이중 확인(ensemble) 게이트 (2026-09-15 추가):
+  adapter의 왜곡은 adapter 자체(작은 residual 학습)에서 생긴 것이라, 어댑터를
+  아예 안 거친 zero-shot(frozen FaceNet 그대로) 판단은 같은 방식으로는 안 왜곡될
+  가능성이 높다는 전제로, 두 판단이 서로 동의할 때만 최종 확정하는 AND 게이트를
+  추가했다:
+    - adapter 판단: 기존과 동일(embed_crop의 adapter-tuned 임베딩 vs person_
+      centroids.pt, identity_threshold 기준)
+    - zero-shot 판단: embed_crop의 adapter 적용 전 frozen 임베딩 vs zero_shot_
+      centroids.pt(build_zero_shot_centroids.py 출력), zero_shot_identity_
+      threshold 기준 — 독립적으로 계산
+    - 최종 raw_label: 두 판단이 같은 특정 인물로 일치할 때만 그 인물, 그 외
+      (한쪽이 unknown이거나 서로 다른 인물)에는 전부 unknown.
+  zero-shot 자체는 분리력이 약해서(참고: A/B val 자기-centroid 거리 p90=0.49,
+  unknown 오수용율이 threshold=0.40에서 약 25%) 단독 분류기로는 못 쓰지만,
+  "adapter가 틀렸을 때 그 오류에 zero-shot까지 우연히 동의할 확률은 낮다"는 게
+  이중 확인의 취지 — 두 번째 안전장치일 뿐 attractor의 근본 원인을 없애지는
+  않는다. 화면/CSV에 adapter 판단과 zero-shot 판단을 모두 표시해서 언제 게이트가
+  막았는지 눈으로 확인 가능.
+  사전 준비물 추가: zero_shot_centroids.pt(build_zero_shot_centroids.py로 생성
+  후 로봇에 scp, person_centroids.pt와 같은 디렉터리).
+
+실사례 진단(2026-09-15, 스크린샷 3장)에서 확인: 전기 패널의 원형 빨간 버튼처럼
+"둥근 고대비 물체"는 confidence(0.51~0.69, 진짜 얼굴 범위 0.50~0.87과 심하게
+겹침)로도 bbox 종횡비(0.96, 진짜 얼굴 0.98과 사실상 동일)로도 못 거른다 —
+이중 확인 게이트가 "그 물체를 person_A/B로 오인식"하는 것은 막아주지만
+(zero-shot이 unknown이라고 반대하므로), 최종 결과가 "unknown 100%"로는 뜬다 —
+침입자 감지 관점에선 이것도 오탐. 아래 완화③(사람 전신 게이트)은 이 문제를
+YOLO confidence/bbox 종횡비가 아닌 **완전히 다른 신호**(사람 전신이 그 자리에
+실제로 있는지)로 접근한다.
+
+완화③ — 사람 전신 검출 게이트 (2026-09-15 추가):
+  얼굴 검출(face_detect_v4_burstsafe)과 완전히 별개로, COCO 사전학습 YOLO
+  (yolov8n.pt, person 클래스만 사용)를 매 프레임 병렬로 돌린다. 얼굴 bbox의
+  중심점이 어떤 person bbox 안에도 안 들어가면(전기 패널 버튼처럼 사람이 없는
+  곳에서 얼굴 모양 검출이 뜬 경우), 임베딩/신원판단 파이프라인 자체를 건너뛰고
+  화면에 OBJECT_LABEL("물체")로만 표시한다 — LOW_CONF_LABEL(검출불안정, YOLO
+  confidence 미달)이나 DECIDING_LABEL(판정중, window 미충전)과는 별개 상태.
+  person_gate_mode 파라미터로 "center"(얼굴 중심점 포함 여부, 기본값) 또는
+  "overlap_ratio"(얼굴 bbox 면적 대비 person bbox와 겹치는 비율이 person_gate_
+  overlap_ratio 이상인지) 중 선택 가능. enable_person_gate:=false로 끌 수 있음
+  (비교용). 얼굴 검출·adapter·zero-shot 로직은 전혀 안 건드림 — 이 게이트는
+  그 앞단에 독립적으로 얹힌 것.
+  사전 준비물 추가: person_yolo_weights(기본 ~/careguard_data/runs/
+  yolov8n_coco/yolov8n.pt, 사전학습 COCO 가중치 그대로 — 재학습 없음).
 """
 import csv
 import sys
@@ -125,9 +178,28 @@ DEFAULT_IDENTITY_THRESHOLD = 0.40
 DEFAULT_YOLO_WEIGHTS = str(Path.home() / "careguard_data/runs/face_detect_v4_burstsafe/weights/best.pt")
 DEFAULT_ADAPTER_PATH = str(Path.home() / "careguard_data/runs/face_embedding_adapter/adapter.pt")
 DEFAULT_CENTROIDS_PATH = str(Path.home() / "careguard_data/runs/face_embedding_adapter/person_centroids.pt")
+DEFAULT_ZERO_SHOT_CENTROIDS_PATH = str(
+    Path.home() / "careguard_data/runs/face_embedding_adapter/zero_shot_centroids.pt"
+)
+# ── 실험 C(이중 확인) zero-shot 판단용 threshold. build_zero_shot_centroids.py로
+# 만든 centroid 기준 자체 보정 계산(2026-09-15): val A/B 자기-centroid 거리
+# p90=0.49, 이 값(0.40)에서 진짜 A/B 자기 인식률 88%·unknown 오수용율 25% —
+# zero-shot 단독으로는 약한 분류기지만(참고: 크롭-쌍 EER 22%), 이중 확인의
+# 두 번째 게이트로만 쓰이므로 adapter와 같은 값(0.40)에서 시작 — 실측 후 조정 권장.
+DEFAULT_ZERO_SHOT_IDENTITY_THRESHOLD = 0.40
+
+# ── 완화③(사람 전신 게이트)용 COCO 사전학습 YOLO — 재학습 없이 그대로 사용.
+DEFAULT_PERSON_YOLO_WEIGHTS = str(Path.home() / "careguard_data/runs/yolov8n_coco/yolov8n.pt")
+DEFAULT_PERSON_MIN_CONFIDENCE = 0.5
+COCO_PERSON_CLASS_ID = 0
+# "center": 얼굴 bbox 중심점이 person bbox 안에 있는지(기본, 단순·강건).
+# "overlap_ratio": 얼굴 bbox 면적 대비 person bbox와 겹치는 비율이 이 값 이상인지.
+DEFAULT_PERSON_GATE_MODE = "center"
+DEFAULT_PERSON_GATE_OVERLAP_RATIO = 0.5
 
 DECIDING_LABEL = "판정중"  # 콜드스타트: window가 아직 덜 찬 트랙의 상태(사람도, unknown도 아님)
 LOW_CONF_LABEL = "검출불안정"  # YOLO confidence가 threshold 미만이라 식별 파이프라인에 안 넘긴 프레임
+OBJECT_LABEL = "물체"  # 완화③: 얼굴 bbox가 어떤 person bbox 안에도 없어서 식별을 건너뛴 프레임
 
 BOX_COLOR_BGR = {
     "person_A": (60, 180, 75),
@@ -135,6 +207,7 @@ BOX_COLOR_BGR = {
     "unknown": (60, 60, 220),
     DECIDING_LABEL: (0, 215, 255),   # 주황 — 아직 판정 보류 중
     LOW_CONF_LABEL: (128, 128, 128),  # 회색 — 이번 프레임 검출 자체를 신뢰 안 함
+    OBJECT_LABEL: (255, 0, 255),     # 자홍 — 사람 전신이 근처에 없는 얼굴형 검출
 }
 EMBED_SIZE = 160
 CROP_MARGIN = 0.25
@@ -170,6 +243,12 @@ RAW_SCORE_CSV_HEADER = [
     "raw_label", "stable_label", "stable_frac", "window_fill", "min_window_fill",
     "dist_person_A", "dist_person_B", "identity_threshold",
     "yolo_confidence", "bbox_w", "bbox_h", "bbox_area",
+    # ── 실험C(이중 확인, 2026-09-15) — adapter 판단과 zero-shot 판단을 각각 남겨서
+    # 언제 게이트가 최종 판정을 막았는지(둘이 불일치) 나중에 확인할 수 있게 함.
+    "adapter_label", "zs_label", "zs_dist_person_A", "zs_dist_person_B", "zero_shot_identity_threshold",
+    # ── 완화③(사람 전신 게이트, 2026-09-15) — 이 얼굴 검출이 person bbox 안에
+    # 있었는지. low_conf라 애초에 안 봤으면 빈 값.
+    "person_contained", "num_person_boxes",
 ]
 
 
@@ -185,6 +264,34 @@ def crop_with_margin(image_bgr, box, margin=CROP_MARGIN):
 
 def _center_dist(a, b):
     return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+
+def face_in_any_person_box(face_box, person_boxes, mode=DEFAULT_PERSON_GATE_MODE,
+                            overlap_ratio_threshold=DEFAULT_PERSON_GATE_OVERLAP_RATIO):
+    """완화③(사람 전신 게이트): face_box가 person_boxes 중 하나에 "포함"되는지 판단.
+
+    - mode="center"(기본): face_box 중심점이 어떤 person box 안에 있으면 포함.
+      단순·강건 — 얼굴이 몸통 bbox 안쪽에 있는 일반적인 경우를 잘 잡는다.
+    - mode="overlap_ratio": 표준 IoU(교집합/합집합)를 안 쓴다 — 얼굴은 몸통 전체
+      bbox 면적의 일부(보통 5~15%)라서 대칭 IoU로는 실제 포함된 경우도 항상 작게
+      나온다. 대신 "얼굴 bbox 면적 대비 person bbox와 겹치는 면적의 비율"(비대칭)을
+      써서 overlap_ratio_threshold 이상이면 포함으로 본다.
+    """
+    x1, y1, x2, y2 = face_box
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    face_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+    for px1, py1, px2, py2 in person_boxes:
+        if mode == "center":
+            if px1 <= cx <= px2 and py1 <= cy <= py2:
+                return True
+        else:
+            ix1, iy1 = max(x1, px1), max(y1, py1)
+            ix2, iy2 = min(x2, px2), min(y2, py2)
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            if face_area > 0 and (inter / face_area) >= overlap_ratio_threshold:
+                return True
+    return False
 
 
 def compute_stable_label(window, current_state, enter_threshold, exit_threshold):
@@ -257,6 +364,14 @@ class FaceIdentifyTestNode(Node):
         self.declare_parameter("adapter_path", DEFAULT_ADAPTER_PATH)
         self.declare_parameter("centroids_path", DEFAULT_CENTROIDS_PATH)
         self.declare_parameter("identity_threshold", DEFAULT_IDENTITY_THRESHOLD)
+        self.declare_parameter("zero_shot_centroids_path", DEFAULT_ZERO_SHOT_CENTROIDS_PATH)
+        self.declare_parameter("zero_shot_identity_threshold", DEFAULT_ZERO_SHOT_IDENTITY_THRESHOLD)
+        self.declare_parameter("enable_zero_shot_ensemble", True)
+        self.declare_parameter("person_yolo_weights", DEFAULT_PERSON_YOLO_WEIGHTS)
+        self.declare_parameter("person_min_confidence", DEFAULT_PERSON_MIN_CONFIDENCE)
+        self.declare_parameter("person_gate_mode", DEFAULT_PERSON_GATE_MODE)
+        self.declare_parameter("person_gate_overlap_ratio", DEFAULT_PERSON_GATE_OVERLAP_RATIO)
+        self.declare_parameter("enable_person_gate", True)
         self.declare_parameter("show_window", True)
         self.declare_parameter("window_size", DEFAULT_WINDOW_SIZE)
         self.declare_parameter("enter_threshold", DEFAULT_ENTER_THRESHOLD)
@@ -276,6 +391,9 @@ class FaceIdentifyTestNode(Node):
         adapter_path = self.get_parameter("adapter_path").value
         centroids_path = self.get_parameter("centroids_path").value
         self.threshold = self.get_parameter("identity_threshold").value
+        zero_shot_centroids_path = self.get_parameter("zero_shot_centroids_path").value
+        self.zero_shot_threshold = float(self.get_parameter("zero_shot_identity_threshold").value)
+        self.enable_zero_shot_ensemble = self.get_parameter("enable_zero_shot_ensemble").value
         self.show_window = self.get_parameter("show_window").value
         self.window_size = int(self.get_parameter("window_size").value)
         self.enter_threshold = float(self.get_parameter("enter_threshold").value)
@@ -288,6 +406,12 @@ class FaceIdentifyTestNode(Node):
         self.min_window_fill_ratio = float(self.get_parameter("min_window_fill_ratio").value)
         self.min_window_fill = max(1, round(self.window_size * self.min_window_fill_ratio))
         self.min_yolo_confidence = float(self.get_parameter("min_yolo_confidence").value)
+
+        person_yolo_weights = self.get_parameter("person_yolo_weights").value
+        self.person_min_confidence = float(self.get_parameter("person_min_confidence").value)
+        self.person_gate_mode = self.get_parameter("person_gate_mode").value
+        self.person_gate_overlap_ratio = float(self.get_parameter("person_gate_overlap_ratio").value)
+        self.enable_person_gate = self.get_parameter("enable_person_gate").value
 
         self.log_raw_scores = self.get_parameter("log_raw_scores").value
         self.raw_score_log_path = Path(self.get_parameter("raw_score_log_path").value).expanduser()
@@ -334,6 +458,24 @@ class FaceIdentifyTestNode(Node):
         self.get_logger().info(f"YOLO 얼굴 검출 가중치 로딩: {yolo_weights}")
         self.yolo = YOLO(yolo_weights)
 
+        if self.enable_person_gate:
+            self.get_logger().info(f"[완화③] COCO 사전학습 person 검출 YOLO 로딩: {person_yolo_weights}")
+            self.person_yolo = YOLO(person_yolo_weights)
+            self.get_logger().info(
+                f"[완화③] 사람 전신 게이트 활성화 — person_gate_mode={self.person_gate_mode} "
+                + (f"overlap_ratio={self.person_gate_overlap_ratio} "
+                   if self.person_gate_mode != "center" else "")
+                + f"person_min_confidence={self.person_min_confidence} — 얼굴이 어떤 person bbox "
+                f"안에도 없으면 식별 없이 '{OBJECT_LABEL}'로만 표시 "
+                "(enable_person_gate:=false로 끌 수 있음, 비교용)."
+            )
+        else:
+            self.person_yolo = None
+            self.get_logger().warn(
+                "[완화③] 사람 전신 게이트가 꺼져 있습니다 — 얼굴형 검출이면 사람 유무와 "
+                "무관하게 전부 식별 파이프라인으로 넘어갑니다 (비교 테스트용)."
+            )
+
         from facenet_pytorch import InceptionResnetV1, fixed_image_standardization
         self.get_logger().info("FaceNet(vggface2, frozen) 로딩...")
         self.embedder = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
@@ -353,6 +495,27 @@ class FaceIdentifyTestNode(Node):
             f"centroid 로딩 완료: person_A(n={cent.get('n_A', '?')}) "
             f"person_B(n={cent.get('n_B', '?')})  identity_threshold={self.threshold}"
         )
+
+        if self.enable_zero_shot_ensemble:
+            zs_cent = torch.load(zero_shot_centroids_path, map_location=self.device)
+            self.zero_shot_centroids = {name: zs_cent[name].to(self.device) for name in ("person_A", "person_B")}
+            self.get_logger().info(
+                f"[실험C] zero-shot centroid 로딩 완료: {zero_shot_centroids_path} "
+                f"(n_A={zs_cent.get('n_A', '?')} n_B={zs_cent.get('n_B', '?')}) "
+                f"zero_shot_identity_threshold={self.zero_shot_threshold}"
+            )
+            self.get_logger().info(
+                "[실험C] 이중 확인(ensemble) 게이트 활성화 — adapter 판단과 zero-shot 판단이 "
+                "동시에 같은 인물로 동의할 때만 최종 확정, 아니면 unknown "
+                "(enable_zero_shot_ensemble:=false로 끌 수 있음, 비교용)."
+            )
+        else:
+            self.zero_shot_centroids = None
+            self.get_logger().warn(
+                "[실험C] 이중 확인(ensemble) 게이트가 꺼져 있습니다 — adapter 판단만 씁니다 "
+                "(B-attractor 완화 없이 v2 단독 동작, 비교 테스트용)."
+            )
+
         self.get_logger().info(
             f"멀티프레임 안정화: window_size={self.window_size} "
             f"enter_threshold={self.enter_threshold} exit_threshold={self.exit_threshold} "
@@ -391,7 +554,7 @@ class FaceIdentifyTestNode(Node):
                 "않습니다(rviz2와 동일한 제약). NoMachine 등 GUI 세션에서 실행하세요."
             )
 
-    def embed_crop(self, face_bgr) -> torch.Tensor:
+    def embed_crop(self, face_bgr):
         # ── face_embedding_diagnostic.py(학습/진단 파이프라인)와 리사이즈 알고리즘을
         # 맞추기 위해 cv2.resize(기본 INTER_LINEAR/bilinear) 대신 PIL Image.resize를
         # 쓴다 — PIL은 인자 생략 시 기본이 BICUBIC(Pillow>=9.1)이라 diagnostic 스크립트의
@@ -403,21 +566,34 @@ class FaceIdentifyTestNode(Node):
         t = torch.from_numpy(face_rgb).permute(2, 0, 1).float().unsqueeze(0).to(self.device)
         t = self.standardize(t)
         with torch.no_grad():
-            emb = self.embedder(t)
-            emb = F.normalize(self.adapter(emb), p=2, dim=1)
-        return emb[0]
+            zero_shot_emb = self.embedder(t)  # InceptionResnetV1 출력은 이미 L2-normalize된 상태
+            adapter_emb = F.normalize(self.adapter(zero_shot_emb), p=2, dim=1)
+        # ── 실험C(이중 확인)용: adapter 적용 전 zero-shot 임베딩도 같이 반환.
+        return adapter_emb[0], zero_shot_emb[0]
 
-    def identify(self, emb: torch.Tensor):
-        """centroid까지 코사인 거리가 가장 가까운 사람을 찾고, threshold를 넘으면 unknown.
+    def identify(self, adapter_emb: torch.Tensor, zero_shot_emb: torch.Tensor):
+        """adapter 판단과 zero-shot 판단을 각각 독립적으로 계산하고, 이중 확인
+        (실험C, 2026-09-15)이 켜져 있으면 둘이 같은 특정 인물로 동의할 때만 그
+        인물로 확정한다 — 2026-09-15 leave-one-out 진단에서 확인된 adapter의
+        "B-attractor" 왜곡(학습에 안 쓴 사람이 person_B로 극단적으로 오수용되는
+        현상)을 완화하기 위한 두 번째 안전장치.
 
-        Returns: (best_name_or_unknown, best_dist, dists) — dists는
-        {"person_A": dist, "person_B": dist} 전체(로그/진단용, best만으론 부족).
+        Returns: (final_label, adapter_dist, adapter_dists, adapter_label, zs_label, zs_dist, zs_dists)
+        adapter_dists/zs_dists는 {"person_A": dist, "person_B": dist} 전체(로그/진단용).
         """
-        dists = {name: float(1.0 - torch.dot(emb, centroid)) for name, centroid in self.centroids.items()}
-        best_name, best_dist = min(dists.items(), key=lambda kv: kv[1])
-        if best_dist > self.threshold:
-            return "unknown", best_dist, dists
-        return best_name, best_dist, dists
+        adapter_dists = {name: float(1.0 - torch.dot(adapter_emb, c)) for name, c in self.centroids.items()}
+        adapter_name, adapter_dist = min(adapter_dists.items(), key=lambda kv: kv[1])
+        adapter_label = adapter_name if adapter_dist <= self.threshold else "unknown"
+
+        if not self.enable_zero_shot_ensemble:
+            return adapter_label, adapter_dist, adapter_dists, adapter_label, None, None, None
+
+        zs_dists = {name: float(1.0 - torch.dot(zero_shot_emb, c)) for name, c in self.zero_shot_centroids.items()}
+        zs_name, zs_dist = min(zs_dists.items(), key=lambda kv: kv[1])
+        zs_label = zs_name if zs_dist <= self.zero_shot_threshold else "unknown"
+
+        final_label = adapter_label if (adapter_label != "unknown" and adapter_label == zs_label) else "unknown"
+        return final_label, adapter_dist, adapter_dists, adapter_label, zs_label, zs_dist, zs_dists
 
     def _update_tracks(self, detections):
         """detections(이번 프레임의 raw 판정들)를 기존 track에 bbox 중심 거리로
@@ -505,6 +681,17 @@ class FaceIdentifyTestNode(Node):
         if self.frame_count % 30 == 1:
             self.get_logger().info(f"[진단] YOLO 검출 수: {len(results.boxes)}")
 
+        # ── 완화③ 사람 전신 게이트: 얼굴 검출과 완전히 별개로 COCO person 검출을
+        # 매 프레임 한 번만 실행하고, 아래에서 얼굴마다 재사용한다.
+        person_boxes = []
+        if self.enable_person_gate:
+            person_results = self.person_yolo.predict(
+                image, classes=[COCO_PERSON_CLASS_ID], conf=self.person_min_confidence, verbose=False
+            )[0]
+            person_boxes = [tuple(float(v) for v in b.xyxy[0]) for b in person_results.boxes]
+            if self.frame_count % 30 == 1:
+                self.get_logger().info(f"[진단][완화③] person 검출 수: {len(person_boxes)}")
+
         detections = []
         for box in results.boxes:
             x1, y1, x2, y2 = [float(v) for v in box.xyxy[0]]
@@ -517,6 +704,23 @@ class FaceIdentifyTestNode(Node):
                 detections.append({
                     "box": (x1, y1, x2, y2), "center": center, "conf": conf,
                     "raw_label": None, "dist": None, "dists": None, "low_conf": True,
+                    "adapter_label": None, "zs_label": None, "zs_dist": None, "zs_dists": None,
+                    "person_contained": None, "num_person_boxes": None, "object_gated": False,
+                })
+                continue
+
+            # ── 완화③ 사람 전신 게이트: 얼굴이 어떤 person bbox 안에도 없으면 크롭/
+            # 임베딩/신원판단을 아예 건너뛴다 — 얼굴 검출·adapter·zero-shot 로직은
+            # 그대로 두고 그 앞단에 독립적으로 얹은 게이트.
+            if self.enable_person_gate and not face_in_any_person_box(
+                (x1, y1, x2, y2), person_boxes, self.person_gate_mode, self.person_gate_overlap_ratio
+            ):
+                detections.append({
+                    "box": (x1, y1, x2, y2), "center": center, "conf": conf,
+                    "raw_label": None, "dist": None, "dists": None, "low_conf": False,
+                    "adapter_label": None, "zs_label": None, "zs_dist": None, "zs_dists": None,
+                    "person_contained": False, "num_person_boxes": len(person_boxes),
+                    "object_gated": True,
                 })
                 continue
 
@@ -524,11 +728,17 @@ class FaceIdentifyTestNode(Node):
             if face.size == 0:
                 continue
 
-            emb = self.embed_crop(face)
-            raw_label, dist, dists = self.identify(emb)
+            adapter_emb, zero_shot_emb = self.embed_crop(face)
+            raw_label, dist, dists, adapter_label, zs_label, zs_dist, zs_dists = self.identify(
+                adapter_emb, zero_shot_emb
+            )
             detections.append({
                 "box": (x1, y1, x2, y2), "center": center, "conf": conf,
                 "raw_label": raw_label, "dist": dist, "dists": dists, "low_conf": False,
+                "adapter_label": adapter_label, "zs_label": zs_label, "zs_dist": zs_dist, "zs_dists": zs_dists,
+                "person_contained": True if self.enable_person_gate else None,
+                "num_person_boxes": len(person_boxes) if self.enable_person_gate else None,
+                "object_gated": False,
             })
 
         self._update_tracks(detections)
@@ -544,6 +754,9 @@ class FaceIdentifyTestNode(Node):
                 # track_age_frames/window_fill은 low_conf 여부와 무관하게 항상 남긴다.
                 dist_a = f"{det['dists']['person_A']:.4f}" if det["dists"] is not None else ""
                 dist_b = f"{det['dists']['person_B']:.4f}" if det["dists"] is not None else ""
+                # 실험C(이중 확인) 필드 — low_conf거나 게이트가 꺼져있으면(zs_dists=None) 비움.
+                zs_dist_a = f"{det['zs_dists']['person_A']:.4f}" if det["zs_dists"] is not None else ""
+                zs_dist_b = f"{det['zs_dists']['person_B']:.4f}" if det["zs_dists"] is not None else ""
                 self._raw_score_writer.writerow([
                     f"{now:.3f}", self.frame_count, track.track_id, track.track_age_frames,
                     int(det["low_conf"]),
@@ -551,6 +764,10 @@ class FaceIdentifyTestNode(Node):
                     len(track.window), self.min_window_fill,
                     dist_a, dist_b, self.threshold,
                     f"{det['conf']:.4f}", f"{bbox_w:.1f}", f"{bbox_h:.1f}", f"{bbox_w * bbox_h:.1f}",
+                    det["adapter_label"] or "", det["zs_label"] or "",
+                    zs_dist_a, zs_dist_b, self.zero_shot_threshold,
+                    "" if det["person_contained"] is None else int(det["person_contained"]),
+                    "" if det["num_person_boxes"] is None else det["num_person_boxes"],
                 ])
             self._raw_score_file.flush()
 
@@ -564,6 +781,11 @@ class FaceIdentifyTestNode(Node):
                 # track에 쌓여 있던 기존 판정과 무관하게 이번 프레임만 회색으로 표시.
                 color = BOX_COLOR_BGR[LOW_CONF_LABEL]
                 label = f"{LOW_CONF_LABEL} ({conf_s} < {self.min_yolo_confidence:.2f})"
+            elif det.get("object_gated"):
+                # 완화③: 얼굴형 검출이지만 어떤 person bbox 안에도 없었음 — 신원판단
+                # 자체를 안 했으므로 track에 쌓인 기존 판정과 무관하게 자홍색으로 표시.
+                color = BOX_COLOR_BGR[OBJECT_LABEL]
+                label = f"{OBJECT_LABEL} ({conf_s}, person bbox {det['num_person_boxes']}개 중 미포함)"
             elif track.stable_label == DECIDING_LABEL:
                 # 완화①: window가 아직 min_window_fill만큼 안 쌓여서 확정 보류 중.
                 color = BOX_COLOR_BGR[DECIDING_LABEL]
@@ -575,8 +797,13 @@ class FaceIdentifyTestNode(Node):
                 dist_s = f"{det['dist']:.2f}" if det["dist"] is not None else "n/a"
                 # 화면엔 안정화된(sliding-window+hysteresis) 라벨을 주로 보여주고, 괄호 안에
                 # 이번 프레임 raw 판정(원래 방식)도 같이 보여줘서 둘이 언제 갈리는지 눈으로
-                # 비교할 수 있게 함.
-                label = f"{stable_label} {stable_frac * 100:.0f}% (raw:{det['raw_label']} {dist_s} {conf_s})"
+                # 비교할 수 있게 함. 실험C(이중 확인)가 켜져 있으면 adapter/zero-shot 판단이
+                # 서로 갈릴 때(게이트가 막을 때) 눈으로 바로 보이게 둘 다 표시.
+                ensemble_s = ""
+                if self.enable_zero_shot_ensemble and det["adapter_label"] is not None:
+                    ensemble_s = f" [adapter:{det['adapter_label']} zs:{det['zs_label']}]"
+                label = (f"{stable_label} {stable_frac * 100:.0f}% "
+                         f"(raw:{det['raw_label']} {dist_s} {conf_s}){ensemble_s}")
 
             cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
