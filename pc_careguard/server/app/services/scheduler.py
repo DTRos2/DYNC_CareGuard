@@ -60,8 +60,18 @@ async def _tick() -> None:
             return
         due_ids = [s["schedule_id"] for s in due]
 
+        # ps.updated_at 조건이 없으면 "오늘 이미 돌았는지"만 보게 되는데, 그러면 스케줄을
+        # 수정(run_time 변경 등)해도 그 수정 이전 실행이 계속 "오늘 이미 돌았다"로 잡혀
+        # 새 시각에 다시 트리거되지 않는다(실사용 중 발견: 23분 실행 후 26분으로 수정해도
+        # patrol_run이 전혀 안 생겼던 사고, 2026-09-15). 마지막 수정 시각 이후의 실행만
+        # "오늘 이미 돌았다"로 친다.
         cur.execute(
-            "SELECT DISTINCT schedule_id FROM patrol_run WHERE schedule_id = ANY(%s) AND started_at::date = %s",
+            """
+            SELECT DISTINCT pr.schedule_id
+            FROM patrol_run pr
+            JOIN patrol_schedule ps ON ps.id = pr.schedule_id
+            WHERE pr.schedule_id = ANY(%s) AND pr.started_at::date = %s AND pr.started_at >= ps.updated_at
+            """,
             (due_ids, now.date()),
         )
         already_run = {r["schedule_id"] for r in cur.fetchall()}
