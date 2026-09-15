@@ -77,7 +77,8 @@ GRID = [
 ]
 
 
-def pairwise_contrastive_loss(emb: torch.Tensor, labels: torch.Tensor, margin: float):
+def pairwise_contrastive_loss(emb: torch.Tensor, labels: torch.Tensor, margin: float,
+                               anchor: torch.Tensor = None, reg_lambda: float = 0.0):
     """emb: (N,512) 어댑터 출력(정규화 전). labels: (N,) — 0=person_A, 1=person_B,
     -1=unknown(negative, "누구와도 안 닮아야 함"만 배움).
 
@@ -86,11 +87,19 @@ def pairwise_contrastive_loss(emb: torch.Tensor, labels: torch.Tensor, margin: f
     -1은 0/1과 항상 다르므로 A-unknown/B-unknown 쌍은 자동으로 "밀어내기" 대상이 되고,
     unknown-unknown(둘 다 -1이라 label이 "같음")은 diff에서도 자동으로 빠진다 — 즉
     unknown-unknown 쌍은 당기지도 밀지도 않는 완전 중립으로 처리된다 (요청하신
-    "unknown끼리 뭉치게 하지 말 것"을 마스크 설계만으로 만족)."""
-    emb = F.normalize(emb, p=2, dim=1)
-    sim = emb @ emb.t()
-    n = emb.shape[0]
-    idx_i, idx_j = torch.triu_indices(n, n, offset=1, device=emb.device)
+    "unknown끼리 뭉치게 하지 말 것"을 마스크 설계만으로 만족).
+
+    anchor/reg_lambda (2026-09-15 추가, 실험 B — L2 anchor 정규화): anchor는 보통
+    adapter에 넣기 전의 frozen backbone 출력(emb과 같은 shape, 정규화 전) 그 자체.
+    ResidualAdapter가 x + f(x) 형태라 reg_lambda*mean(||emb-anchor||^2)는 실질적으로
+    잔차 f(x)의 크기를 직접 억제한다 — adapter가 zero-shot 임베딩에서 너무 멀리
+    벗어나지 못하게 해서, leave-one-out 진단에서 발견된 "B-attractor"처럼 학습에
+    없던 입력을 특정 방향으로 과하게 끌어당기는 왜곡을 완화하는 게 목적.
+    reg_lambda=0(기본값)이면 항이 0이 되어 기존 동작과 완전히 동일 — 하위호환."""
+    emb_n = F.normalize(emb, p=2, dim=1)
+    sim = emb_n @ emb_n.t()
+    n = emb_n.shape[0]
+    idx_i, idx_j = torch.triu_indices(n, n, offset=1, device=emb_n.device)
     sim_pairs = sim[idx_i, idx_j]
     li, lj = labels[idx_i], labels[idx_j]
 
@@ -99,7 +108,13 @@ def pairwise_contrastive_loss(emb: torch.Tensor, labels: torch.Tensor, margin: f
 
     pos_loss = (same * (1.0 - sim_pairs).pow(2)).sum() / same.sum().clamp(min=1)
     neg_loss = (diff * torch.clamp(sim_pairs - margin, min=0.0).pow(2)).sum() / diff.sum().clamp(min=1)
-    return pos_loss + neg_loss, pos_loss.item(), neg_loss.item()
+
+    reg_loss = emb.new_zeros(())
+    if anchor is not None and reg_lambda > 0:
+        reg_loss = reg_lambda * (emb - anchor).pow(2).sum(dim=1).mean()
+
+    total = pos_loss + neg_loss + reg_loss
+    return total, pos_loss.item(), neg_loss.item(), reg_loss.item()
 
 
 def split_crops(crops, split):
@@ -130,7 +145,8 @@ def val_eer_and_threshold(val_crops, val_emb: np.ndarray):
     return eer, th
 
 
-def train_one_config(name, lr, steps, train_emb, train_labels, val_backbone_emb, val_crops, unknown_backbone_emb):
+def train_one_config(name, lr, steps, train_emb, train_labels, val_backbone_emb, val_crops, unknown_backbone_emb,
+                      reg_lambda: float = 0.0):
     torch.manual_seed(SEED)
     adapter = ResidualAdapter(dim=train_emb.shape[1], bottleneck=BOTTLENECK).to(DEVICE)
     optimizer = torch.optim.Adam(adapter.parameters(), lr=lr)
@@ -138,12 +154,14 @@ def train_one_config(name, lr, steps, train_emb, train_labels, val_backbone_emb,
     best_score, best_eer, best_fa, best_step = None, None, None, 0
     best_state = {k: v.clone() for k, v in adapter.state_dict().items()}
 
-    print(f"\n--- config: {name}  (lr={lr}, steps={steps}) ---")
+    print(f"\n--- config: {name}  (lr={lr}, steps={steps}, reg_lambda={reg_lambda}) ---")
     for step in range(1, steps + 1):
         adapter.train()
         optimizer.zero_grad()
         adapted = adapter(train_emb)
-        loss, pos_l, neg_l = pairwise_contrastive_loss(adapted, train_labels, MARGIN)
+        loss, pos_l, neg_l, reg_l = pairwise_contrastive_loss(
+            adapted, train_labels, MARGIN, anchor=train_emb, reg_lambda=reg_lambda
+        )
         loss.backward()
         optimizer.step()
 
@@ -160,7 +178,7 @@ def train_one_config(name, lr, steps, train_emb, train_labels, val_backbone_emb,
             else:
                 fa = 1.0
             score = eer_disp + fa  # 둘 다 낮을수록 좋음 — 분리도 단독 최적화(=collapse 유발) 방지
-            print(f"  step {step:4d}  loss={loss.item():.4f} (pos={pos_l:.4f} neg={neg_l:.4f})  "
+            print(f"  step {step:4d}  loss={loss.item():.4f} (pos={pos_l:.4f} neg={neg_l:.4f} reg={reg_l:.4f})  "
                   f"val EER={eer_disp*100:5.1f}%  unknown 오수용율={fa*100:5.1f}%  score={score:.3f}")
             if best_score is None or score <= best_score:
                 best_score, best_eer, best_fa, best_step = score, eer_disp, fa, step
@@ -168,7 +186,8 @@ def train_one_config(name, lr, steps, train_emb, train_labels, val_backbone_emb,
 
     adapter.load_state_dict(best_state)
     return adapter, {"name": name, "lr": lr, "steps": steps, "best_step": best_step,
-                      "val_eer": best_eer, "unknown_fa": best_fa, "score": best_score}
+                      "val_eer": best_eer, "unknown_fa": best_fa, "score": best_score,
+                      "reg_lambda": reg_lambda}
 
 
 def main():
