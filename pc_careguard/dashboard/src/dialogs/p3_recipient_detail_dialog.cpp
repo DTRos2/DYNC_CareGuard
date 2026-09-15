@@ -30,13 +30,6 @@
 
 namespace {
 
-// 로봇 하나당 맵 하나가 고정으로 딸린 이 앱의 기존 mock 관례(R-01~04 ↔ 4개 주소) —
-// p3_recipient_create_dialog.cpp와 정확히 같은 값(별도 로봇/맵 카탈로그가 없어 로컬 중복).
-const QStringList kRobotCodes = {QStringLiteral("R-01"), QStringLiteral("R-02"), QStringLiteral("R-03"),
-                                  QStringLiteral("R-04")};
-const QStringList kRobotMaps = {QStringLiteral("행복빌라 302"), QStringLiteral("은빛아파트 101"),
-                                 QStringLiteral("솔마을 7호"), QStringLiteral("동산주택 2층")};
-
 // p3_recipient_page.cpp의 makeStatusBadge()와 같은 발상 — 두 파일 다 자기 안에서만
 // 쓰는 로컬 헬퍼라 공용 유틸로 뽑지 않았다(이 코드베이스의 페이지별 로컬 중복 관례).
 QLabel* makeStatusBadge(Tokens::Level level, QWidget* parent) {
@@ -90,12 +83,20 @@ QLineEdit* makeReadOnlyField(const QString& text, QWidget* parent) {
     return edit;
 }
 
-QWidget* makeFieldBlock(const QString& label, QWidget* editWidget, QWidget* parent) {
+// required=true면 라벨 옆에 빨간 "*"을 붙인다 — p3_recipient_create_dialog.cpp의 동명
+// 헬퍼와 같은 표시(2026-09-15 추가: 예전엔 이 상세/수정 모달엔 필수 표시가 아예 없었다).
+QWidget* makeFieldBlock(const QString& label, bool required, QWidget* editWidget, QWidget* parent) {
     auto* wrap = new QWidget(parent);
     auto* layout = new QVBoxLayout(wrap);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(3);
-    layout->addWidget(makeSectionLabel(label, wrap));
+    const QString text = required
+                              ? QStringLiteral("%1 <span style='color:%2'>*</span>").arg(label, Tokens::EMERGENCY.main.name())
+                              : label;
+    auto* labelWidget = new QLabel(text, wrap);
+    labelWidget->setTextFormat(Qt::RichText);
+    labelWidget->setProperty("role", "label");
+    layout->addWidget(labelWidget);
     layout->addWidget(editWidget);
     return wrap;
 }
@@ -146,8 +147,10 @@ PillboxStyle pillboxStyle(MedSlotState state) {
 }  // namespace
 
 P3RecipientDetailDialog::P3RecipientDetailDialog(const RecipientDetail& detail,
-                                                   const QVector<OperatorOption>& operators, QWidget* parent)
-    : QDialog(parent), detail_(detail), operators_(operators) {
+                                                   const QVector<OperatorOption>& operators,
+                                                   const QVector<RobotOption>& robots,
+                                                   const QVector<MapOption>& maps, QWidget* parent)
+    : QDialog(parent), detail_(detail), operators_(operators), robots_(robots), maps_(maps) {
     setModal(true);
     // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
@@ -257,9 +260,9 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     auto* row1 = new QHBoxLayout();
     row1->setSpacing(10);
     nameEdit_ = new QLineEdit(detail_.card.name, tab);
-    row1->addWidget(makeFieldBlock(QStringLiteral("이름"), nameEdit_, tab), 1);
+    row1->addWidget(makeFieldBlock(QStringLiteral("이름"), true, nameEdit_, tab), 1);
     auto* idField = makeReadOnlyField(QStringLiteral("%1 자동").arg(detail_.card.code), tab);
-    row1->addWidget(makeFieldBlock(QStringLiteral("대상자 ID"), idField, tab), 1);
+    row1->addWidget(makeFieldBlock(QStringLiteral("대상자 ID"), false, idField, tab), 1);
 
     // 관리 담당자 — create dialog와 같은 후보 목록(계정관리(P7)의 관제담당자 계정). 현재
     // 배정된 담당자가 있으면(detail_.card.operatorId) 그 항목을 미리 선택해둔다.
@@ -268,7 +271,7 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     for (const auto& op : operators_) operatorCombo_->addItem(op.name, op.id);
     const int operatorIdx = operatorCombo_->findData(detail_.card.operatorId);
     if (operatorIdx >= 0) operatorCombo_->setCurrentIndex(operatorIdx);
-    row1->addWidget(makeFieldBlock(QStringLiteral("관리 담당자"), operatorCombo_, tab), 1);
+    row1->addWidget(makeFieldBlock(QStringLiteral("관리 담당자"), false, operatorCombo_, tab), 1);
     formCol->addLayout(row1);
 
     auto* row2 = new QHBoxLayout();
@@ -276,15 +279,15 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     birthYearEdit_ = new QLineEdit(
         detail_.birthYear > 0 ? QString::number(detail_.birthYear) : QString(), tab);
     birthYearEdit_->setFont(QFont(Tokens::Font::MONO));
-    row2->addWidget(makeFieldBlock(QStringLiteral("생년"), birthYearEdit_, tab), 1);
+    row2->addWidget(makeFieldBlock(QStringLiteral("생년"), true, birthYearEdit_, tab), 1);
     genderCombo_ = new CareGuardComboBox(tab);
     genderCombo_->addItems({QStringLiteral("남"), QStringLiteral("여")});
     if (detail_.gender == QStringLiteral("여")) genderCombo_->setCurrentIndex(1);
-    row2->addWidget(makeFieldBlock(QStringLiteral("성별"), genderCombo_, tab), 1);
+    row2->addWidget(makeFieldBlock(QStringLiteral("성별"), true, genderCombo_, tab), 1);
     formCol->addLayout(row2);
 
     addressEdit_ = new QLineEdit(detail_.card.address, tab);
-    formCol->addWidget(makeFieldBlock(QStringLiteral("주거 구역 (주소)"), addressEdit_, tab));
+    formCol->addWidget(makeFieldBlock(QStringLiteral("주거 구역 (주소)"), true, addressEdit_, tab));
 
     topRow->addLayout(formCol, 1);
     layout->addLayout(topRow);
@@ -292,9 +295,9 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     auto* row3 = new QHBoxLayout();
     row3->setSpacing(10);
     diseasesEdit_ = new QLineEdit(detail_.diseases, tab);
-    row3->addWidget(makeFieldBlock(QStringLiteral("지병"), diseasesEdit_, tab), 1);
+    row3->addWidget(makeFieldBlock(QStringLiteral("지병"), false, diseasesEdit_, tab), 1);
     noteEdit_ = new QLineEdit(detail_.note, tab);
-    row3->addWidget(makeFieldBlock(QStringLiteral("담당자 메모"), noteEdit_, tab), 1);
+    row3->addWidget(makeFieldBlock(QStringLiteral("담당자 메모"), false, noteEdit_, tab), 1);
     layout->addLayout(row3);
 
     // 담당 로봇 · 맵 배정 — p3_recipient_create_dialog.cpp와 같은 카탈로그·동작(로봇 고르면
@@ -314,27 +317,102 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
 
     robotCombo_ = new CareGuardComboBox(tab);
     robotCombo_->addItem(QStringLiteral("로봇 선택"));
-    robotCombo_->addItems(kRobotCodes);
-    const int currentRobotIdx = kRobotCodes.indexOf(detail_.card.robotCode);
+    // 이미 다른 대상자가 담당 중인 로봇/맵은 이름을 같이 보여주고 주의색으로 강조한다 —
+    // create dialog와 같은 이유. 로봇 한 대를 여러 대상자가 같이 담당할 수 있어(2026-09-15)
+    // 고르는 것 자체는 막지 않되, 이미 누가 있는지는 미리 알 수 있어야 한다. robots_/maps_는
+    // P3RecipientPage::openDetail()이 채울 때 이 대상자 자신의 현재 로봇/맵은 이미
+    // assignedRecipientName을 비워둔다.
+    for (const auto& r : robots_) {
+        const bool occupied = !r.assignedRecipientName.isEmpty();
+        robotCombo_->addItem(occupied ? QStringLiteral("%1 · %2 배정 중").arg(r.code, r.assignedRecipientName)
+                                        : r.code);
+        if (occupied) robotCombo_->setItemData(robotCombo_->count() - 1, Tokens::ATTENTION.main, Qt::ForegroundRole);
+    }
+    int currentRobotIdx = -1;
+    for (int i = 0; i < robots_.size(); ++i) {
+        if (robots_[i].code == detail_.card.robotCode) { currentRobotIdx = i; break; }
+    }
     if (currentRobotIdx >= 0) robotCombo_->setCurrentIndex(currentRobotIdx + 1);
     robotMapRow->addWidget(robotCombo_, 1);
 
     mapCombo_ = new CareGuardComboBox(tab);
     mapCombo_->addItem(QStringLiteral("맵 선택"));
-    if (currentRobotIdx >= 0 && currentRobotIdx < kRobotMaps.size()) {
-        mapCombo_->addItem(kRobotMaps[currentRobotIdx]);
-        mapCombo_->setCurrentIndex(1);
+    // 로봇을 몰라도 맵 이름을 아는 경우가 있어(요청 사양, 2026-09-15) 로봇 선택 여부와
+    // 무관하게 처음부터 전체 맵 목록을 다 보여준다 — create dialog와 동일.
+    for (const auto& m : maps_) {
+        const bool occupied = !m.assignedRecipientName.isEmpty();
+        mapCombo_->addItem(occupied ? QStringLiteral("%1 · %2 배정 중").arg(m.name, m.assignedRecipientName)
+                                      : m.name,
+                            m.robotCode);
+        if (occupied) mapCombo_->setItemData(mapCombo_->count() - 1, Tokens::ATTENTION.main, Qt::ForegroundRole);
+    }
+    if (currentRobotIdx >= 0) {
+        for (int i = 0; i < maps_.size(); ++i) {
+            if (maps_[i].robotCode == detail_.card.robotCode) { mapCombo_->setCurrentIndex(i + 1); break; }
+        }
     }
     robotMapRow->addWidget(mapCombo_, 1);
     layout->addLayout(robotMapRow);
 
+    // 위 두 setCurrentIndex()로 정해진 초기 선택(대상자 본인 로봇/맵, 없으면 placeholder)을
+    // "마지막 확정 값"으로 기록한다 — 아래 connect()가 걸리기 전이라 currentIndexChanged가
+    // 아직 없어 이 시점의 인덱스가 곧 초기값이다.
+    lastRobotIndex_ = robotCombo_->currentIndex();
+    lastMapIndex_ = mapCombo_->currentIndex();
+
+    // robotCombo_<->mapCombo_ 양방향 동기화 — create dialog와 같은 재진입 가드 패턴 + 이미
+    // 배정 중인 로봇/맵을 고르면 추가 확인(create dialog::confirmSharedAssignment와 동일 문구).
     connect(robotCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
-        mapCombo_->clear();
-        mapCombo_->addItem(QStringLiteral("맵 선택"));
-        if (index >= 1 && index <= kRobotMaps.size()) {
-            mapCombo_->addItem(kRobotMaps[index - 1]);
-            mapCombo_->setCurrentIndex(1);
+        if (syncingRobotMap_) return;
+        if (!suppressSharedAssignConfirm_ && index >= 1 && index <= robots_.size() &&
+            !robots_[index - 1].assignedRecipientName.isEmpty()) {
+            const RobotOption& r = robots_[index - 1];
+            if (!confirmSharedAssignment(QStringLiteral("로봇 %1").arg(r.code), r.assignedRecipientName)) {
+                syncingRobotMap_ = true;
+                robotCombo_->setCurrentIndex(lastRobotIndex_);
+                syncingRobotMap_ = false;
+                return;
+            }
         }
+        lastRobotIndex_ = index;
+        syncingRobotMap_ = true;
+        if (index >= 1 && index <= robots_.size()) {
+            const QString robotCode = robots_[index - 1].code;
+            int found = -1;
+            for (int i = 0; i < maps_.size(); ++i) {
+                if (maps_[i].robotCode == robotCode) { found = i; break; }
+            }
+            mapCombo_->setCurrentIndex(found >= 0 ? found + 1 : 0);
+        } else {
+            mapCombo_->setCurrentIndex(0);
+        }
+        lastMapIndex_ = mapCombo_->currentIndex();
+        syncingRobotMap_ = false;
+    });
+    connect(mapCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (syncingRobotMap_) return;
+        if (!suppressSharedAssignConfirm_ && index >= 1 && index <= maps_.size() &&
+            !maps_[index - 1].assignedRecipientName.isEmpty()) {
+            const MapOption& m = maps_[index - 1];
+            if (!confirmSharedAssignment(QStringLiteral("맵 '%1'").arg(m.name), m.assignedRecipientName)) {
+                syncingRobotMap_ = true;
+                mapCombo_->setCurrentIndex(lastMapIndex_);
+                syncingRobotMap_ = false;
+                return;
+            }
+        }
+        lastMapIndex_ = index;
+        syncingRobotMap_ = true;
+        if (index >= 1 && index <= maps_.size()) {
+            const QString robotCode = maps_[index - 1].robotCode;
+            int found = -1;
+            for (int i = 0; i < robots_.size(); ++i) {
+                if (robots_[i].code == robotCode) { found = i; break; }
+            }
+            robotCombo_->setCurrentIndex(found >= 0 ? found + 1 : 0);
+        }
+        lastRobotIndex_ = robotCombo_->currentIndex();
+        syncingRobotMap_ = false;
     });
 
     auto* guardianHeader = new QHBoxLayout();
@@ -1236,8 +1314,11 @@ void P3RecipientDetailDialog::handleSaveClicked() {
     detail_.gender = genderCombo_->currentText();
     detail_.diseases = diseasesEdit_->text().trimmed();
     detail_.note = noteEdit_->text().trimmed();
-    detail_.card.robotCode =
-        robotCombo_->currentIndex() > 0 ? robotCombo_->currentText() : QStringLiteral("미배정");
+    // create dialog::handleRegisterClicked와 같은 이유로 currentText() 대신 robots_에서 실제
+    // 코드를 뽑는다 — "배정 중" 표시 항목은 currentText()가 꾸밈 텍스트까지 포함한다.
+    detail_.card.robotCode = (robotCombo_->currentIndex() > 0 && robotCombo_->currentIndex() <= robots_.size())
+                                  ? robots_[robotCombo_->currentIndex() - 1].code
+                                  : QStringLiteral("미배정");
     detail_.card.operatorId = operatorCombo_->currentData().toInt();
     detail_.card.operatorName = detail_.card.operatorId > 0 ? operatorCombo_->currentText() : QString();
 
@@ -1245,6 +1326,23 @@ void P3RecipientDetailDialog::handleSaveClicked() {
     // 이미 갱신돼 있다 — 여기서 다시 모을 필요 없이 그대로 실어 보낸다.
     emit saveRequested(detail_);
     accept();
+}
+
+bool P3RecipientDetailDialog::confirmSharedAssignment(const QString& targetLabel, const QString& recipientName) {
+    // p3_recipient_create_dialog.cpp::confirmSharedAssignment와 완전히 같은 문구 — 한쪽만
+    // 고치는 실수를 막으려면 원래 공용 헬퍼로 뽑는 게 맞지만, 두 다이얼로그가 서로 다른
+    // QDialog(this 필요)라 정적 자유함수로는 못 뽑는다(같은 이유로 각 파일에 로컬 헬퍼를
+    // 중복해 두는 게 이 코드베이스 관례 — makeBoxFrame 등 참고).
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("대상자 추가"));
+    box.setIcon(QMessageBox::Question);
+    box.setText(QStringLiteral("%1는 이미 %2 님이 담당하고 있습니다.").arg(targetLabel, recipientName));
+    box.setInformativeText(QStringLiteral("대상자를 추가하시겠습니까?"));
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(QStringLiteral("추가"));
+    box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+    return box.exec() == QMessageBox::Ok;
 }
 
 void P3RecipientDetailDialog::applyRemoteUpdate(const RecipientDetail& fresh) {
@@ -1270,9 +1368,19 @@ void P3RecipientDetailDialog::applyRemoteUpdate(const RecipientDetail& fresh) {
     operatorCombo_->setCurrentIndex(operatorIdx >= 0 ? operatorIdx : 0);
 
     // robotCombo_ 변경은 이미 연결된 currentIndexChanged 핸들러가 mapCombo_까지 같이 맞춰준다
-    // (buildBasicInfoTab() 참고) — 여기서 mapCombo_를 따로 안 건드려도 된다.
-    const int robotIdx = kRobotCodes.indexOf(detail_.card.robotCode);
+    // (buildBasicInfoTab() 참고) — 여기서 mapCombo_를 따로 안 건드려도 된다. 이건 사용자가 고른
+    // 게 아니라 다른 세션에서 이미 반영된 값을 그대로 반영하는 것뿐이라 추가 확인 모달은
+    // 건너뛴다(suppressSharedAssignConfirm_) — 그 확인은 "고르기 전" 판단용이지, 이미 서버에
+    // 반영된 걸 되돌릴지 묻는 용도가 아니다. robots_/maps_의 assignedRecipientName도 모달을
+    // 연 시점 스냅샷이라 이 시점엔 낡았을 수 있어(예: 다른 대시보드가 방금 배정) 더더욱 이
+    // 갱신엔 안 맞는다.
+    int robotIdx = -1;
+    for (int i = 0; i < robots_.size(); ++i) {
+        if (robots_[i].code == detail_.card.robotCode) { robotIdx = i; break; }
+    }
+    suppressSharedAssignConfirm_ = true;
     robotCombo_->setCurrentIndex(robotIdx >= 0 ? robotIdx + 1 : 0);
+    suppressSharedAssignConfirm_ = false;
 
     refreshGuardianTable();
     refreshScheduleTable();

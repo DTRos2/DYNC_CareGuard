@@ -26,6 +26,7 @@ class P3RecipientDetailDialog : public QDialog {
     Q_OBJECT
 public:
     explicit P3RecipientDetailDialog(const RecipientDetail& detail, const QVector<OperatorOption>& operators,
+                                      const QVector<RobotOption>& robots, const QVector<MapOption>& maps,
                                       QWidget* parent = nullptr);
 
 signals:
@@ -67,6 +68,9 @@ private:
 
     void showComingSoon(const QString& feature);
     void handleSaveClicked();
+    // p3_recipient_create_dialog.cpp::confirmSharedAssignment와 같은 모양·같은 이유 — 로봇 한
+    // 대를 여러 대상자가 같이 담당할 수 있어(2026-09-15 정정) 추가 여부만 확인한다.
+    bool confirmSharedAssignment(const QString& targetLabel, const QString& recipientName);
 
     RecipientDetail detail_;
     QVector<OperatorOption> operators_;  // "관리 담당자" 콤보 후보 — buildBasicInfoTab()에서 채운다
@@ -86,8 +90,21 @@ private:
     QLineEdit* diseasesEdit_ = nullptr;
     QLineEdit* noteEdit_ = nullptr;
     QComboBox* robotCombo_ = nullptr;
-    QComboBox* mapCombo_ = nullptr;  // 로봇 선택에 따라 자동 채워지는 표시 전용(제출 안 됨) — create dialog와 동일
+    QComboBox* mapCombo_ = nullptr;  // 표시 전용(제출 안 됨, robotCode만 실제로 저장됨) — create dialog와 동일
     QComboBox* operatorCombo_ = nullptr;
+    QVector<RobotOption> robots_;
+    QVector<MapOption> maps_;
+    // create dialog와 같은 이유의 재진입 가드(robotCombo_<->mapCombo_ 양방향 동기화).
+    bool syncingRobotMap_ = false;
+    // create dialog와 같은 이유(추가 확인 취소 시 되돌릴 마지막 확정 인덱스). 여기는 애초에
+    // 대상자 본인 로봇/맵이 미리 선택돼 있을 수 있어(buildBasicInfoTab() 참고) 0으로 초기화하지
+    // 않고, 그 초기 선택을 반영한 뒤 실제 값으로 채운다.
+    int lastRobotIndex_ = 0;
+    int lastMapIndex_ = 0;
+    // applyRemoteUpdate()가 다른 세션에서 이미 반영된 robotCode로 robotCombo_를 맞출 때는
+    // 사용자가 고른 게 아니므로 추가 확인 모달을 건너뛴다(그 밑의 맵 자동 동기화는 그대로
+    // 실행되어야 하므로 syncingRobotMap_과는 별도 플래그).
+    bool suppressSharedAssignConfirm_ = false;
 
     // eventFilter()의 IME 누수 방지용 — 위젯별 "이 시각까지는 새어 들어온 커밋을 삼킨다" 마감시각.
     QHash<QObject*, qint64> imeGuardDeadline_;

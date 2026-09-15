@@ -983,21 +983,55 @@ void P3RecipientPage::refreshOpenDetailDialog(int recipientId) {
         });
 }
 
+namespace {
+// robotCode를 이미 담당 중인 대상자 이름을 recipients_에서 찾는다 — 로봇 콤보에 "배정 중"
+// 표시를 채우고, 그 로봇을 고르면 재배정 확인 모달을 띄울지 판단하는 데 쓴다(요청,
+// 2026-09-15). selfRobotCode(상세 모달에서 지금 수정 중인 그 대상자 자신의 현재 로봇)와
+// 같으면 재배정이 아니므로 빈 문자열을 돌려준다 — 등록 모달은 selfRobotCode를 빈 문자열로
+// 넘겨 이 예외가 걸리지 않게 한다.
+QString findRobotAssignee(const QVector<RecipientCard>& recipients, const QString& robotCode,
+                           const QString& selfRobotCode) {
+    if (robotCode.isEmpty() || robotCode == selfRobotCode) return QString();
+    for (const auto& rec : recipients) {
+        if (rec.robotCode == robotCode) return rec.name;
+    }
+    return QString();
+}
+}  // namespace
+
 void P3RecipientPage::openDetail(int recipientIndex) {
     if (recipientIndex < 0 || recipientIndex >= recipients_.size()) return;
     const RecipientCard card = recipients_[recipientIndex];
 
-    // "관리 담당자" 콤보 후보는 계정관리(P7)에서 수시로 바뀔 수 있어, 모달을 열 때마다
-    // GET /accounts로 새로 받아온다(대상자 목록처럼 페이지 진입 시 한 번만 캐싱하지 않음).
+    // "관리 담당자"·"담당 로봇"·"담당 맵" 콤보 후보는 모달을 열 때마다 새로 받아온다(대상자
+    // 목록처럼 페이지 진입 시 한 번만 캐싱하지 않음 — P7 계정관리·맵 배정이 그 사이 바뀔 수
+    // 있다). registerRecipient()와 같은 이유·같은 3단 중첩(operators -> robots -> maps).
     apiClient_->fetchOperators([this, recipientIndex, card](bool, const QVector<ApiClient::OperatorInfo>& items) {
         QVector<OperatorOption> operators;
         for (const auto& o : items) operators.append(OperatorOption{o.id, o.name});
 
-        auto openWithDetail = [this, recipientIndex, operators](RecipientDetail detail) {
+        apiClient_->fetchRobots([this, recipientIndex, card, operators](
+                                     bool, const QVector<ApiClient::RobotInfo>& robotItems) {
+            QVector<RobotOption> robots;
+            for (const auto& r : robotItems) {
+                robots.append(RobotOption{r.id, r.code, findRobotAssignee(recipients_, r.code, card.robotCode)});
+            }
+
+            apiClient_->fetchActiveMaps([this, recipientIndex, card, operators, robots](
+                                             bool, const QVector<ApiClient::MapInfo>& mapItems) {
+                QVector<MapOption> maps;
+                for (const auto& m : mapItems) {
+                    // 맵의 담당 대상자는 서버가 이미 recipient_name으로 내려준다 — 로봇과 달리
+                    // recipients_를 다시 훑을 필요 없이, 자기 자신 로봇의 맵인지만 걸러내면 된다.
+                    const QString assignee = (m.robotCode == card.robotCode) ? QString() : m.recipientName;
+                    maps.append(MapOption{m.id, m.robotCode, m.name, assignee});
+                }
+
+        auto openWithDetail = [this, recipientIndex, operators, robots, maps](RecipientDetail detail) {
             if (recipientIndex >= recipients_.size()) return;  // 조회 대기 중 목록이 바뀌었으면 방어
             detail.card = recipients_[recipientIndex];  // 이름·주소 등 카드 쪽 최신값으로 덮어쓴다
 
-            auto* dialog = new P3RecipientDetailDialog(detail, operators, this);
+            auto* dialog = new P3RecipientDetailDialog(detail, operators, robots, maps, this);
             dialog->setAttribute(Qt::WA_DeleteOnClose);
 
             // 열려 있는 동안 recipient_changed가 오면(handleWsMessage) 이 다이얼로그를 다시
@@ -1045,6 +1079,8 @@ void P3RecipientPage::openDetail(int recipientIndex) {
                 }
                 openWithDetail(recipientDetailFromApi(info));
             });
+            });
+        });
     });
 }
 
@@ -1110,33 +1146,52 @@ void P3RecipientPage::registerRecipient() {
     // 카드는 서버가 돌려준 진짜 code로 다시 채워진다(아래 createRecipient 콜백).
     const QString nextCodePreview = QStringLiteral("C-%1").arg(recipients_.size() + 1, 3, 10, QChar('0'));
 
-    // "관리 담당자" 콤보 후보를 모달을 열기 전에 미리 받아온다 — openDetail()과 같은 이유.
+    // "관리 담당자"·"담당 로봇"·"담당 맵" 콤보 후보를 모달을 열기 전에 미리 받아온다 —
+    // openDetail()과 같은 이유. 로봇 목록(GET /robots)은 등록 해제 안 된 로봇 전부를,
+    // 맵 목록(GET /maps/active)은 로봇에 실제로 배정된 활성 맵만 내려준다(예전엔 이 목록
+    // 자체가 없어 R-01~R-04 4대만 하드코딩돼 있었다, 2026-09-15 리포트).
     apiClient_->fetchOperators([this, nextCodePreview](bool, const QVector<ApiClient::OperatorInfo>& items) {
         QVector<OperatorOption> operators;
         for (const auto& o : items) operators.append(OperatorOption{o.id, o.name});
 
-        P3RecipientCreateDialog dialog(nextCodePreview, operators, this);
-        if (dialog.exec() != QDialog::Accepted) return;
+        apiClient_->fetchRobots([this, nextCodePreview, operators](
+                                     bool, const QVector<ApiClient::RobotInfo>& robotItems) {
+            QVector<RobotOption> robots;
+            // 등록 모달은 "지금 수정 중인 자기 자신"이 없으므로 selfRobotCode를 빈 문자열로 넘긴다
+            // — recipients_에 이미 그 robotCode를 담당하는 대상자가 있으면 전부 "배정 중"으로 잡힌다.
+            for (const auto& r : robotItems) {
+                robots.append(RobotOption{r.id, r.code, findRobotAssignee(recipients_, r.code, QString())});
+            }
 
-        const RecipientDetail detail = dialog.resultDetail();
+            apiClient_->fetchActiveMaps([this, nextCodePreview, operators, robots](
+                                             bool, const QVector<ApiClient::MapInfo>& mapItems) {
+                QVector<MapOption> maps;
+                for (const auto& m : mapItems) maps.append(MapOption{m.id, m.robotCode, m.name, m.recipientName});
 
-        ApiClient::RecipientCreateParams params;
-        QString error;
-        if (!buildRecipientParams(detail, &params, &error)) {
-            QMessageBox::warning(this, QStringLiteral("등록 실패"), error);
-            return;
-        }
+                P3RecipientCreateDialog dialog(nextCodePreview, operators, robots, maps, this);
+                if (dialog.exec() != QDialog::Accepted) return;
 
-        apiClient_->createRecipient(
-            params, [this](bool ok, const ApiClient::RecipientDetailInfo& info, const QString& err) {
-                if (!ok) {
-                    QMessageBox::warning(this, QStringLiteral("등록 실패"),
-                                          QStringLiteral("대상자 등록에 실패했습니다: %1").arg(err));
+                const RecipientDetail detail = dialog.resultDetail();
+
+                ApiClient::RecipientCreateParams params;
+                QString error;
+                if (!buildRecipientParams(detail, &params, &error)) {
+                    QMessageBox::warning(this, QStringLiteral("등록 실패"), error);
                     return;
                 }
-                recipients_.append(recipientDetailFromApi(info).card);
-                rebuildGrid();
+
+                apiClient_->createRecipient(
+                    params, [this](bool ok, const ApiClient::RecipientDetailInfo& info, const QString& err) {
+                        if (!ok) {
+                            QMessageBox::warning(this, QStringLiteral("등록 실패"),
+                                                  QStringLiteral("대상자 등록에 실패했습니다: %1").arg(err));
+                            return;
+                        }
+                        recipients_.append(recipientDetailFromApi(info).card);
+                        rebuildGrid();
+                    });
             });
+        });
     });
 }
 
