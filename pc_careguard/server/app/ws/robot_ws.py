@@ -25,6 +25,19 @@ router = APIRouter()
 # _connections는 downlink 전용, 아래 _telemetry_connections는 uplink 전용.
 _connections: Dict[str, WebSocket] = {}
 
+# robot.code -> ESP32 긴급 호출로 잠시 밀려난(paused) patrol_run.id. dispatch_drive_to_point가
+# severity 있는(SOS) 이동을 보내기 직전에 등록하고, 그 이동의 patrol_done을 받는 순간
+# _resume_patrol_run으로 이어서 돈다(_handle_message의 patrol_done 분기 참고). run_id=0인
+# "이동"은 patrol_run 행이 없어 patrol_done만으로는 "이 이동이 방금 그 SOS였는지"를 구분할
+# 수 없으므로, DB가 아니라 이 in-memory 표식으로 정확히 그 한 번만 재개를 트리거한다.
+_pending_resume: Dict[str, int] = {}
+
+# patrol_run.id -> 재개 시점의 waypoints_done(=중단 전까지 완료한 개수). 재개 goal은
+# 남은 웨이포인트만 담아 보내므로, patrol_task가 보고하는 feedback의 i는 그 남은
+# 목록 안에서의 인덱스(0부터)다 — DB의 waypoints_total 기준 누적값으로 보이려면
+# 이 오프셋을 더해야 한다(patrol_progress 처리 참고).
+_resume_offsets: Dict[int, int] = {}
+
 # robot.code -> 마지막으로 알린 Nav2 준비 상태(nav_status의 running). GET /robots가
 # 같이 내려줘서, P6PatrolPage::refreshRobotState()가 nav_status WS 메시지 유실/지연
 # 시에도 이 값으로 navRunning_을 다시 맞출 수 있게 한다(그 전엔 재동기화 경로가 아예
@@ -140,6 +153,18 @@ def latest_battery() -> Dict[str, int]:
 
 def nav_running(robot_code: str) -> bool:
     return _nav_running.get(robot_code, False)
+
+
+def register_pending_resume(robot_code: str, run_id: int) -> None:
+    """patrol.py::dispatch_drive_to_point가 SOS 이동을 보내기 직전에 부른다 —
+    이 이동이 끝나는 순간(patrol_done) run_id의 순찰을 이어서 재개하라는 표식."""
+    _pending_resume[robot_code] = run_id
+
+
+def clear_pending_resume(robot_code: str) -> None:
+    """patrol.py::cancel_patrol_run(취소)이 부른다 — paused 상태로 남겨둔 순찰을
+    사용자가 아예 취소해버리면, SOS 이동이 끝나도 더 이상 이어서 돌면 안 된다."""
+    _pending_resume.pop(robot_code, None)
 
 
 def _robot_exists(robot_code: str) -> bool:
@@ -291,13 +316,20 @@ async def _handle_message(robot_code: str, message: dict) -> None:
         )
 
     elif msg_type == "patrol_progress":
-        _update_patrol_run(message.get("run_id"), waypoints_done=message.get("waypoints_done"))
+        run_id = message.get("run_id")
+        raw_done = message.get("waypoints_done")
+        # 재개된 순찰(_resume_patrol_run)은 남은 웨이포인트만 담아 보내므로, patrol_task가
+        # 보고하는 i는 그 목록 안에서의 인덱스(0부터)다 — 중단 전까지 완료한 개수를
+        # 더해야 DB/화면에 누적 진행률이 정확히 보인다(모듈 상단 _resume_offsets 참고).
+        offset = _resume_offsets.get(run_id, 0)
+        waypoints_done = raw_done + offset if raw_done is not None else raw_done
+        _update_patrol_run(run_id, waypoints_done=waypoints_done)
         await dashboard_ws.broadcast(
             {
                 "type": "patrol_progress",
                 "robot_code": robot_code,
-                "run_id": message.get("run_id"),
-                "waypoints_done": message.get("waypoints_done"),
+                "run_id": run_id,
+                "waypoints_done": waypoints_done,
             }
         )
 
@@ -329,20 +361,33 @@ async def _handle_message(robot_code: str, message: dict) -> None:
                 # "웨이포인트 다 돌고 충전소로 복귀"로 처리하는 조합을 그대로 재사용한다
                 # (0개를 돌면 바로 복귀 단계로 넘어간다). 로봇 쪽에 새 명령을 안 추가해도
                 # 되는 이유는 _handle_battery_state 주석 참고.
+                # override=True — 저배터리 복귀도 SOS와 같은 이유로 지금 순찰/이동
+                # 중이어도 밀어내고 우선 실행돼야 한다(_ensure_patrol_task_running 참고).
+                # 다만 복귀는 끝난 뒤 원래 순찰을 이어서 재개하지 않는다(요청 사양 —
+                # SOS만 재개 대상).
                 await send_command(robot_code, {
                     "type": "patrol_start",
                     "run_id": 0,
                     "waypoints": [],
                     "return_to_charging": True,
                     "map_id": return_map_id,
+                    "override": True,
                 })
 
     elif msg_type == "patrol_done":
+        run_id = message.get("run_id")
         status = message.get("status", "completed")
-        _update_patrol_run(message.get("run_id"), status=status, ended=True)
+        _update_patrol_run(run_id, status=status, ended=True)
+        _resume_offsets.pop(run_id, None)
         await dashboard_ws.broadcast(
-            {"type": "patrol_done", "robot_code": robot_code, "run_id": message.get("run_id"), "status": status}
+            {"type": "patrol_done", "robot_code": robot_code, "run_id": run_id, "status": status}
         )
+        # SOS 이동(run_id=0)이 막 끝났고, 그게 밀어낸 순찰(paused)이 있으면 이어서
+        # 재개한다 — register_pending_resume 문서 참고. 이 표식은 정확히 그 SOS
+        # 이동 하나만을 가리키므로 pop으로 한 번 쓰고 바로 지운다(중복 재개 방지).
+        resume_run_id = _pending_resume.pop(robot_code, None)
+        if resume_run_id is not None:
+            await _resume_patrol_run(resume_run_id)
 
 
 def _save_slam_result(message: dict) -> Optional[int]:
@@ -516,6 +561,61 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
         )
         active_map = cur.fetchone()
         return active_map["id"] if active_map else None
+
+
+async def _resume_patrol_run(run_id: int) -> None:
+    """SOS 이동이 끝난 뒤 그게 밀어낸 순찰(status='paused')을 이어서 돌린다 —
+    _handle_message의 patrol_done 분기가 부른다. 이미 완료한 웨이포인트는 다시
+    보내지 않고 patrol_route.steps에서 waypoints_done개를 건너뛴 나머지만 새
+    goal로 보낸다(patrol_task는 매번 받은 goal 전체를 처음부터 도는 구조라 —
+    patrol.py::start_patrol_run과 달리 여기서 "남은 것"을 직접 계산해야 한다).
+    override는 안 준다 — 이 시점엔 patrol_task가 SOS 이동을 막 끝내고 비어있는
+    상태라(_on_patrol_result), 강제로 밀어낼 대상이 없다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT pr.robot_id, pr.route_id, pr.waypoints_done, pr.waypoints_total,
+                   r.code AS robot_code, rt.map_id, rt.steps
+            FROM patrol_run pr
+            JOIN robot r ON r.id = pr.robot_id
+            JOIN patrol_route rt ON rt.id = pr.route_id
+            WHERE pr.id = %s AND pr.status = 'paused'
+            """,
+            (run_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return  # 이미 취소됐거나(cancel_patrol_run) 다른 경로로 정리된 경우 — 조용히 무시.
+
+        remaining_ids = (row["steps"] or [])[row["waypoints_done"]:]
+        if not remaining_ids:
+            # 하필 SOS가 끼어든 시점이 마지막 웨이포인트 직후였다면 남은 게 없다 —
+            # 그대로 완료 처리.
+            cur.execute(
+                "UPDATE patrol_run SET status = 'completed', ended_at = NOW() WHERE id = %s", (run_id,)
+            )
+            conn.commit()
+            await dashboard_ws.broadcast({"type": "patrol_run_updated", "robot_code": row["robot_code"]})
+            return
+
+        cur.execute("SELECT id, code, pos_x, pos_y, yaw FROM waypoint WHERE id = ANY(%s)", (remaining_ids,))
+        by_id = {w["id"]: w for w in cur.fetchall()}
+        waypoints = [by_id[wid] for wid in remaining_ids if wid in by_id]
+
+        cur.execute("UPDATE patrol_run SET status = 'running' WHERE id = %s", (run_id,))
+        conn.commit()
+        robot_code = row["robot_code"]
+        map_id = row["map_id"]
+
+    _resume_offsets[run_id] = row["waypoints_done"]
+    await send_command(robot_code, {
+        "type": "patrol_start",
+        "run_id": run_id,
+        "waypoints": [{"code": w["code"], "x": w["pos_x"], "y": w["pos_y"], "yaw": w["yaw"]} for w in waypoints],
+        "map_id": map_id,
+    })
+    await dashboard_ws.broadcast({"type": "patrol_run_updated", "robot_code": robot_code})
 
 
 def _update_patrol_run(run_id, **fields) -> None:
