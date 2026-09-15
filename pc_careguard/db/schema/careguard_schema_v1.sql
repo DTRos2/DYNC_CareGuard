@@ -475,7 +475,7 @@ CREATE TABLE patrol_run (
         trigger IN ('schedule', 'manual', 'recheck')
     ),
     status          VARCHAR(16) NOT NULL CHECK (
-        status IN ('running', 'completed', 'aborted', 'failed')
+        status IN ('running', 'paused', 'completed', 'aborted', 'failed')
     ),
     waypoints_total INTEGER NOT NULL DEFAULT 0 CHECK (waypoints_total >= 0),
     waypoints_done  INTEGER NOT NULL DEFAULT 0 CHECK (waypoints_done >= 0),
@@ -496,7 +496,7 @@ COMMENT ON COLUMN patrol_run.recipient_id IS '대상자 id. FK 제약 없음';
 COMMENT ON COLUMN patrol_run.route_id IS '사용한 순찰 경로 id (patrol_route)';
 COMMENT ON COLUMN patrol_run.schedule_id IS '이 회차를 발생시킨 예약 id (patrol_schedule). 수동 실행은 NULL';
 COMMENT ON COLUMN patrol_run.trigger IS 'schedule(예약) / manual(담당자 지시) / recheck(재확인 요청)';
-COMMENT ON COLUMN patrol_run.status IS '순찰 회차 상태';
+COMMENT ON COLUMN patrol_run.status IS 'running(진행 중) / paused(ESP32 긴급 호출로 일시 중단, 자동 재개 대상) / completed / aborted / failed';
 COMMENT ON COLUMN patrol_run.waypoints_total IS '계획된 지점 수';
 COMMENT ON COLUMN patrol_run.waypoints_done IS '실제 방문한 지점 수';
 COMMENT ON COLUMN patrol_run.started_at IS '순찰 시작 시간';

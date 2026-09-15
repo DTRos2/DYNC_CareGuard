@@ -270,6 +270,21 @@ class DownlinkNode(Node):
             self.get_logger().warn('초기 위치 수동 보정이 20초를 넘어 중단했습니다')
 
     def _start_patrol(self, message: dict):
+        # override 없이 들어온 요청이 지금 실행 중인 goal을 밀어내면 안 된다 —
+        # 서버가 이미 patrol.py::_reject_if_already_patrolling으로 막지만, 혹시
+        # 그 검사와 이 메시지가 도착하는 사이에 경합이 생겨도 로봇 쪽에서 한 번
+        # 더 막는다. 이게 없으면 _ensure_patrol_task_running이 "map_id가 같아도
+        # 매번 무조건 재시작"하는 원래 설계 때문에 지금 돌고 있는 goal을 조용히
+        # SIGINT로 죽이고 새로 띄웠다 — nav_prepare(P6 페이지 새로고침만 해도
+        # 발사됨)가 그 계기가 될 수 있다는 걸 2026-09-15 R-07 스케줄 순찰이 원인
+        # 불명으로 stuck된 사고에서 실제로 확인했다. override=True는 ESP32 SOS와
+        # 저배터리 자동 복귀(robot_ws.py) 둘뿐이다 — 이 둘은 긴급이라 지금 뭘
+        # 하고 있든 밀어내고 우선 실행돼야 한다.
+        override = bool(message.get('override'))
+        if self._patrol_goal_handle is not None and not override:
+            self.get_logger().warn('이미 순찰/이동이 진행 중이라 새 요청을 무시합니다(override 없음)')
+            return
+
         # amcl(Nav2)이 안 떠있으면 순찰 자체가 불가능하다 — 예전엔 사용자가 매번
         # navigation_diff_launch.py + initial_pose_setter를 직접 손으로 켜야 했다
         # (그걸 깜빡하면 로봇 위치가 대시보드에 하나도 안 뜨는 증상으로만 보였다).
@@ -307,7 +322,7 @@ class DownlinkNode(Node):
 
         # patrol_task도 Nav2처럼 map_id 기준으로 (재)기동을 보장한다 — 아래 이유 참고.
         if map_id > 0:
-            if not self._ensure_patrol_task_running(map_id):
+            if not self._ensure_patrol_task_running(map_id, override=override):
                 self.get_logger().error('patrol_task 준비 실패로 순찰을 시작하지 않습니다')
                 return
         elif not self._patrol_client.wait_for_server(timeout_sec=2.0):
@@ -697,7 +712,7 @@ class DownlinkNode(Node):
         self._send_nav_status(True)
         return True
 
-    def _ensure_patrol_task_running(self, map_id: int) -> bool:
+    def _ensure_patrol_task_running(self, map_id: int, override: bool = False) -> bool:
         """patrol_task(careguard_mission)가 이 map_id로 이미 떠있는지 확인하고,
         아니면 (재)시작한다 — CAREGUARD_MAP_ID를 정확히 넣어서.
 
@@ -709,18 +724,25 @@ class DownlinkNode(Node):
         조용히 빈 동작으로 끝나거나 엉뚱한 좌표로 갔다 — _ensure_navigation_running과
         같은 이유·같은 패턴으로 이 노드가 대신 관리해 사람이 신경 안 써도 되게 한다.
 
-        map_id가 같아도 매번 무조건 재시작한다 — _ensure_navigation_running과 달리
-        여기선 map_id 하나만 보고 "이미 이 지도로 떠있다"고 재사용하면 안 된다.
-        map(robot_id, name) UNIQUE 제약 때문에 같은 이름으로 재매핑해도 map_id가
-        안 바뀌는데, 그러면 충전 스테이션 좌표는 새로 매핑한 값으로 바뀌었어도
-        patrol_task는 최초 기동 때 캐시한 예전 좌표를 계속 쓴다 — "지도를 바꿔도
-        이전 지도 기준으로 동작한다"는 리포트(2026-09-09)와 같은 원인의 버그다.
-        patrol_task는 Nav2와 달리 재시작 비용이 아주 작은 `ros2 run` 노드 하나라
-        (런치 트리·amcl·costmap 없음), Nav2처럼 "내용이 바뀌었는지" 따로 비교하는
-        대신 이 함수가 불릴 때마다 항상 새로 띄우는 쪽이 더 단순하고 안전하다 —
-        이 함수는 순찰이 실제로 진행 중일 땐 호출되지 않는다(nav_prepare로 미리
-        띄우거나, 새 순찰을 시작하기 직전에만 부른다 — _start_patrol 참고).
+        map_id가 같아도 무조건 재시작한다(override로 실제로 재시작할 때 한정) —
+        _ensure_navigation_running과 달리 여기선 map_id 하나만 보고 "이미 이
+        지도로 떠있다"고 재사용하면 안 된다. map(robot_id, name) UNIQUE 제약
+        때문에 같은 이름으로 재매핑해도 map_id가 안 바뀌는데, 그러면 충전
+        스테이션 좌표는 새로 매핑한 값으로 바뀌었어도 patrol_task는 최초 기동
+        때 캐시한 예전 좌표를 계속 쓴다 — "지도를 바꿔도 이전 지도 기준으로
+        동작한다"는 리포트(2026-09-09)와 같은 원인의 버그다.
+
+        override=False(기본값)이고 지금 실제로 goal을 실행 중이면(_patrol_goal_handle이
+        있으면) 아무것도 안 하고 그대로 True를 돌려준다 — "이 함수는 순찰이 실제로
+        진행 중일 땐 호출되지 않는다"는 예전 가정이 실제로는 깨져서(nav_prepare가
+        P6 페이지를 새로고침·맵 전환만 해도 호출된다) 진행 중인 goal이 조용히
+        SIGINT로 죽는 사고가 있었다(2026-09-15, R-07 스케줄 순찰). override=True는
+        ESP32 SOS·저배터리 자동 복귀처럼 지금 뭘 하고 있든 밀어내고 우선 실행돼야
+        하는 호출부만 쓴다(_start_patrol 참고) — 이때는 예전처럼 무조건 kill+재시작한다.
         """
+        if self._patrol_goal_handle is not None and not override:
+            return True
+
         if self._patrol_task_process is not None and self._patrol_task_process.poll() is None:
             self._terminate_process_group(self._patrol_task_process, 'patrol_task')
             self._patrol_task_process = None
