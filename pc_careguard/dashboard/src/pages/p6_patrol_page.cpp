@@ -2687,14 +2687,29 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         // 진행 상황이 DB(patrol_run.status)에는 이미 기록되고 있었지만, 이 메시지
         // 자체를 대시보드가 받아본 적이 없어서 화면(상태 바·버튼 잠금)엔 전혀
         // 반영되지 않았다.
+        //
+        // 예전엔 여기서 바로 isPatrolling_=false로 낙관적으로 꺼버렸는데, ESP32 SOS가
+        // 순찰을 밀어내고 끼어든 경우(run_id=0인 그 SOS 이동 자체의 patrol_done)엔
+        // 틀린 판단이다 — 서버가 곧바로 원래 순찰을 이어서 재개하므로(robot_ws.py::
+        // _resume_patrol_run) 로봇은 실제로 계속 점유 중이다. refreshRobotState()로
+        // DB를 다시 조회해 진짜 상태(재개돼 다시 running인지, 정말 끝났는지)를 따른다.
         if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
         if (maps_[currentMapIndex_].robotId != message.value(QStringLiteral("robot_code")).toString()) return;
-        isPatrolling_ = false;
-        activePatrolTrigger_.clear();
-        drivingWaypointId_.clear();
-        updateRobotStatusBanner();
-        updateDrivingButtonsEnabled();
-        rebuildWpList();
+        refreshRobotState();
+        return;
+    }
+
+    if (type == QStringLiteral("patrol_run_updated")) {
+        // 이 로봇의 "주행 중" 여부가 바뀌었을 수 있는 모든 순간에 서버가 보낸다 —
+        // 순찰/이동 시작(스케줄 자동 트리거·다른 팀원 PC의 수동 시작 포함), ESP32
+        // SOS가 끼어들며 기존 순찰을 paused로 남길 때, SOS 종료 후 재개할 때, 취소할
+        // 때. 이 페이지가 직접 시작한 게 아니어도(다른 팀원 PC·스케줄러) 새로고침
+        // 없이 배너·버튼 잠금이 즉시 맞춰지게 하는 게 목적이다(2026-09-15 추가 —
+        // 그 전엔 patrol_progress로 첫 웨이포인트 완료 메시지가 올 때까지, 또는
+        // 사용자가 수동으로 새로고침할 때까지 다른 팀원 PC에는 전혀 안 보였다).
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].robotId != message.value(QStringLiteral("robot_code")).toString()) return;
+        refreshRobotState();
         return;
     }
 

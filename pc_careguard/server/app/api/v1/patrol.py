@@ -276,6 +276,26 @@ def _reject_if_slam_active(cur, robot_id: int) -> None:
         raise HTTPException(status_code=409, detail="이 로봇은 SLAM 매핑 중이라 순찰/이동을 시작할 수 없습니다")
 
 
+def _reject_if_already_patrolling(cur, robot_id: int) -> None:
+    """이 로봇에 이미 진행 중(running)이거나 ESP32 긴급 호출로 잠시 밀려난(paused)
+    patrol_run이 있으면 409를 던진다 — 새 수동 순찰/이동이 그걸 밀어내고 로봇을
+    가로채지 못하게 막는다.
+
+    이게 없던 시절엔 downlink_node._ensure_patrol_task_running이 "map_id가 같아도
+    매번 무조건 재시작"해서, P6 페이지를 새로고침만 해도(nav_prepare) 지금 돌고
+    있는 순찰이 SIGINT로 조용히 죽었다(2026-09-15 R-07 스케줄 순찰 stuck 사고 원인).
+    여기서 먼저 막으면 로봇에 명령 자체가 안 나가므로 그 사고가 재발하지 않는다.
+
+    ESP32 SOS(dispatch_drive_to_point, severity 있음)는 이 검사를 타지 않는다 —
+    대신 기존 순찰을 paused로 남기고 끼어든다(같은 함수의 severity 분기 참고).
+    """
+    cur.execute(
+        "SELECT 1 FROM patrol_run WHERE robot_id = %s AND status IN ('running', 'paused')", (robot_id,)
+    )
+    if cur.fetchone() is not None:
+        raise HTTPException(status_code=409, detail="이미 순찰/이동 중입니다 — 완료 후 다시 시도해주세요")
+
+
 async def start_patrol_run(
     robot_id: int, route_id: int, trigger: str, schedule_id: Optional[int] = None
 ) -> PatrolRunItem:
@@ -290,6 +310,7 @@ async def start_patrol_run(
         if robot is None:
             raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
         _reject_if_slam_active(cur, robot_id)
+        _reject_if_already_patrolling(cur, robot_id)
 
         cur.execute(
             "SELECT map_id, steps FROM patrol_route WHERE id = %s AND deregistered_at IS NULL",
@@ -353,6 +374,12 @@ async def start_patrol_run(
     # (2026-09-12 추가) — patrol_progress/patrol_done은 이미 broadcast되고 있었지만
     # "시작" 시점 자체를 알리는 메시지는 없었다.
     await dashboard_ws.broadcast({"type": "patrol_run_created"})
+    # P6PatrolPage(팀원 전원의 대시보드)가 이 로봇의 "주행 중" 배너·버튼 잠금을 이
+    # 페이지 자신이 시작한 게 아니어도(스케줄 자동 트리거·다른 팀원 PC) 즉시
+    # 반영하게 한다 — cancel_patrol_run이 이미 쓰던 것과 같은 타입(refreshRobotState로
+    # 재조회, 2026-09-15 추가: 그 전엔 patrol_progress로 첫 웨이포인트 완료 메시지가
+    # 올 때까지 배너가 안 뜨는 공백이 있었다).
+    await dashboard_ws.broadcast({"type": "patrol_run_updated", "robot_code": robot["code"]})
 
     connected = await robot_ws.send_command(
         robot["code"],
@@ -382,6 +409,11 @@ def list_patrol_runs(
     버튼을 눌렀을 때, robot_id + status=running으로 걸어 "지금 이 로봇이 실제로
     주행 중인지"를 DB 기준으로 다시 맞추는 용도로 쓴다(patrol_task.py가 goal 하나만
     허용하므로 정상적으로는 0건 또는 1건만 나온다).
+
+    status=running으로 걸면 paused(ESP32 SOS가 잠시 밀어낸 순찰)도 같이 잡힌다 —
+    이 로봇을 "점유 중"인지 판단하는 모든 호출부(P1 통합관제, P6 버튼 잠금)에게
+    paused도 running과 마찬가지로 "아직 새 순찰/이동을 못 받는 상태"이기 때문이다.
+    다른 status 값(completed/aborted/failed)은 그대로 정확히 일치하는 것만 본다.
     """
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -391,7 +423,11 @@ def list_patrol_runs(
                    r.code AS robot_code
             FROM patrol_run pr JOIN robot r ON r.id = pr.robot_id
             WHERE (%(robot_id)s IS NULL OR pr.robot_id = %(robot_id)s)
-                AND (%(status)s IS NULL OR pr.status = %(status)s)
+                AND (
+                    %(status)s IS NULL
+                    OR pr.status = %(status)s
+                    OR (%(status)s = 'running' AND pr.status = 'paused')
+                )
             ORDER BY pr.started_at DESC
             """,
             {"robot_id": robot_id, "status": status},
@@ -430,7 +466,17 @@ async def dispatch_drive_to_point(
     이 필드들이 있을 때만 record_trigger(careguard_perception/video_recorder.py)를
     발행해 이벤트 클립 녹화를 켠다. P6 "이동"은 안 넘기므로(기본값 None) 녹화가
     안 켜진다 — 사람이 수동으로 옮기는 것까지 다 녹화할 이유는 없어서다.
+
+    severity 유무로 "이미 순찰/이동 중이면" 처리가 완전히 갈린다:
+    - severity 없음(P6 "이동"): _reject_if_already_patrolling과 동일하게 409로 막는다
+      — 사람이 수동으로 로봇을 가로채면 안 된다.
+    - severity 있음(ESP32 SOS): 긴급이므로 막지 않는다. 대신 지금 running인 순찰을
+      paused로 남기고(완전히 abort하지 않음) robot_ws에 재개 표식을 등록한 뒤,
+      override=True를 실어 보내 downlink_node가 지금 실행 중인 patrol_task를 밀어내고
+      이 SOS 이동을 바로 시작하게 한다. 이 SOS 이동이 끝나면(patrol_done) robot_ws가
+      자동으로 그 순찰을 이어서 재개한다(robot_ws.py::_resume_patrol_run).
     """
+    paused_run_id: Optional[int] = None
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
         robot = cur.fetchone()
@@ -439,6 +485,22 @@ async def dispatch_drive_to_point(
         # start_patrol_run과 같은 이유(_reject_if_slam_active 문서 참고) — "이동"도
         # patrol_start를 그대로 쓰므로 SLAM 중엔 로봇이 조용히 거부한다.
         _reject_if_slam_active(cur, robot["id"])
+
+        if not severity:
+            _reject_if_already_patrolling(cur, robot["id"])
+        else:
+            cur.execute(
+                "SELECT id FROM patrol_run WHERE robot_id = %s AND status = 'running'", (robot["id"],)
+            )
+            running = cur.fetchone()
+            if running is not None:
+                paused_run_id = running["id"]
+                cur.execute("UPDATE patrol_run SET status = 'paused' WHERE id = %s", (paused_run_id,))
+                conn.commit()
+
+    if paused_run_id is not None:
+        robot_ws.register_pending_resume(robot_code, paused_run_id)
+        await dashboard_ws.broadcast({"type": "patrol_run_updated", "robot_code": robot_code})
 
     payload = {
         "type": "patrol_start",
@@ -451,6 +513,7 @@ async def dispatch_drive_to_point(
         payload["care_event_id"] = care_event_id
         payload["severity"] = severity
         payload["reason"] = reason
+        payload["override"] = True
     return await robot_ws.send_command(robot_code, payload)
 
 
@@ -470,18 +533,23 @@ async def _clear_running_patrol_run(robot_code: str) -> None:
         cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
         robot = cur.fetchone()
         if robot is not None:
-            # patrol_run.status CHECK 제약은 'running'/'completed'/'aborted'/'failed'만
-            # 허용한다 — 'cancelled'는 없는 값이라, 이 UPDATE가 실제로 running 행을
-            # 하나라도 만나면 CheckViolation으로 매번 500이 났다(2026-09-13 발견: R-02에
-            # 쌓여있던 고아 running 기록 4건이 이 버그 때문에 "취소"를 눌러도 전혀 안
-            # 지워지고 있었다). 사용자가 직접 멈춘 경우의 라벨로 이미 있는 'aborted'
-            # ("중단", STATUS_LABELS 참고)가 의미상으로도 맞는다.
+            # patrol_run.status CHECK 제약은 'running'/'paused'/'completed'/'aborted'/
+            # 'failed'만 허용한다 — 'cancelled'는 없는 값이라, 이 UPDATE가 실제로
+            # running 행을 하나라도 만나면 CheckViolation으로 매번 500이 났다
+            # (2026-09-13 발견: R-02에 쌓여있던 고아 running 기록 4건이 이 버그
+            # 때문에 "취소"를 눌러도 전혀 안 지워지고 있었다). 사용자가 직접 멈춘
+            # 경우의 라벨로 이미 있는 'aborted'("중단", STATUS_LABELS 참고)가
+            # 의미상으로도 맞는다. paused도 같이 정리한다 — SOS 이동 도중 사용자가
+            # "취소"를 누르면 밀려나 있던 순찰까지 완전히 끝내려는 의도로 본다.
             cur.execute(
                 "UPDATE patrol_run SET status = 'aborted', ended_at = NOW() "
-                "WHERE robot_id = %s AND status = 'running'",
+                "WHERE robot_id = %s AND status IN ('running', 'paused')",
                 (robot["id"],),
             )
             conn.commit()
+            # paused였던 순찰을 취소했으니, SOS 이동이 끝나도 더 이상 자동으로
+            # 재개하면 안 된다.
+            robot_ws.clear_pending_resume(robot_code)
 
 
 @runs_router.post("/cancel", response_model=DriveToPointResponse)

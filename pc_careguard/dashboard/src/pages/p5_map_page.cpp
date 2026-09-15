@@ -340,6 +340,26 @@ void P5MapPage::openMapPreviewDialog(const QString& robotId) {
     overlay->deleteLater();
 }
 
+void P5MapPage::refreshPatrolState() {
+    if (currentRobotIndex_ < 0 || currentRobotIndex_ >= robots_.size()) return;
+    const int robotId = robots_[currentRobotIndex_].id;
+    const QString robotCode = currentRobotCode_;
+    if (robotId <= 0) return;  // 서버 미등록(로컬 데모) 로봇 — 조회 대상 자체가 없다.
+
+    apiClient_->fetchPatrolRuns(
+        robotId, QStringLiteral("running"),
+        [this, robotCode](bool ok, const QVector<ApiClient::PatrolRunInfo>& runs) {
+            if (!ok) return;
+            if (currentRobotCode_ != robotCode) return;  // 응답 오는 사이 다른 로봇으로 전환됨.
+            robotPatrolling_ = !runs.isEmpty();
+            teleopPanel_->setEnabled(!robotPatrolling_);
+            teleopPanel_->setToolTip(
+                robotPatrolling_
+                    ? QStringLiteral("순찰/이동 중에는 원격 조작을 쓸 수 없습니다 — P6에서 먼저 멈춰주세요")
+                    : QString());
+        });
+}
+
 void P5MapPage::loadActiveMapsFromServer() {
     apiClient_->fetchActiveMaps([this](bool ok, const QVector<ApiClient::MapInfo>& maps) {
         // 서버 미기동/DB에 맵 없음 — 매핑 현황 패널은 헤더만 남은 빈 상태로 둔다
@@ -469,6 +489,13 @@ void P5MapPage::switchToRobot(int index) {
     robotOnline_ = false;
     robotOfflineBanner_->setVisible(true);
     updateRobotChipText();
+    // 이전 로봇의 순찰 중 상태를 새 로봇에 이어서 들고 있으면 안 된다(위 SLAM/온라인
+    // 상태 리셋과 같은 이유) — 응답이 올 때까지는 안전하게 "잠깐 열어둠"(로봇 전환
+    // 직후 잘못 잠가서 조작을 막는 것보다 낫다, robotPatrolling_ 선언부 참고).
+    robotPatrolling_ = false;
+    teleopPanel_->setEnabled(true);
+    teleopPanel_->setToolTip(QString());
+    refreshPatrolState();
     // 카메라도 마찬가지 — 이전 로봇의 마지막 프레임이 남아있으면 새 로봇 화면인데
     // 정지된 이전 영상 + "연결 끊김" 배지가 뜬다(P6PatrolPage::loadMapData와 같은
     // 이유). 이 로봇의 camera_frame이 새로 도착하기 전까지는 "카메라 연결 중"
@@ -588,6 +615,16 @@ void P5MapPage::handleWsMessage(const QJsonObject& message) {
         // 다른 대시보드가 "파일로 등록"으로 이 로봇의 맵을 새로 올렸을 수 있다 —
         // slam_done과 같은 이유로 GET /maps/active를 다시 받는다.
         loadActiveMapsFromServer();
+        return;
+    }
+
+    if (type == QStringLiteral("patrol_run_updated") || type == QStringLiteral("patrol_done")) {
+        // 이 로봇의 순찰/이동 시작·종료(스케줄 자동 트리거·다른 팀원 PC의 수동 시작·
+        // ESP32 SOS 끼어듦/재개·취소 전부 포함) — 텔레옵 잠금을 즉시 다시 맞춘다
+        // (P6PatrolPage::handleWsMessage의 같은 처리와 같은 이유, 요청 사양: 순찰 중엔
+        // 원격 조작을 막아야 한다).
+        if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
+        refreshPatrolState();
         return;
     }
 

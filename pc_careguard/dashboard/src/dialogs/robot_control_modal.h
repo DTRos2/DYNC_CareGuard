@@ -10,7 +10,9 @@ class QWidget;
 class QLabel;
 class QPushButton;
 class QTimer;
+class QJsonObject;
 class MiniMapView;
+class WsClient;
 
 // P1 통합관제 로봇 카드 "상세" 버튼이 여는 모달 — 배터리·통신 지연·상태·진행 중
 // 이벤트·최근 미션을 한 화면에서 보고, 그 자리에서 순찰 취소/비상정지/이벤트 이동을
@@ -42,7 +44,10 @@ public:
         QVector<RecentMission> recentMissions;
     };
 
-    explicit RobotControlModal(const Data& data, QWidget* parent = nullptr);
+    // wsClient가 null이 아니면 열려있는 동안 맵/웨이포인트/로봇 위치가 바뀔 때마다
+    // /ws/dashboard 브로드캐스트를 받아 그 자리에서 다시 그린다(2026-09-15, 모달을
+    // 닫았다 다시 열어야만 최신값이 보이던 문제 수정).
+    explicit RobotControlModal(const Data& data, WsClient* wsClient, QWidget* parent = nullptr);
 
 signals:
     // "이벤트로 이동" 클릭 — 페이지 전환은 이 모달의 책임이 아니라 호출부(P1OverviewPage
@@ -61,6 +66,7 @@ private:
     QWidget* buildFooter();
 
     void loadChargeWaypoint();
+    void handleWsMessage(const QJsonObject& message);
     void handleCancelPatrolClicked();
     void beginReturnToChargeCountdown();
     void tickCountdown();
@@ -69,8 +75,10 @@ private:
 
     Data data_;
     ApiClient* apiClient_;
+    WsClient* wsClient_ = nullptr;
 
     MiniMapView* mapView_ = nullptr;
+    QLabel* positionLabel_ = nullptr;
     QPushButton* cancelPatrolBtn_ = nullptr;
 
     int mapId_ = 0;

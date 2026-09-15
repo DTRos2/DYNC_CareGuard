@@ -159,7 +159,7 @@ class UplinkNode(Node):
         self.create_subscription(LaserScan, '/scan', self._on_scan, qos_profile_sensor_data)
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
-        self.create_timer(SCAN_OVERLAY_INTERVAL_SEC, self._send_scan_overlay)
+        self.create_timer(SCAN_OVERLAY_INTERVAL_SEC, self._on_slam_overlay_tick)
 
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
@@ -175,6 +175,30 @@ class UplinkNode(Node):
 
     def _on_scan(self, msg: LaserScan):
         self._latest_scan = msg
+
+    def _on_slam_overlay_tick(self):
+        """map->base_link TF가 있을 때만(=Nav2/AMCL 켜짐) 위치를 보완 전송한다.
+
+        지금까지는 위치를 /amcl_pose 구독(_on_pose)에만 의존했는데, AMCL은 로봇이
+        멈춰있거나 스캔 매칭 갱신이 뜸할 때 새 추정치를 잘 안 내놓아 대시보드 위치도
+        같이 뜸해지는 문제가 있었다(LIMO는 careguard_agent::_on_slam_overlay_tick이
+        이미 TF 타이머 방식이라 이 문제가 없음 — 2026-09-15 R-06만 실시간 위치가
+        안 잡힌다는 리포트로 원인 확인). LIMO와 동일하게 이 스캔 오버레이 타이머
+        (0.3초)에 얹어 TF를 직접 읽어 보낸다 — _on_pose는 그대로 두고(공분산 있는
+        추정치라 값 자체는 더 정확) 두 경로가 같이 있어도 더 자주 갱신될 뿐 문제없다.
+        """
+        try:
+            tf = self._tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
+            pass
+        else:
+            self._send({
+                'type': 'position',
+                'x': tf.transform.translation.x,
+                'y': tf.transform.translation.y,
+                'yaw': _yaw_from_quaternion(tf.transform.rotation),
+            })
+        self._send_scan_overlay()
 
     def _send_scan_overlay(self):
         """careguard_agent(LIMO)::_send_scan_overlay와 동일 — 최신 /scan을

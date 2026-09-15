@@ -1,11 +1,13 @@
 #include "robot_control_modal.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 
 #include <QDateTime>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPainter>
@@ -14,6 +16,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "net/ws_client.h"
 #include "theme/tokens.h"
 #include "widgets/canvas_geometry.h"
 #include "widgets/pgm_image_loader.h"
@@ -72,6 +75,16 @@ public:
         update();
     }
 
+    // /ws/dashboard의 robot_position(map 프레임 x,y,yaw) — 실제 맵 배경이 있을 때만
+    // (CanvasGeometry 환산 기준이 있어야 하므로) 화살표로 그린다.
+    void setLivePose(double xMeters, double yMeters, double yawRad) {
+        hasLivePose_ = true;
+        liveX_ = xMeters;
+        liveY_ = yMeters;
+        liveYaw_ = yawRad;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent* event) override {
         QFrame::paintEvent(event);
@@ -87,7 +100,11 @@ protected:
             painter.drawImage(QRectF(imageTopLeft, imageScaledSize), backgroundImage_);
         }
 
-        if (waypoints_.isEmpty()) return;
+        // 실제 맵 배경이 있으면(hasRealMap) 웨이포인트가 하나도 없어도 로봇 위치
+        // 화살표는 그릴 수 있다 — 좌표 환산 기준이 CanvasGeometry(맵 resolution/origin)
+        // 뿐이라 웨이포인트 목록과 무관하다. 배경이 없는 폴백(웨이포인트 좌표 범위로
+        // 정규화)은 기준으로 삼을 웨이포인트가 최소 1개는 있어야 해서 그때만 같이 뺀다.
+        if (waypoints_.isEmpty() && !(hasRealMap && hasLivePose_)) return;
 
         std::function<QPointF(double, double)> toPoint;
         if (hasRealMap) {
@@ -144,6 +161,22 @@ protected:
             painter.setFont(f);
             painter.drawText(center + QPointF(-24, 16), QString("%1 %2").arg(wp.code, wp.name));
         }
+
+        if (hasLivePose_ && hasRealMap) {
+            const QPointF center = toPoint(liveX_, liveY_);
+            // map 프레임(y 위+, yaw 반시계+)을 화면(y 아래+)으로 옮기는 중이라 y 성분의
+            // 부호를 반대로 써야 화살표가 실제 로봇이 보는 방향과 일치한다
+            // (SlamMapView::drawLivePose와 같은 규칙).
+            const QPointF shaftDir(std::cos(liveYaw_), -std::sin(liveYaw_));
+            constexpr double kArrowLen = 16.0;
+            const QPointF tip = center + shaftDir * kArrowLen;
+
+            painter.setPen(QPen(Tokens::EMERGENCY.main, 2.5, Qt::SolidLine, Qt::RoundCap));
+            painter.drawLine(center, tip);
+            painter.setPen(QPen(Tokens::EMERGENCY.main, 1.5));
+            painter.setBrush(Tokens::EMERGENCY.main);
+            painter.drawEllipse(center, 5.0, 5.0);
+        }
     }
 
 private:
@@ -151,9 +184,14 @@ private:
     QImage backgroundImage_;
     qreal mapResolution_ = 0.0;
     QPointF mapOrigin_;
+    bool hasLivePose_ = false;
+    double liveX_ = 0.0;
+    double liveY_ = 0.0;
+    double liveYaw_ = 0.0;
 };
 
-RobotControlModal::RobotControlModal(const Data& data, QWidget* parent) : QDialog(parent), data_(data) {
+RobotControlModal::RobotControlModal(const Data& data, WsClient* wsClient, QWidget* parent)
+    : QDialog(parent), data_(data), wsClient_(wsClient) {
     setWindowTitle(QStringLiteral("로봇 상세 — %1").arg(data_.robotCode));
     setModal(true);
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
@@ -169,6 +207,13 @@ RobotControlModal::RobotControlModal(const Data& data, QWidget* parent) : QDialo
     root->addWidget(buildFooter());
 
     loadChargeWaypoint();
+
+    // 열려있는 동안 맵·웨이포인트·로봇 위치가 바뀌면 그 자리에서 다시 그린다
+    // (2026-09-15) — MainWindow가 공유하는 WsClient 하나를 그대로 물려받는다
+    // (P1OverviewPage::setWsClient와 같은 패턴, 모달마다 소켓을 새로 열지 않는다).
+    if (wsClient_ != nullptr) {
+        connect(wsClient_, &WsClient::messageReceived, this, &RobotControlModal::handleWsMessage);
+    }
 }
 
 QWidget* RobotControlModal::buildHeader() {
@@ -221,11 +266,12 @@ QWidget* RobotControlModal::buildLeftColumn() {
     mapView_ = new MiniMapView(column);
     layout->addWidget(mapView_, 1);
 
-    if (!data_.positionLabel.isEmpty()) {
-        auto* posLabel = new QLabel(data_.positionLabel, column);
-        posLabel->setProperty("role", "secondary");
-        layout->addWidget(posLabel);
-    }
+    // robot_position이 들어오면 handleWsMessage가 이 라벨의 텍스트를 채우고 보이게
+    // 한다 — 최초엔 데이터가 없으니 data_.positionLabel이 있을 때만 보여주고 시작한다.
+    positionLabel_ = new QLabel(data_.positionLabel, column);
+    positionLabel_->setProperty("role", "secondary");
+    positionLabel_->setVisible(!data_.positionLabel.isEmpty());
+    layout->addWidget(positionLabel_);
 
     return column;
 }
@@ -440,6 +486,44 @@ void RobotControlModal::loadChargeWaypoint() {
             }
         });
     });
+}
+
+void RobotControlModal::handleWsMessage(const QJsonObject& message) {
+    const QString type = message.value(QStringLiteral("type")).toString();
+
+    if (type == QStringLiteral("robot_position")) {
+        // uplink_node가 map->base_link TF를 올릴 때마다 옴 — P5MapPage::handleWsMessage와
+        // 같은 필드(x/y/yaw)를 그대로 쓴다.
+        if (message.value(QStringLiteral("robot_code")).toString() != data_.robotCode) return;
+        const double x = message.value(QStringLiteral("x")).toDouble();
+        const double y = message.value(QStringLiteral("y")).toDouble();
+        const double yaw = message.value(QStringLiteral("yaw")).toDouble();
+        if (mapView_) mapView_->setLivePose(x, y, yaw);
+        if (positionLabel_) {
+            positionLabel_->setText(QStringLiteral("현재 위치  x=%1 y=%2 · 헤딩 %3°")
+                                         .arg(x, 0, 'f', 2)
+                                         .arg(y, 0, 'f', 2)
+                                         .arg(yaw * 180.0 / M_PI, 0, 'f', 0));
+            positionLabel_->setVisible(true);
+        }
+        return;
+    }
+
+    if (type == QStringLiteral("waypoints_changed")) {
+        // 다른 대시보드가 P6에서 이 로봇의 맵 웨이포인트를 추가/수정/삭제했을 수 있다 —
+        // 지금 보고 있는 맵일 때만 다시 받는다.
+        if (mapId_ <= 0 || message.value(QStringLiteral("map_id")).toInt() != mapId_) return;
+        loadChargeWaypoint();
+        return;
+    }
+
+    if (type == QStringLiteral("map_changed")) {
+        // 이 로봇의 활성 맵 자체가 바뀌었을 수 있다(새로 SLAM해서 등록 등) — 활성 맵
+        // 조회부터 다시 한다.
+        if (message.value(QStringLiteral("robot_code")).toString() != data_.robotCode) return;
+        loadChargeWaypoint();
+        return;
+    }
 }
 
 void RobotControlModal::handleCancelPatrolClicked() {
