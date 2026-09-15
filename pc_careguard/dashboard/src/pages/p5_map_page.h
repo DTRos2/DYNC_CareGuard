@@ -72,6 +72,12 @@ private:
     // (GET /maps/active). 새로 파일로 등록/SLAM 저장한 맵은 이 경로를 타지 않고
     // openFileRegisterDialog()에서 바로 markMapDeployed()를 부른다.
     void loadActiveMapsFromServer();
+    // GET /patrol-runs?robot_id=&status=running(paused도 같이 잡힌다 — patrol.py
+    // 참고)로 "지금 이 로봇이 순찰/이동 중인지"를 물어 robotPatrolling_을 맞추고
+    // teleopPanel_을 잠근다. switchToRobot()과 handleWsMessage의 patrol_run_updated/
+    // patrol_done 수신 시 부른다 — P6PatrolPage::refreshRobotState와 같은 이유(순찰
+    // 중엔 텔레옵으로 로봇을 가로채면 Nav2 주행과 부딪힌다, 요청 사양).
+    void refreshPatrolState();
     // GET /robots — 맵 유무와 무관하게 등록된 전체 로봇 목록을 받아 헤더의 로봇
     // 드롭다운을 채운다(예전엔 "R-04" 고정 표시였다 — 2026-09-09 요청). 아직 맵이
     // 없는 로봇도 여기 나와야 매핑을 시작할 수 있어 GET /maps/active로는 못 만든다.
@@ -117,6 +123,12 @@ private:
     // 서버로부터 robot_status를 아직 못 받았으면 "모른다"가 아니라 안전하게
     // 오프라인으로 간주한다 — 그래서 기본값이 false다.
     bool robotOnline_ = false;
+    // 이 로봇이 지금 순찰/이동(schedule/manual/ESP32 SOS 무관하게 patrol_run이
+    // running 또는 paused) 중이면 true — refreshPatrolState()가 갱신한다. 기본값
+    // false(로봇 전환 직후 "모른다"를 안전하게 "주행 아님"으로 두는 게 아니라 —
+    // robotOnline_과 달리 이건 켜져 있으면 텔레옵을 "잠그는" 쪽이라, 모르는 동안
+    // 잘못 잠가서 조작을 막는 것보다 응답이 올 때까지 잠깐 열려 있는 쪽이 안전하다).
+    bool robotPatrolling_ = false;
     MappingStatusOverlay* statusOverlay_;
     SlamMappingCard* slamCard_;
     TeleopPanel* teleopPanel_;
