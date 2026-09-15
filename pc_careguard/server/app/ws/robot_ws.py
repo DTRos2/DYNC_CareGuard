@@ -337,6 +337,14 @@ async def _handle_message(robot_code: str, message: dict) -> None:
                     "map_id": return_map_id,
                 })
 
+    elif msg_type == "dock_result":
+        # 충전소 ArUco 도킹 정렬(_dock_with_aruco) 종료 보고 — nav_status와 같은 이유로
+        # DB에는 안 남기고 순수 중계만 한다. 실패해도 patrol_done/nav 성공 여부와는
+        # 별개로만 알리는 용도(로봇은 충전 웨이포인트 자체엔 이미 도착해 있다).
+        await dashboard_ws.broadcast(
+            {"type": "dock_result", "robot_code": robot_code, "docked": bool(message.get("docked"))}
+        )
+
     elif msg_type == "patrol_done":
         status = message.get("status", "completed")
         _update_patrol_run(message.get("run_id"), status=status, ended=True)
