@@ -21,7 +21,9 @@ public:
     explicit LoginWindow(QWidget* parent = nullptr);
 
 signals:
-    void loginSucceeded(const QString& username);
+    // role은 careguard_user.role.code (admin/operator/guardian), userId는 careguard_user.id —
+    // MainWindow가 role 기반 화면 구성과 guardian 대상자 필터링에 사용한다.
+    void loginSucceeded(const QString& username, const QString& role, int userId);
 
 private slots:
     void onSubmit();

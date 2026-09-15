@@ -289,7 +289,8 @@ public:
 
     // GET /recipients — P3 대상자 목록. 위험도(level)·상태 요약·복약 배지는 care_event
     // 연동이 아직 없어 이 응답에 없다 — 호출부가 등록 직후 기본값(정상/미확인)을 채운다.
-    void fetchRecipients(ListCallback<RecipientInfo> callback);
+    // guardianUserId>0이면 이 보호자 계정이 연결된 대상자만 받는다(role=guardian 대시보드 필터).
+    void fetchRecipients(ListCallback<RecipientInfo> callback, int guardianUserId = 0);
     // GET /recipients/{id} — P3 상세 모달이 여는 대상자 1명의 보호자·복약 스케줄까지.
     void fetchRecipientDetail(int recipientId, ItemCallback<RecipientDetailInfo> callback);
 

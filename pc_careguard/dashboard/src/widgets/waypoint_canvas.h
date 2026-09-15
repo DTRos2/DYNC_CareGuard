@@ -127,6 +127,13 @@ public:
     // 유효한 크기를 안 가졌을 때" 문제도 자연히 피해간다. 빈 벡터면 선을 지운다.
     void setPlannedPath(const QVector<QPointF>& pathMeters);
 
+    // 실시간 라이다 스캔 오버레이(P5 SlamMapView::setLiveScan과 같은 slam_scan_update
+    // WS 메시지를 공유) — map 프레임 미터 좌표 그대로 받는다. uplink_node.py가
+    // map->base_link TF가 존재하는 동안(=SLAM이든 AMCL 순찰 중이든) 계속 보내므로,
+    // 로봇 초기 위치(AMCL)를 잡기 전에는 TF가 없어 자연히 빈 배열만 오다가 초기
+    // 위치를 잡는 순간부터 점이 나타나기 시작한다. 빈 벡터면 지운다.
+    void setLiveScan(const QVector<QPointF>& pointsMeters);
+
     // 로봇의 실제 실시간 위치(로봇이 보낸 robot_position)를 지도 위에 표시한다.
     void setCurrentRobotPosition(QPointF canvasPos, qreal headingDeg);
     // 로봇이 아직 실시간 위치를 한 번도 안 보냈을 때, 충전 스테이션 위치를 임시로
@@ -135,6 +142,12 @@ public:
     // 시점에 아직 잘못 배치돼 있었을 수 있어서 — WaypointCanvas::showEvent 주석 참고).
     // 실시간 위치가 실제로 도착하면(setCurrentRobotPosition) 이 추적을 그만둔다.
     void setCurrentRobotPositionToChargingStation(QPointF canvasPos);
+    // 로봇 "현재 위치" 마커를 완전히 지운다(hasRobotPos_=false) — setCurrentRobotPosition*
+    // 두 함수는 값을 "덮어쓰기"만 할 뿐 지우는 방법이 없었다. 다른 로봇의 맵으로
+    // 전환했는데 그 로봇에 아직 충전 웨이포인트가 없어 새 위치를 못 채우는 경우,
+    // 이걸 먼저 부르지 않으면 이전 로봇의 마커가 좌표 그대로 남아있는다
+    // (P6PatrolPage::loadMapData 리포트, 2026-09-14).
+    void clearRobotPosition();
     // 우상단 카메라 라이브 화면에 실제 프레임을 흘려보낸다(camera_frame WS 메시지).
     void setCameraFrame(const QImage& frame);
     // 로봇/맵 전환 시 호출 — 이전 로봇의 마지막 프레임이 남아있지 않도록 카메라
@@ -239,6 +252,7 @@ private:
     QPointF poseCaptureCurrent_;
 
     QVector<QPointF> plannedPathMeters_;
+    QVector<QPointF> liveScanMeters_;
     QImage backgroundImage_;
     qreal mapResolution_ = 0.0;
     QPointF mapOrigin_;

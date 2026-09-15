@@ -397,9 +397,17 @@ void P1OverviewPage::populateAlertFeed() {
         return a.occurredAt > b.occurredAt;
     });
 
+    // events_ 자체(GET /events)는 날짜 제한이 없는 전체 이력이라, kMaxAlerts로만
+    // 자르면 오늘 이벤트가 적은 날엔 어제 이전 이벤트가 섞여 들어온다("실시간 알림"
+    // 이름과 안 맞음, 2026-09-14 리포트). rebuildRowsFromData가 쓰는 "진행 중 이벤트"
+    // (latestUnresolvedEventByRobot)는 미해결 이벤트를 날짜 상관없이 계속 보여줘야
+    // 하므로 events_ 자체는 안 건드리고, 이 피드에서만 오늘 날짜(로컬 기준)로 거른다.
+    const QDate today = QDate::currentDate();
+
     alerts_.clear();
     constexpr int kMaxAlerts = 20;
     for (const auto& event : sorted) {
+        if (event.occurredAt.toLocalTime().date() != today) continue;
         if (alerts_.size() >= kMaxAlerts) break;
         const char* level = Tokens::Prop::INFO;
         if (event.severity == QStringLiteral("emergency")) level = Tokens::Prop::EMERGENCY;
@@ -777,7 +785,12 @@ void P1OverviewPage::rebuildRowsFromData() {
         row.level = robot.isOnline ? (recipient ? riskLevelFromCode(recipient->level) : Tokens::Level::Normal)
                                     : Tokens::Level::Offline;
 
-        row.battery = liveBattery_.value(robot.code, -1);
+        // row.level/mission과 같은 이유(바로 위 주석 참고) — 통신이 끊긴 로봇은
+        // liveBattery_에 남아있는 마지막 값을 그대로 보여주면 "지금도 이 정도"라고
+        // 오해를 준다. 2026-09-14 "LIMO 통신이 끊겼는데 배터리 값이 그대로 뜬다"는
+        // 리포트로 실제 확인 — level/mission만 오프라인 처리가 돼 있고 배터리는
+        // 빠져 있었다. -1이면 테이블이 "-"로 표시한다(row.battery >= 0 분기 참고).
+        row.battery = robot.isOnline ? liveBattery_.value(robot.code, -1) : -1;
 
         row.medSteps = -1;
         if (recipient) {

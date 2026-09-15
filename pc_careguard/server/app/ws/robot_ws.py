@@ -36,15 +36,23 @@ _nav_running: Dict[str, bool] = {}
 # 순간(경계를 넘는 순간)에만 한 번 남긴다.
 _battery_alert_state: Dict[str, str] = {}
 
-# return_needed에서 벗어나려면 battery_return_pct를 이 여유분만큼 더 넘어야 한다.
+# return_needed/attention에서 벗어나려면(더 나은 상태로 갈 때만) 해당 임계값을 이
+# 여유분만큼 더 넘어야 한다. 나빠지는 방향(정상 -> 주의 -> 복귀)은 안전을 위해
+# 여유분 없이 즉시 반영한다 — 아래는 return_needed 쪽 여유분만 있을 때 실제로
+# 확인된 문제다.
+#
 # 2026-09-14 R-07(LIMO)에서 실제로 확인된 문제: 복귀 임계값(28%) 근처에서 모터
 # 구동/정지에 따라 배터리 %가 27%↔31%로 반복해서 튀는데(전압 처짐·회복 — 이미
 # 스무딩 대상인 것과 같은 현상, _smooth_battery_percent() 주석 참고), 여유분 없이
 # 그때그때 경계만 비교하면 return_needed <-> normal이 수십 초 간격으로 계속
 # 뒤집히면서 system_event가 반복 생성되고, 그때마다 "충전소로 복귀" 명령까지
-# 매번 다시 나갔다(patrol_start가 반복 재전송됨). 실측된 4%p 흔들림보다 넉넉하게
-# 잡는다.
-_BATTERY_RETURN_RECOVERY_MARGIN_PCT = 5
+# 매번 다시 나갔다(patrol_start가 반복 재전송됨).
+#
+# 처음엔 return_needed 쪽에만 이 여유분을 적용했는데, attention 임계값 근처에서도
+# 같은 전압 처짐/회복으로 정확히 같은 증상(배터리 주의 <-> 정상 회복이 번갈아
+# 반복 생성)이 재현됐다 — 그래서 attention 쪽 탈출에도 같은 여유분을 적용한다.
+# 실측된 4%p 흔들림보다 넉넉하게 잡는다.
+_BATTERY_RECOVERY_MARGIN_PCT = 5
 
 # robot.code -> 마지막으로 임계값을 확인한 시각(time.monotonic()). db.get_connection()이
 # 커넥션 풀 없이 매번 원격 DB(192.168.230.13)에 새 TCP 연결을 여는 방식이라, /battery_state가
@@ -193,7 +201,17 @@ async def _handle_message(robot_code: str, message: dict) -> None:
     msg_type = message.get("type")
 
     if msg_type == "position":
-        position = {"x": message.get("x"), "y": message.get("y"), "yaw": message.get("yaw")}
+        # pos_std_m(위치 표준편차, 미터) — LIMO uplink_node._on_pose가 /amcl_pose
+        # 공분산에서 뽑아 보낸다. P6 "위치 보정" 직후 AMCL이 실제로 수렴했는지
+        # 판단하는 데 쓴다(P6PatrolPage::poseCaptureSettling_). TF 기반 경로
+        # (_on_slam_overlay_tick, P5 SLAM 전용)는 공분산이 없어 이 필드를 안 보내며,
+        # 그때는 None으로 그대로 넘어간다.
+        position = {
+            "x": message.get("x"),
+            "y": message.get("y"),
+            "yaw": message.get("yaw"),
+            "pos_std_m": message.get("pos_std_m"),
+        }
         _latest_positions[robot_code] = position
         await dashboard_ws.broadcast({"type": "robot_position", "robot_code": robot_code, **position})
 
@@ -445,13 +463,18 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
 
         previous_state = _battery_alert_state.get(robot_code, "normal")
 
-        if previous_state == "return_needed" and percentage <= return_pct + _BATTERY_RETURN_RECOVERY_MARGIN_PCT:
-            # 여유분(_BATTERY_RETURN_RECOVERY_MARGIN_PCT)을 확실히 넘기 전까지는
+        if previous_state == "return_needed" and percentage <= return_pct + _BATTERY_RECOVERY_MARGIN_PCT:
+            # 여유분(_BATTERY_RECOVERY_MARGIN_PCT)을 확실히 넘기 전까지는
             # return_needed를 유지한다 — return_pct를 살짝 넘나드는 값(모듈 상단
             # 주석 참고)만으로 정상 복귀로 인정하지 않는다.
             new_state = "return_needed"
         elif percentage <= return_pct:
             new_state = "return_needed"
+        elif previous_state == "attention" and percentage <= attention_pct + _BATTERY_RECOVERY_MARGIN_PCT:
+            # return_needed와 같은 이유 — attention_pct 근처에서도 같은 폭으로
+            # 흔들려 "배터리 주의" <-> "정상 회복"이 번갈아 반복 생성되는 게
+            # 실제로 확인됐다(모듈 상단 주석 참고).
+            new_state = "attention"
         elif percentage <= attention_pct:
             new_state = "attention"
         else:
@@ -461,15 +484,19 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
         if new_state == previous_state:
             return None
 
+        # "정상 회복" 로그는 남기지 않는다 — 사용자 요청(2026-09-14): 주의/복귀 알림만
+        # 있으면 되고, 그게 풀렸다는 별도 로그는 필요 없다고 판단됨. 상태 추적
+        # (_battery_alert_state)은 히스테리시스 판정에 계속 필요해서 위에서 그대로
+        # 갱신하고, system_event만 안 남긴다.
+        if new_state == "normal":
+            return None
+
         if new_state == "attention":
             event_type, severity = "battery_attention", "warn"
             event_message = f"배터리 {percentage:.0f}% — 주의 임계값({attention_pct}%) 이하"
-        elif new_state == "return_needed":
+        else:
             event_type, severity = "battery_return_needed", "error"
             event_message = f"배터리 {percentage:.0f}% — 복귀 임계값({return_pct}%) 이하, 충전 복귀 시작"
-        else:
-            event_type, severity = "battery_recovered", "info"
-            event_message = f"배터리 {percentage:.0f}% — 정상 범위로 회복"
 
         cur.execute(
             "INSERT INTO system_event (robot_id, event_type, severity, message) VALUES (%s, %s, %s, %s)",

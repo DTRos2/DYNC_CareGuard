@@ -29,6 +29,7 @@ class WsClient;
 class QJsonObject;
 class TeleopPanel;
 class QKeyEvent;
+class QTimer;
 
 // P6 순찰·경로 — 웨이포인트 편집 캔버스 + WP 목록/경로/스케줄.
 // CareGuard_DESIGN_SYSTEM.md §6 (idx 5), §7 참고.
@@ -193,6 +194,10 @@ private:
     // 위치를 즉석에서 다시 잡는다(자동 세팅이 충전 스테이션 좌표를 가정하는 것과 달리,
     // 로봇이 실제로 있는 임의의 위치를 사용자가 직접 지정할 때 쓴다).
     void handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg);
+    // poseCaptureSettling_ 구간을 끝낸다 — 공분산이 임계값 밑으로 내려와서(정상
+    // 종료), 안전판 타이머가 만료돼서, 또는 API 요청 자체가 실패해서, 세 경로
+    // 모두 같은 마무리(플래그·타이머·버튼 복구)가 필요해 한 곳으로 모았다.
+    void finishPoseCaptureSettling();
     void toggleScheduleForm(bool show);
     void saveScheduleFromForm();
     // scheduleListLayout_의 편집 아이콘 클릭 — schedules_[index]로 스케줄 폼을 채우고
@@ -373,6 +378,22 @@ private:
     WaypointPopover* popover_;
     QWidget* canvasToolbarRow_;
     QPushButton* poseCaptureBtn_;
+    // "위치 보정" 전송 직후 AMCL이 파티클을 다시 수렴시키는 동안 robot_position이
+    // 튀어 마커가 흔들려 보인다는 피드백 — 그 구간 동안은 handleWsMessage의
+    // robot_position 갱신을 원칙적으로 무시하고, 사용자가 방금 지정한 자리를 그대로
+    // 보여준다. 처음엔 고정 시간(1.8초) 타이머로 이 구간을 가렸는데, 실 로봇(R-07)
+    // 에서 실제 수렴 시간이 그보다 길어서 타이머가 먼저 풀려버리면 그 뒤에 오는
+    // 아직 안 수렴한 값들 때문에 흔들림이 그대로 노출되는 문제가 있었다
+    // (2026-09-14). 그래서 "고정 시간 추측" 대신 AMCL이 실제로 보고하는 위치
+    // 신뢰도(공분산)를 본다 — robot_position에 실려오는 pos_std_m(위치 표준편차,
+    // 미터, uplink_node.py::_on_pose가 /amcl_pose 공분산에서 계산)이
+    // kPoseConvergedStdMeters 이하로 내려오면 그 즉시 정착을 끝낸다.
+    // poseCaptureSettleTimer_는 이제 "정답 신호"가 아니라 안전판(fallback)이다 —
+    // pos_std_m이 안 오거나 끝까지 임계값 밑으로 안 내려가는 경우(필드 유실,
+    // 환경이 안 좋아 AMCL이 못 붙는 경우 등)에도 버튼이 영원히 잠겨있지 않도록
+    // 넉넉한 시간 뒤에 강제로 풀어준다.
+    bool poseCaptureSettling_ = false;
+    QTimer* poseCaptureSettleTimer_;
     // P5MapPage와 같은 방향키패드+속도 프리셋 위젯 — 순찰 페이지에서도 원격 조종이
     // 필요하다는 요청으로 추가. velocityChanged를 현재 맵의 로봇 코드로
     // apiClient_->sendTeleop()에 그대로 연결한다.

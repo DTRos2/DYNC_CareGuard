@@ -102,9 +102,19 @@ class InitialPoseSetter(Node):
         msg.pose.pose.position.y = y
         msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        # 3번/0.6초 -> 15번/약 3초로 늘렸다 — downlink_node.py 쪽 subprocess
-        # timeout도 같이 늘려야 한다(_ensure_navigation_running/_set_initial_pose).
-        for _ in range(15):
+        # 3번/0.6초 -> 15번/약 3초로 늘렸었다가(위 2026-09-08 사례), 2026-09-14에
+        # 5번/약 1초로 다시 줄였다 — AMCL이 /initialpose를 받을 때마다 파티클
+        # 클라우드를 통째로 다시 뿌리기 때문에, 첫 메시지가 이미 전달된 뒤에도
+        # 나머지 재발행이 매번 새로 파티클을 리셋시켜 P6 대시보드의 로봇 마커가
+        # 그 구간 내내 흔들려 보이는 부작용이 있었다(대시보드 쪽은
+        # P6PatrolPage::poseCaptureSettleTimer_로 이 구간만큼만 흔들림을 가린다 —
+        # 그 값도 이 숫자에 맞춰 같이 줄였다). 5번도 여전히 안전 마진(첫 메시지가
+        # 씹혀도 나머지 4번 중 하나는 통과하길 기대)은 남겨두지만, 15번보다는
+        # 그 마진이 줄어든다 — 실 로봇에서 재검증 안 됨. 만약 초기 위치 설정이
+        # 다시 가끔 실패하기 시작하면(2026-09-08 증상: AMCL이 /amcl_pose를 끝내
+        # 발행하지 않음) 이 숫자를 다시 늘리는 게 최우선 의심 지점이다.
+        # downlink_node.py 쪽 subprocess timeout(20s)은 여유가 넉넉해 그대로 둔다.
+        for _ in range(5):
             msg.header.stamp = self.get_clock().now().to_msg()
             self._pub.publish(msg)
             rclpy.spin_once(self, timeout_sec=0.2)

@@ -2,6 +2,7 @@
 #include <QDate>
 #include <QMap>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QWidget>
 
@@ -142,9 +143,17 @@ public:
     // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
     void setWsClient(WsClient* client);
 
+    // role=guardian이면 userId(careguard_user.id)를 넘겨 자신이 연결된 대상자만 받도록
+    // GET /recipients?guardian_user_id=를 쓴다. role이 그 외면 0을 넘겨 전체 목록으로 되돌린다.
+    // MainWindow::setUserRole()가 로그인 직후 호출한다.
+    void setGuardianUserId(int userId);
+
 signals:
     // 긴급 카드의 "이벤트 확인" 클릭. MainWindow가 P2 이벤트 페이지로 전환 + 필터링에 연결한다.
     void eventCheckRequested(const QString& recipientName);
+    // guardian 필터 적용 후(또는 해제 후) 대상자 이름 목록. MainWindow가 P2EventPage의
+    // 이벤트 필터에도 같은 이름 목록을 넘겨, 보호자가 자신의 대상자 이벤트만 보게 한다.
+    void guardianRecipientNamesChanged(const QStringList& names);
 
 protected:
     // 창 크기가 바뀔 때마다 카드 그리드 열 수를 다시 계산해 반응형으로 재배치한다 (P4와 동일 패턴).
@@ -183,6 +192,7 @@ private:
     ApiClient* apiClient_ = nullptr;
     WsClient* wsClient_ = nullptr;
     QVector<RecipientCard> recipients_;
+    int guardianUserId_ = 0;  // 0 = 필터 없음(admin/operator)
 
     // 현재 열려 있는 상세 모달과 그 대상자 id — 없으면 -1/nullptr(다이얼로그는
     // WA_DeleteOnClose라 닫히면 destroyed 시그널에서 이 둘을 되돌린다).

@@ -159,9 +159,19 @@ def _next_code(cur) -> str:
 
 
 @router.get("", response_model=List[RecipientItem])
-def list_recipients():
+def list_recipients(guardian_user_id: Optional[int] = None):
+    """guardian_user_id가 있으면 이 보호자 계정(guardian.user_id)이 연결된 대상자만 반환한다 —
+    P3가 guardian 로그인 시 "자신의 대상자만" 필터링하는 데 쓴다."""
     with db.get_connection() as conn, conn.cursor() as cur:
-        cur.execute(_RECIPIENT_SELECT + " WHERE rc.deregistered_at IS NULL ORDER BY rc.id")
+        if guardian_user_id is not None:
+            cur.execute(
+                _RECIPIENT_SELECT
+                + " JOIN guardian g ON g.recipient_id = rc.id AND g.deregistered_at IS NULL"
+                  " WHERE rc.deregistered_at IS NULL AND g.user_id = %s ORDER BY rc.id",
+                (guardian_user_id,),
+            )
+        else:
+            cur.execute(_RECIPIENT_SELECT + " WHERE rc.deregistered_at IS NULL ORDER BY rc.id")
         rows = cur.fetchall()
         ids = [row["id"] for row in rows]
         risk = _risk_by_recipient(cur, ids)

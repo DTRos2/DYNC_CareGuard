@@ -257,9 +257,11 @@ class DownlinkNode(Node):
                 ['ros2', 'run', 'careguard_nav', 'initial_pose_setter'],
                 env={**os.environ, 'CAREGUARD_INIT_X': str(x), 'CAREGUARD_INIT_Y': str(y),
                      'CAREGUARD_INIT_YAW': str(yaw)},
-                # initial_pose_setter가 재시도 발행 구간을 3번/0.6초 -> 15번/약 3초로
-                # 늘렸다(DDS 디스커버리 직후 첫 메시지가 씹히는 문제 — 아래 이유 참고,
-                # SUBSCRIBER_WAIT_TIMEOUT_SEC 5초 + 발행 구간 약 3초 + 여유).
+                # initial_pose_setter의 재시도 발행 구간(3번/0.6초 -> 15번/약 3초 ->
+                # 5번/약 1초, 2026-09-14 — 파일 내 주석 참고: DDS 디스커버리 직후
+                # 첫 메시지가 씹히는 문제 대 P6 대시보드 마커 흔들림, 둘 사이 절충)
+                # 보다 여유 있게 잡은 타임아웃 — SUBSCRIBER_WAIT_TIMEOUT_SEC 5초 +
+                # 발행 구간 약 1초 + 넉넉한 margin.
                 capture_output=True, text=True, timeout=20,
             )
             if result.returncode != 0:
@@ -683,12 +685,14 @@ class DownlinkNode(Node):
                 ['ros2', 'run', 'careguard_nav', 'initial_pose_setter'],
                 env={**os.environ, 'CAREGUARD_MAP_ID': str(map_id)},
                 # initial_pose_setter.py::publish_when_ready 참고 — DDS 디스커버리
-                # 직후 첫 메시지 유실 문제로 재시도 구간을 늘려서(3번/0.6초 ->
-                # 15번/약 3초) 여기 timeout도 같이 늘렸다(SUBSCRIBER_WAIT_TIMEOUT_SEC
-                # 5초 + 발행 구간 약 3초 + 여유). 실 로봇에서 이 값이 짧아 초기 위치
-                # 설정이 조용히 실패 -> global_costmap이 activating에 멈추고
-                # bt_navigator가 inactive라 순찰이 전부 무동작으로 끝나는 버그를
-                # 실제로 겪었다(2026-09-08).
+                # 직후 첫 메시지 유실 문제로 재시도 구간을 늘렸다가(3번/0.6초 ->
+                # 15번/약 3초), P6 대시보드 마커 흔들림 피드백으로 2026-09-14에
+                # 5번/약 1초로 다시 줄였다. timeout(20s)은 원래 늘렸던 여유
+                # (SUBSCRIBER_WAIT_TIMEOUT_SEC 5초 + 발행 구간 약 3초 + margin) 그대로
+                # 뒀다 — 실제 소요 시간이 줄었을 뿐이니 그대로 둬도 여유는 더 늘어날
+                # 뿐이다. 실 로봇에서 이 값이 짧아 초기 위치 설정이 조용히 실패 ->
+                # global_costmap이 activating에 멈추고 bt_navigator가 inactive라
+                # 순찰이 전부 무동작으로 끝나는 버그를 실제로 겪었다(2026-09-08).
                 capture_output=True, text=True, timeout=20,
             )
             if result.returncode != 0:

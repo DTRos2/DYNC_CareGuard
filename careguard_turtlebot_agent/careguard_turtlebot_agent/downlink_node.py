@@ -1,9 +1,11 @@
 """careguard_turtlebot_agent/downlink_node.py
 
-서버 -> 터틀봇 다운링크 — 지금은 딱 하나의 목적만 가진 최소 구현이다: 배터리가
-임계값(복귀 필요)을 넘었을 때 robot_ws.py::_handle_battery_state가 보내는
-patrol_start(waypoints=[], return_to_charging=True)를 받아 실제로 충전 스테이션
-웨이포인트까지 Nav2로 주행한다.
+서버 -> 터틀봇 다운링크. 배터리가 임계값(복귀 필요)을 넘었을 때
+robot_ws.py::_handle_battery_state가 보내는 patrol_start(waypoints=[],
+return_to_charging=True)를 받아 충전 스테이션 웨이포인트까지 Nav2로
+주행하고, P6 "경로 주행"이 보내는 patrol_start(waypoints=[...])를 받으면
+그 웨이포인트들을 순서대로 돈 뒤(2026-09-14부터, _run_patrol) 충전소로
+복귀한다.
 
 LIMO(robot_careguard_ws/src/careguard_agent/downlink_node.py)는 SLAM·순찰(다중
 웨이포인트)·비디오 녹화·음성 안내까지 로봇 소프트웨어 전체를 관리하는 훨씬 큰
@@ -25,10 +27,28 @@ turtlebot3_navigation2 소스 트리에 있는 `param/burger.yaml`을 그대로 
 burger.yaml`에 있음을 실 로봇에서 확인함) — 환경변수 CAREGUARD_NAV2_PARAMS_FILE로
 바꿀 수 있다.
 
-patrol_start에 실제 웨이포인트 목록이 들어있는 "진짜 순찰" 요청은 아직 처리하지
-않는다 — 조용히 무시하지 않고 경고 로그를 남겨서, uplink_node만 있고 downlink가
-아예 없던 이전 상태(2026-09-13 트러블슈팅에서 발견됨)처럼 "명령이 어디로 갔는지
-모르는" 상황이 재발하지 않게 한다.
+2026-09-14: patrol_start에 실제 웨이포인트 목록이 든 "진짜 순찰" 요청 처리를
+추가했다(_run_patrol) — LIMO(careguard_mission/patrol_task.py)는 이걸 별도
+액션 서버로 구현하고 영상 녹화(careguard_perception)·음성 안내
+(careguard_hmi)까지 같이 트리거하는데, 그 패키지들은 터틀봇 워크스페이스에
+없다(위 문단 참고). 그래서 상태 기계(웨이포인트를 순서대로 돌고, 하나라도
+실패하면 즉시 중단, 끝나면 충전소로 복귀, patrol_progress/patrol_done
+보고)만 이 노드 안에 직접 옮겨왔고, 영상·음성 연동은 옮기지 않았다(터틀봇엔
+그 기능 자체가 없어서 재현 불가능) — _drive_to_charge와 목적지 하나로
+가는 로직(goToPose+대기+취소확인)을 공유하려고 _go_to_pose_and_wait로
+빼냈다. "이동"(단일 지점, return_to_charging=False — P6 "이동"/SOS 자동
+출동)은 여전히 스코프 밖이라 경고만 남기고 무시한다.
+
+patrol_start 처리가 없어서 "명령이 어디로 갔는지 모르는" 상황이 재발하지
+않도록(2026-09-13 트러블슈팅에서 발견된 문제), 아직 처리 못 하는 조합은
+조용히 무시하지 않고 경고 로그를 남긴다.
+
+2026-09-14: P6 "초기 위치 설정"(set_initial_pose)이 터틀봇에서 아무 반응이 없다는
+문제로 nav_prepare/set_initial_pose 핸들러를 추가했다 — LIMO(careguard_agent)
+쪽 구현은 careguard_nav/careguard_mission 같은 LIMO 전용 패키지에 의존해 그대로
+옮길 수 없어서, 이미 이 노드에 있던 _ensure_navigation_running/
+_publish_initial_pose(둘 다 외부 패키지 없이 자체 구현됨)를 그대로 재사용해
+얇은 핸들러만 새로 달았다.
 
 빌드/실행 미검증 — nav2_simple_commander.BasicNavigator API는 실 로봇(R-05/R-06)
 에서 한 번 맞춰봐야 한다(robot_careguard_ws의 같은 표시가 있는 코드들과 같은
@@ -50,7 +70,8 @@ import requests
 import websockets
 import yaml
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from nav2_simple_commander.robot_navigator import BasicNavigator
+from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 
 from . import ws_config
@@ -142,31 +163,71 @@ class DownlinkNode(Node):
             self._start_patrol(message)
         elif msg_type == 'patrol_stop':
             self._stop_patrol(message)
+        elif msg_type == 'nav_prepare':
+            self._prepare_navigation(message)
+        elif msg_type == 'set_initial_pose':
+            self._handle_set_initial_pose(message)
         else:
-            # SLAM/cmd_vel/nav_prepare 등은 아직 이 노드가 처리하지 않는다 —
-            # 조용히 버리지 않고 경고를 남겨서 "명령이 어디로 갔는지 모르겠다"는
-            # 상황(이번에 downlink_node 자체가 없어서 겪은 문제)이 재발하지 않게 한다.
+            # SLAM/cmd_vel 등은 아직 이 노드가 처리하지 않는다 — 조용히 버리지
+            # 않고 경고를 남겨서 "명령이 어디로 갔는지 모르겠다"는 상황(이번에
+            # downlink_node 자체가 없어서 겪은 문제)이 재발하지 않게 한다.
             self.get_logger().warn(f'터틀봇 downlink가 아직 처리하지 않는 명령: {msg_type!r}')
+
+    def _prepare_navigation(self, message: dict):
+        """P6 페이지가 열리거나 다른 로봇의 맵으로 전환될 때 오는 명령 — 실제
+        순찰/이동 목표 없이 Nav2만 미리 준비한다.
+        careguard_agent/downlink_node.py::_prepare_navigation과 같은 목적이지만,
+        video_recorder/voice_announcer/patrol_task 기동은 LIMO 전용 워크스페이스
+        패키지(careguard_mission 등)에 의존해서 터틀봇엔 없다(모듈 docstring
+        참고) — Nav2 준비까지만 한다.
+        """
+        map_id = int(message.get('map_id', 0) or 0)
+        if map_id <= 0:
+            self.get_logger().warn('nav_prepare에 유효한 map_id가 없습니다')
+            return
+        try:
+            charge_x, charge_y, charge_yaw = self._fetch_charge_waypoint(map_id)
+        except Exception as exc:  # noqa: BLE001 - 원인이 다양해(네트워크/DB/웨이포인트 없음 등) 전부 여기서 로그만 남긴다
+            self.get_logger().error(f'nav_prepare용 충전 웨이포인트 조회 실패: {exc}')
+            return
+        self._ensure_navigation_running(map_id, charge_x, charge_y, charge_yaw)
+
+    def _handle_set_initial_pose(self, message: dict):
+        """P6 "위치 보정" — 지도 클릭+드래그로 사용자가 직접 지정한 위치·방향으로
+        AMCL 초기 위치를 즉석에서 다시 잡는다.
+        careguard_agent/downlink_node.py::_set_initial_pose와 같은 목적이지만,
+        그쪽은 careguard_nav 패키지를 별도 프로세스(`ros2 run careguard_nav
+        initial_pose_setter`)로 불러 처리하는데 터틀봇 워크스페이스엔 그 패키지가
+        없다 — 대신 이 노드가 이미 자체 구현해둔 _publish_initial_pose를 그대로
+        쓴다(patrol_start가 충전 복귀 후 초기 위치를 잡을 때 쓰는 것과 동일한
+        경로). Nav2 자체는 이미 떠 있어야 한다(여기서 새로 켜지 않음).
+        """
+        if self._nav_process is None or self._nav_process.poll() is not None:
+            self.get_logger().warn('Nav2가 떠있지 않아 초기 위치를 보정할 수 없습니다')
+            return
+        x = float(message.get('x', 0.0) or 0.0)
+        y = float(message.get('y', 0.0) or 0.0)
+        yaw = float(message.get('yaw', 0.0) or 0.0)
+        self._publish_initial_pose(x, y, yaw)
 
     def _start_patrol(self, message: dict):
         waypoints = message.get('waypoints') or []
         return_to_charging = bool(message.get('return_to_charging', True))
-        if waypoints or not return_to_charging:
-            # 실제 웨이포인트 순찰(P6 다중 지점) 또는 "이동"(단일 지점, return_to_charging=False)
-            # — 이번 스코프 밖. LIMO의 careguard_mission/patrol_task.py에 해당하는
-            # 기능이 터틀봇엔 아직 없다.
+        if not waypoints and not return_to_charging:
+            # "이동"(단일 지점, return_to_charging=False) — P6 "이동" 버튼/SOS 자동
+            # 출동이 이 조합을 보낸다. 여전히 스코프 밖(모듈 docstring 참고).
             self.get_logger().warn(
-                '터틀봇은 아직 웨이포인트 순찰/이동을 지원하지 않습니다 — '
-                '배터리 자동 복귀(빈 웨이포인트 + return_to_charging)만 처리합니다')
+                '터틀봇은 아직 단일 지점 "이동"을 지원하지 않습니다 — '
+                '웨이포인트 순찰 또는 배터리 자동 복귀(빈 웨이포인트+return_to_charging)만 처리합니다')
             return
 
         if self._nav_active:
-            self.get_logger().warn('이미 충전소로 복귀 중입니다 — 새 요청을 무시합니다')
+            self.get_logger().warn('이미 주행 중입니다 — 새 요청을 무시합니다')
             return
 
         map_id = int(message.get('map_id', 0) or 0)
         if map_id <= 0:
-            self.get_logger().error('patrol_start(복귀)에 유효한 map_id가 없습니다')
+            self.get_logger().error('patrol_start에 유효한 map_id가 없습니다')
             return
 
         try:
@@ -176,29 +237,99 @@ class DownlinkNode(Node):
             return
 
         if not self._ensure_navigation_running(map_id, charge_x, charge_y, charge_yaw):
-            self.get_logger().error('Nav2 준비 실패로 충전소 복귀를 시작하지 않습니다')
+            self.get_logger().error('Nav2 준비 실패로 주행을 시작하지 않습니다')
             return
 
         self._cancel_requested.clear()
         self._nav_active = True
-        self._nav_thread = threading.Thread(
-            target=self._drive_to_charge, args=(charge_x, charge_y, charge_yaw), daemon=True)
+        run_id = int(message.get('run_id', 0) or 0)
+        if waypoints:
+            self._nav_thread = threading.Thread(
+                target=self._run_patrol,
+                args=(run_id, waypoints, return_to_charging, charge_x, charge_y, charge_yaw),
+                daemon=True)
+        else:
+            self._nav_thread = threading.Thread(
+                target=self._drive_to_charge, args=(charge_x, charge_y, charge_yaw), daemon=True)
         self._nav_thread.start()
 
-    def _drive_to_charge(self, x: float, y: float, yaw: float):
-        # careguard_nav/waypoint_manager.py::_go_through와 같은 패턴 — 이 스레드
-        # 하나만 self._navigator를 건드린다(cancelTask/isTaskComplete를 여러
-        # 스레드에서 동시에 부르면 경쟁 상태가 생길 수 있어서 patrol_stop은
-        # 직접 cancelTask()를 부르지 않고 이 스레드에 취소만 요청한다).
+    def _go_to_pose_and_wait(self, x: float, y: float, yaw: float) -> bool:
+        """목표 지점까지 Nav2로 주행하고 끝날 때까지 대기한다. 성공하면 True,
+        취소되거나 실패하면 False. careguard_nav/waypoint_manager.py::_go_through와
+        같은 패턴 — 이 스레드 하나만 self._navigator를 건드린다(cancelTask/
+        isTaskComplete를 여러 스레드에서 동시에 부르면 경쟁 상태가 생길 수 있어서
+        patrol_stop은 직접 cancelTask()를 부르지 않고 이 스레드에 취소만
+        요청한다). _drive_to_charge(충전 복귀 단독 주행)와 _run_patrol(여러
+        웨이포인트 순찰)이 이 헬퍼를 공유한다.
+        """
         self._navigator.goToPose(self._to_pose_stamped(x, y, yaw))
+        while not self._navigator.isTaskComplete():
+            if self._cancel_requested.is_set():
+                self._navigator.cancelTask()
+                return False
+            time.sleep(0.2)
+        return self._navigator.getResult() == TaskResult.SUCCEEDED
+
+    def _drive_to_charge(self, x: float, y: float, yaw: float):
         try:
-            while not self._navigator.isTaskComplete():
+            if self._cancel_requested.is_set():
+                return
+            success = self._go_to_pose_and_wait(x, y, yaw)
+            if self._cancel_requested.is_set():
+                self.get_logger().info('충전소 복귀 주행이 취소됐습니다')
+            else:
+                self.get_logger().info(f'충전소 복귀 결과: {"성공" if success else "실패"}')
+        finally:
+            self._nav_active = False
+
+    def _run_patrol(self, run_id: int, waypoints: list, return_to_charging: bool,
+                     charge_x: float, charge_y: float, charge_yaw: float):
+        """careguard_mission/patrol_task.py::_execute(LIMO)와 같은 상태 기계를
+        가져오되, 그쪽이 액션 서버 하나로 같이 처리하는 영상 녹화
+        (careguard_perception)·음성 안내(careguard_hmi)는 뺐다 — 둘 다 LIMO 전용
+        워크스페이스 패키지라 터틀봇엔 없다(모듈 docstring 참고). 웨이포인트를
+        순서대로 돌다가 하나라도 실패하면 즉시 중단하고(LIMO도 같은 이유로
+        2026-09-08에 고친 부분 — 실패해도 조용히 다음으로 넘어가면 "순찰 완료"로
+        잘못 기록된다), 끝나면(return_to_charging이면) 충전소로 복귀한다. 진행률은
+        patrol_progress/patrol_done으로 서버에 보고한다(robot_ws.py가 DB의
+        patrol_run 행과 대시보드로 그대로 릴레이).
+        """
+        try:
+            waypoints_done = 0
+            for wp in waypoints:
                 if self._cancel_requested.is_set():
-                    self._navigator.cancelTask()
-                    self.get_logger().info('충전소 복귀 주행이 취소됐습니다')
+                    self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'cancelled'})
+                    self.get_logger().info('순찰이 취소됐습니다')
                     return
-                time.sleep(0.2)
-            self.get_logger().info(f'충전소 복귀 결과: {self._navigator.getResult()}')
+
+                success = self._go_to_pose_and_wait(
+                    float(wp['x']), float(wp['y']), float(wp.get('yaw', 0.0) or 0.0))
+
+                if self._cancel_requested.is_set():
+                    self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'cancelled'})
+                    self.get_logger().info(f"{wp.get('code', '?')} 이동 중 취소됨")
+                    return
+                if not success:
+                    self.get_logger().error(f"{wp.get('code', '?')} 이동 실패 — 순찰을 중단합니다")
+                    self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'failed'})
+                    return
+
+                waypoints_done += 1
+                self._send({'type': 'patrol_progress', 'run_id': run_id, 'waypoints_done': waypoints_done})
+
+            if return_to_charging:
+                success = self._go_to_pose_and_wait(charge_x, charge_y, charge_yaw)
+                if self._cancel_requested.is_set():
+                    self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'cancelled'})
+                    self.get_logger().info('충전소 복귀 중 취소됨')
+                    return
+                if not success:
+                    self.get_logger().error('충전소 복귀 실패')
+                    self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'failed'})
+                    return
+
+            self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'completed'})
+            self.get_logger().info(f'순찰 완료: run_id={run_id}')
         finally:
             self._nav_active = False
 
@@ -377,9 +508,29 @@ class DownlinkNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = DownlinkNode()
+    # rclpy.spin(node)를 인자 없이 쓰면 executor를 안 줬을 때의 기본값인
+    # "프로세스 전체 공유 전역 executor"(rclpy.get_global_executor())를 쓴다.
+    # 그런데 nav2_simple_commander.BasicNavigator의 goToPose/waitUntilNav2Active
+    # 등도 executor를 안 넘기고 rclpy.spin_until_future_complete(self, ...)를
+    # 부르므로 똑같이 그 전역 executor를 쓴다 — _run_patrol/_drive_to_charge가
+    # 백그라운드 스레드에서 self._navigator.goToPose()를 부르는 순간, 메인
+    # 스레드가 이미 spin_once()로 돌리고 있는 바로 그 SingleThreadedExecutor를
+    # 다른 스레드가 동시에 또 돌리려다 "ValueError: generator already
+    # executing"으로 매번(운 나쁜 타이밍이 아니라 항상) 즉시 깨졌다 — 크래시한
+    # 스레드는 finally에서 self._nav_active를 바로 False로 되돌리는데, Nav2
+    # (bt_navigator)는 이미 목표를 접수해 실제로는 계속 주행 중이라 "취소"를
+    # 눌러도(_nav_active가 이미 False라) 취소할 대상 자체가 없어 로봇이 멈추지
+    # 않는 문제로 실제 재현·확인했다(2026-09-14, R-06).
+    #
+    # 이 노드(node) 전용 executor를 명시적으로 만들어 쓰면, 전역 executor는
+    # self._navigator의 spin_until_future_complete 전용으로 남아 더 이상
+    # 두 스레드가 같은 executor를 동시에 돌리지 않는다.
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
+        executor.remove_node(node)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
