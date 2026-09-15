@@ -1,6 +1,7 @@
 #pragma once
 #include <functional>
 
+#include <QStringList>
 #include <QWidget>
 
 class QLabel;
@@ -35,6 +36,17 @@ public:
     // P4 영상 페이지 "이벤트 상세로 이동" 클릭 진입점. eventUid로 검색·기간을 맞춘 뒤,
     // 최신 상태를 다시 받아와(P4에서 방금 막 생긴 이벤트일 수 있음) 상세 모달을 바로 연다.
     void openEventByUid(const QString& eventUid);
+
+    // P1 로봇 상세 모달의 "이벤트 상세 열기" 진입점. openEventByUid와 검색·기간 맞추는
+    // 부분만 같고, 상세 모달은 열지 않는다 — 로봇 상세 모달이 이미 닫히면서 이 페이지로
+    // 넘어온 직후라, 곧바로 또 다른 모달(EventDetailModal)이 뜨면 모달이 연달아 두 번
+    // 뜨는 것처럼 보인다는 리포트(2026-09-14)로 분리했다. 목록에서 검색된 행을 사용자가
+    // 직접 눌러 열람하면 된다.
+    void filterToEventUid(const QString& eventUid);
+
+    // role=guardian 전용. P3RecipientPage::guardianRecipientNamesChanged를 MainWindow가
+    // 여기로 연결한다 — 빈 목록이면 필터 없음(admin/operator).
+    void setRecipientNameFilter(const QStringList& names);
 
 signals:
     // MainWindow가 TopBar 뱃지(setEmergencyCount/setAttentionCount)에 연결한다.

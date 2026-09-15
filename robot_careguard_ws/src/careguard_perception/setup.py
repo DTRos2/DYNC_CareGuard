@@ -21,6 +21,7 @@ setup(
         'console_scripts': [
             'video_recorder = careguard_perception.video_recorder:main',
             'auto_face_capture_node = careguard_perception.auto_face_capture_node:main',
+            'face_identify_test_node = careguard_perception.face_identify_test_node:main',
         ],
     },
 )

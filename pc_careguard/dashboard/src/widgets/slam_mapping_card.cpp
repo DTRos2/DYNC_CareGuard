@@ -92,6 +92,8 @@ void SlamMapView::setLivePose(qreal xMeters, qreal yMeters, qreal yawRad) {
 
 void SlamMapView::setCameraFrame(const QImage& frame) { cameraView_->setFrame(frame); }
 
+void SlamMapView::clearCameraFrame() { cameraView_->clearFrame(); }
+
 void SlamMapView::setLiveScan(const QVector<QPointF>& pointsMeters) {
     liveScanMeters_ = pointsMeters;
     update();

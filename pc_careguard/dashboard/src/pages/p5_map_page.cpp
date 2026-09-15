@@ -81,12 +81,13 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
     apiClient_ = new ApiClient(this);
     loadActiveMapsFromServer();
     loadRobotsFromServer();
+}
 
-    wsClient_ = new WsClient(this);
+void P5MapPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
     connect(wsClient_, &WsClient::messageReceived, this, &P5MapPage::handleWsMessage);
     connect(wsClient_, &WsClient::connectionStateChanged, this,
             [this](bool connected) { connectionBanner_->setVisible(!connected); });
-    wsClient_->connectToServer();
 }
 
 QFrame* P5MapPage::buildRobotOfflineBanner() {
@@ -468,6 +469,11 @@ void P5MapPage::switchToRobot(int index) {
     robotOnline_ = false;
     robotOfflineBanner_->setVisible(true);
     updateRobotChipText();
+    // 카메라도 마찬가지 — 이전 로봇의 마지막 프레임이 남아있으면 새 로봇 화면인데
+    // 정지된 이전 영상 + "연결 끊김" 배지가 뜬다(P6PatrolPage::loadMapData와 같은
+    // 이유). 이 로봇의 camera_frame이 새로 도착하기 전까지는 "카메라 연결 중"
+    // placeholder로 되돌려 둔다.
+    slamCard_->view()->clearCameraFrame();
 
     if (registeredMaps_.contains(currentRobotCode_)) {
         const RegisteredMapInfo& info = registeredMaps_.value(currentRobotCode_);

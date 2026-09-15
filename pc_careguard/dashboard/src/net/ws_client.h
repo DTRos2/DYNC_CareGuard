@@ -19,7 +19,7 @@ public:
 signals:
     // 서버가 보낸 메시지 하나. "type" 필드로 종류를 구분한다:
     // robot_position / slam_progress / slam_done / patrol_progress / patrol_done / robot_status /
-    // video_event_created.
+    // video_event_created / recipient_changed.
     void messageReceived(const QJsonObject& message);
     void connectionStateChanged(bool connected);
 

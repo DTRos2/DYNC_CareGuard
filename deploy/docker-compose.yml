@@ -20,5 +20,15 @@ services:
       timeout: 5s
       retries: 10
 
+  # ESP32 응급 호출 버튼 브로커. server/app/services/mqtt_listener.py가 여기 구독한다.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: careguard_mosquitto
+    restart: unless-stopped
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
 volumes:
   careguard_postgres_data:

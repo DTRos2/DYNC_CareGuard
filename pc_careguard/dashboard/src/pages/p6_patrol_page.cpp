@@ -21,6 +21,7 @@
 #include <QStackedLayout>
 #include <QStyle>
 #include <QTimeEdit>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtMath>
 #include <cmath>
@@ -52,6 +53,15 @@ constexpr qreal kPxPerMeter = 40.0;
 // 맞춘 값(24px). routeOrderList_->setFixedHeight(120)도 같은 24px 기준의 5줄.
 constexpr int kWpListRowHeightPx = 24;
 constexpr int kWpListVisibleRows = 5;
+
+// "위치 보정" 정착 판단 — robot_position의 pos_std_m(위치 표준편차, 미터)이 이
+// 값 이하로 내려오면 AMCL이 충분히 수렴했다고 본다. 시작값은 추정치 — 실
+// 로봇(R-07)에서 `ros2 topic echo /amcl_pose`로 수렴 전/후 공분산을 직접 보고
+// 맞춰야 한다(AMCL 파라미터·환경마다 다르다).
+constexpr double kPoseConvergedStdMeters = 0.3;
+// pos_std_m이 끝까지 임계값 밑으로 안 내려오는 경우(필드 유실, 환경이 안 좋아
+// AMCL이 못 붙는 경우 등)에 대비한 안전판 — 정상 경로에서는 거의 안 걸린다.
+constexpr int kPoseCaptureSettleFallbackMs = 8000;
 }
 
 P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(0), routeEditMode_(false) {
@@ -100,6 +110,13 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     connect(canvas_, &WaypointCanvas::initialPoseCaptureFinished, this, &P6PatrolPage::handleInitialPoseCaptured);
     connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
             [this] { poseCaptureBtn_->setChecked(false); });
+
+    // handleInitialPoseCaptured가 시작하는 "위치 설정 중" 구간의 안전판 —
+    // poseCaptureSettling_ 주석 참고. 정상 경로는 handleWsMessage가 pos_std_m으로
+    // 먼저 끝내므로, 이 타이머는 그게 안 될 때만 발동한다.
+    poseCaptureSettleTimer_ = new QTimer(this);
+    poseCaptureSettleTimer_->setSingleShot(true);
+    connect(poseCaptureSettleTimer_, &QTimer::timeout, this, &P6PatrolPage::finishPoseCaptureSettling);
     connect(canvas_, &WaypointCanvas::routeWaypointClicked, this, &P6PatrolPage::handleRouteWaypointClicked);
     connect(canvas_, &WaypointCanvas::chargeClickBlocked, this, [this] {
         QMessageBox::information(this, QStringLiteral("충전 스테이션"),
@@ -153,17 +170,18 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
 
     apiClient_ = new ApiClient(this);
     loadMapsFromServer();
+}
 
-    wsClient_ = new WsClient(this);
+void P6PatrolPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
     connect(wsClient_, &WsClient::messageReceived, this, &P6PatrolPage::handleWsMessage);
     connect(wsClient_, &WsClient::connectionStateChanged, this,
             [this](bool connected) { connectionBanner_->setVisible(!connected); });
-    wsClient_->connectToServer();
 }
 
 QFrame* P6PatrolPage::buildConnectionBanner() {
-    // P5MapPage::buildConnectionBanner()와 같은 이유·같은 패턴 — 이 페이지도 별도
-    // WsClient 연결을 쓰므로(P5와 독립) 끊김 표시도 각자 들고 있어야 한다.
+    // P5MapPage::buildConnectionBanner()와 같은 이유·같은 패턴 — WsClient는 앱 전체가
+    // 공유하지만, 끊김 배너는 페이지별 위젯이라 각자 들고 있어야 한다.
     auto* banner = new QFrame(this);
     banner->setObjectName("banner");
     banner->setProperty("level", "attention");
@@ -255,8 +273,29 @@ bool P6PatrolPage::canDrive() const {
 
 void P6PatrolPage::updateDrivingButtonsEnabled() {
     const bool drivable = canDrive();
-    testBtn_->setEnabled(drivable);
-    testBtn_->setToolTip(drivable ? QString() : QStringLiteral("로봇 ws 연결을 확인해주세요"));
+    // 팝오버의 "경로 이동"<->"주행 취소"(refreshPopoverDriveButton/
+    // WaypointPopover::setDriveButtonState)와 같은 토글을 testBtn_("경로 주행")에도
+    // 맞춘다 — 2026-09-14까지는 이 버튼이 늘 "경로 주행"으로 고정이라, 순찰 중에
+    // 눌러도(비활성화라 눌리지도 않았지만) 멈출 방법이 없었다는 리포트로 추가했다.
+    // drivingWaypointId_가 비어 있으면(팝오버의 개별 웨이포인트 이동이 아니라) 이
+    // 버튼이 시작한 경로 전체 주행이라는 뜻이다 — runTestRun()이 성공 시 isPatrolling_만
+    // 켜고 drivingWaypointId_는 안 건드리는 것과 짝이 맞다.
+    const bool isRoutePatrolling = isPatrolling_ && drivingWaypointId_.isEmpty();
+    if (isRoutePatrolling) {
+        testBtn_->setText(QStringLiteral("주행 취소"));
+        testBtn_->setProperty("variant", "danger");
+        // 취소는 팝오버와 같은 이유로(DB의 stuck 기록 정리를 위해) 오프라인이어도
+        // 항상 누를 수 있게 둔다.
+        testBtn_->setEnabled(true);
+        testBtn_->setToolTip(QString());
+    } else {
+        testBtn_->setText(QStringLiteral("경로 주행"));
+        testBtn_->setProperty("variant", "secondary");
+        testBtn_->setEnabled(drivable);
+        testBtn_->setToolTip(drivable ? QString() : QStringLiteral("로봇 ws 연결을 확인해주세요"));
+    }
+    testBtn_->style()->unpolish(testBtn_);
+    testBtn_->style()->polish(testBtn_);
     refreshPopoverDriveButton();
 }
 
@@ -1682,6 +1721,15 @@ void P6PatrolPage::deleteCurrentRoute() {
 }
 
 void P6PatrolPage::runTestRun() {
+    // updateDrivingButtonsEnabled()가 이미 이 버튼을 "주행 취소"로 토글해뒀다면
+    // (isPatrolling_ && drivingWaypointId_ 비어있음), 클릭은 새 주행 시작이 아니라
+    // 지금 하고 있는 경로 주행을 멈추라는 뜻이다 — cancelCurrentDrive와 같은
+    // /patrol-runs/cancel 경로를 그대로 재사용한다(팝오버의 "주행 취소"와 동일).
+    if (isPatrolling_ && drivingWaypointId_.isEmpty()) {
+        cancelCurrentDrive(QString());
+        return;
+    }
+
     const QVector<QString> order = routes_.value(currentRoute_);
     const QString chargeId = chargingWaypointId();
     if (currentRoute_.isEmpty() || order.isEmpty() || chargeId.isEmpty()) {
@@ -1811,16 +1859,37 @@ void P6PatrolPage::handleInitialPoseCaptured(QPointF canvasPos, qreal headingDeg
     const MapData& current = maps_[currentMapIndex_];
     if (current.serverMapId <= 0 || current.robotId.isEmpty()) return;
 
+    // 방금 지정한 자리를 바로 보여준다(응답을 기다리지 않음) — 로봇이 실제로 이
+    // 좌표를 받아 AMCL 재수렴을 마치기까지 걸리는 동안 들어오는 robot_position은
+    // 파티클이 다시 모이는 중간값이라 마커가 흔들려 보인다. handleWsMessage가
+    // pos_std_m(위치 표준편차)으로 실제 수렴을 확인할 때까지 그 중간값들을
+    // 무시하고 이 자리를 그대로 유지한다 — poseCaptureSettling_ 주석 참고.
+    canvas_->setCurrentRobotPosition(canvasPos, headingDeg);
+    poseCaptureSettling_ = true;
+    poseCaptureBtn_->setEnabled(false);
+    poseCaptureBtn_->setText(QStringLiteral("위치 설정 중..."));
+    poseCaptureSettleTimer_->start(kPoseCaptureSettleFallbackMs);
+
     const QPointF meters = canvas_->canvasToMapMeters(canvasPos);
     apiClient_->setInitialPose(current.robotId, current.serverMapId, meters.x(), meters.y(),
                                 CanvasGeometry::canvasYawDegToMapYawRad(headingDeg),
                                 [this](bool ok, const QString& err) {
                                     if (!ok) {
+                                        // 실패(로봇 미연결 등)했으면 실제로 재수렴이 일어나지
+                                        // 않으므로 굳이 기다릴 이유가 없다 — 바로 되돌린다.
+                                        finishPoseCaptureSettling();
                                         QMessageBox::warning(
                                             this, QStringLiteral("초기 위치 설정 실패"),
                                             err.isEmpty() ? QStringLiteral("로봇 ws 연결을 확인해주세요.") : err);
                                     }
                                 });
+}
+
+void P6PatrolPage::finishPoseCaptureSettling() {
+    poseCaptureSettleTimer_->stop();
+    poseCaptureSettling_ = false;
+    poseCaptureBtn_->setEnabled(true);
+    poseCaptureBtn_->setText(QStringLiteral("초기 위치 설정"));
 }
 
 void P6PatrolPage::keyPressEvent(QKeyEvent* event) {
@@ -2118,6 +2187,10 @@ void P6PatrolPage::loadMapData(int index) {
     navRunning_ = false;
     updateRobotStatusBanner();
     updateDrivingButtonsEnabled();
+    // 카메라도 마찬가지 — 이전 로봇의 마지막 프레임이 남아있으면 새 로봇 화면인데
+    // 정지된 이전 영상 + "연결 끊김" 배지가 뜬다. 이 로봇의 camera_frame이 새로
+    // 도착하기 전까지는 "카메라 연결 중" placeholder로 되돌려 둔다.
+    canvas_->clearCameraFrame();
     // WS 이벤트만 기다리면 페이지를 새로 열었을 때(또는 이 로봇으로 막 전환했을 때)
     // "지금 실제로 어떤 상태인지"를 알 길이 없다 — DB/실시간 연결 기준으로 다시
     // 맞춘다(새로고침 버튼과 같은 함수).
@@ -2138,6 +2211,12 @@ void P6PatrolPage::loadMapData(int index) {
     canvas_->setBackgroundImage(m.backgroundImage);
     canvas_->setMapMeta(m.resolution, m.originMeters);
     canvas_->setWaypoints(waypoints_);
+    // 이전 로봇(맵)의 "현재 위치" 마커를 먼저 지운다 — 아래에서 이 맵에 충전
+    // 웨이포인트가 있으면 바로 다시 채워지므로 화면상 깜빡임은 없다. 이걸 안 하면
+    // 이 맵에 아직 충전 웨이포인트가 없는 경우(findWaypoint(chargeId)==nullptr) 아래
+    // 블록이 스킵되어 이전 로봇의 마커가 좌표 그대로 남아있는다(오프라인 로봇으로
+    // 전환했는데 엉뚱한 위치에 로봇이 있는 것처럼 보이던 버그, 2026-09-14 리포트).
+    canvas_->clearRobotPosition();
     // 이 맵으로 (다시) 전환할 때마다, 다음 실제로 그려지는 시점에 웨이포인트 좌표를
     // metersPos(서버 원본 미터)로부터 확실하게 다시 계산하도록 예약한다 —
     // WaypointCanvas::showEvent 주석 참고(이 위젯이 이미 한 번 보여진 뒤라면
@@ -2634,7 +2713,7 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
     }
 
     if (type != QStringLiteral("robot_position") && type != QStringLiteral("camera_frame") &&
-        type != QStringLiteral("patrol_path_update"))
+        type != QStringLiteral("patrol_path_update") && type != QStringLiteral("slam_scan_update"))
         return;
     if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
 
@@ -2655,6 +2734,22 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
+    if (type == QStringLiteral("slam_scan_update")) {
+        // uplink_node.py가 P5(SLAM)뿐 아니라 map->base_link TF가 존재하는 동안(=AMCL로
+        // 순찰 중일 때도) 계속 보내는 라이다 스캔 오버레이 — P5MapPage::handleWsMessage의
+        // 같은 처리와 동일하게 파싱해 캔버스에 그대로 넘긴다. 로봇 초기 위치(AMCL)를
+        // 아직 안 잡았으면 로봇 쪽에서 TF 조회가 실패해 이 메시지 자체가 안 오므로,
+        // "초기 위치 설정 후 자연히 나타난다"는 동작은 이 페이지에서 별도 처리 없이 그대로 이어진다.
+        const QJsonArray flat = message.value(QStringLiteral("points")).toArray();
+        QVector<QPointF> scanMeters;
+        scanMeters.reserve(flat.size() / 2);
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            scanMeters.append(QPointF(flat.at(i).toDouble(), flat.at(i + 1).toDouble()));
+        }
+        canvas_->setLiveScan(scanMeters);
+        return;
+    }
+
     if (type == QStringLiteral("camera_frame")) {
         // /camera/color/image_raw/compressed를 uplink_node가 재인코딩 없이 그대로
         // base64로 실어 보낸 것 — JPEG라서 QImage가 바로 디코딩한다.
@@ -2665,6 +2760,20 @@ void P6PatrolPage::handleWsMessage(const QJsonObject& message) {
             canvas_->setCameraFrame(frame);
         }
         return;
+    }
+
+    // "위치 보정" 직후 정착 구간(poseCaptureSettling_) 동안은 pos_std_m(위치
+    // 표준편차, 미터)이 kPoseConvergedStdMeters 이하로 내려온 값이 올 때까지
+    // AMCL이 재수렴 중인 중간값을 무시한다 — handleInitialPoseCaptured가 이미
+    // 사용자가 지정한 자리를 보여주고 있으므로, 여기서 신뢰 못 할 값으로 계속
+    // 갱신하면 그 자리가 흔들리는 것처럼 보인다. pos_std_m이 없는 값(예: 필드
+    // 유실)도 아직 못 믿는 값으로 취급해 계속 무시한다 — 안전판 타이머
+    // (poseCaptureSettleTimer_)가 그런 경우를 대비한다.
+    if (poseCaptureSettling_) {
+        const QJsonValue posStd = message.value(QStringLiteral("pos_std_m"));
+        if (!posStd.isDouble() || posStd.toDouble() > kPoseConvergedStdMeters) return;
+        // 충분히 수렴했다 — 정착을 끝내고 이 값을 그대로 마커에 반영한다(아래로 계속).
+        finishPoseCaptureSettling();
     }
 
     const qreal xMeters = message.value(QStringLiteral("x")).toDouble();

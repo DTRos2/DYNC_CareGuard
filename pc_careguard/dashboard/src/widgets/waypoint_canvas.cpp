@@ -27,6 +27,13 @@ constexpr qreal kZoomStepFactor = 1.15;
 // p6_patrol_page.cpp가 예전에 모든 맵에 무조건 쓰던 고정 배율과 같은 값이다.
 // 실제 지도 해상도(대개 0.05m/px=20px/m)와 다를 수 있어 정확하지 않다.
 constexpr qreal kLegacyPxPerMeter = 40.0;
+
+// 라이다 스캔 오버레이 — 거리별 무지개색(SlamMapView와 같은 배색)은 P6에서는
+// 점이 얼룩덜룩해 보인다는 피드백으로 뺐다. 단색 + 테두리 없음으로 1차
+// 프로젝트(aurix_main_project_01) WaypointMapWidget의 단색 점 스타일을 그대로 따른다.
+// slam_mapping_card.cpp의 kPoseArrowColor(rviz 포즈 화살표)와 같은 계열의 빨강이라
+// 두 화면에서 "라이다"를 나타내는 색이 서로 다르지 않다.
+const QColor kScanPointColor(QStringLiteral("#E53935"));
 }  // namespace
 
 WaypointCanvas::WaypointCanvas(QWidget* parent)
@@ -117,6 +124,11 @@ void WaypointCanvas::setPlannedPath(const QVector<QPointF>& pathMeters) {
     update();
 }
 
+void WaypointCanvas::setLiveScan(const QVector<QPointF>& pointsMeters) {
+    liveScanMeters_ = pointsMeters;
+    update();
+}
+
 void WaypointCanvas::setCurrentRobotPosition(QPointF canvasPos, qreal headingDeg) {
     currentRobotPos_ = canvasPos;
     currentRobotHeadingDeg_ = headingDeg;
@@ -133,7 +145,15 @@ void WaypointCanvas::setCurrentRobotPositionToChargingStation(QPointF canvasPos)
     update();
 }
 
+void WaypointCanvas::clearRobotPosition() {
+    hasRobotPos_ = false;
+    robotPosTracksChargingStation_ = false;
+    update();
+}
+
 void WaypointCanvas::setCameraFrame(const QImage& frame) { cameraView_->setFrame(frame); }
+
+void WaypointCanvas::clearCameraFrame() { cameraView_->clearFrame(); }
 
 void WaypointCanvas::setBackgroundImage(const QImage& image) {
     backgroundImage_ = image;
@@ -737,6 +757,22 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         // 여백이 생겨 원과 이름이 멀어 보였다).
         p.drawText(QRectF(-75, r + 2, 150, 14), Qt::AlignHCenter | Qt::AlignTop, caption);
         p.restore();
+    }
+
+    // 실시간 라이다 스캔 오버레이(slam_scan_update) — 로봇 다이얼 마커보다 먼저
+    // 그려서 마커 아래로 깔리게 한다. 거리 기준점은 실제 로봇 위치(있으면)를 미터로
+    // 되돌린 값 — 없으면(아직 robot_position을 한 번도 못 받음) 스캔 점 중 아무거나
+    // 기준으로 삼아도 상대적인 색 분포는 크게 다르지 않다.
+    if (mapResolution_ > 0.0 && !liveScanMeters_.isEmpty()) {
+        // 테두리 없는 단색 점 — 1차 프로젝트 스타일의 깔끔한 라인으로 복귀
+        // (거리별 무지개색 + 굵은 테두리는 얼룩덜룩해 보인다는 피드백으로 제외).
+        constexpr qreal kScanPointRadiusPx = 2.2;
+        p.setPen(Qt::NoPen);
+        p.setBrush(kScanPointColor);
+        for (const QPointF& meters : std::as_const(liveScanMeters_)) {
+            const qreal radius = kScanPointRadiusPx / zoomScale_;
+            p.drawEllipse(mapMetersToCanvas(meters), radius, radius);
+        }
     }
 
     // 로봇 현재 위치(다이얼 모양 — halo + 중심점 + 방향 바늘). 이 마커가 곧 "현재 위치"

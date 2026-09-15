@@ -1,0 +1,23 @@
+step,waypoint,light,person_label,class_id,direction_label,window_arg,note,max_images,time_of_day
+1,wp1,on,person_B,1,반대쪽,away,,7,afternoon
+2,wp1,on,person_A,0,반대쪽,away,outfit2,12,afternoon
+3,wp1,on,person_B,1,창문쪽,facing,,7,afternoon
+4,wp1,on,person_A,0,창문쪽,facing,outfit2,12,afternoon
+5,wp1,off,person_B,1,반대쪽,away,,7,afternoon
+6,wp1,off,person_B,1,창문쪽,facing,,9,afternoon
+7,wp2,on,person_B,1,반대쪽,away,,20,afternoon
+8,wp2,on,person_B,1,창문쪽,facing,,20,afternoon
+9,wp2,on,person_A,0,반대쪽,away,outfit2,12,afternoon
+10,wp2,on,person_A,0,창문쪽,facing,outfit2,12,afternoon
+11,wp2,on,unknown_1,99,정면 위주,ASK,신규 추가 - 미등록자,8,afternoon
+12,wp2,on,unknown_2,99,정면 위주,ASK,신규 추가 - 미등록자,8,afternoon
+13,wp2,off,person_B,1,반대쪽,away,,20,afternoon
+14,wp2,off,person_B,1,창문쪽,facing,,21,afternoon
+15,wp2,off,unknown_1,99,정면 위주,ASK,신규 추가 - 미등록자,8,afternoon
+16,wp2,off,unknown_2,99,정면 위주,ASK,신규 추가 - 미등록자,8,afternoon
+17,wp3,on,person_B,1,반대쪽,away,,14,afternoon
+18,wp3,on,person_B,1,창문쪽,facing,,14,afternoon
+19,wp3,on,person_A,0,반대쪽,away,outfit2,12,afternoon
+20,wp3,on,person_A,0,창문쪽,facing,outfit2,12,afternoon
+21,wp3,off,person_B,1,반대쪽,away,,14,afternoon
+22,wp3,off,person_B,1,창문쪽,facing,,15,afternoon

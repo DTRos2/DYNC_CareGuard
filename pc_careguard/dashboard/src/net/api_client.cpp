@@ -579,8 +579,10 @@ ApiClient::RecipientDetailInfo ApiClient::parseRecipientDetail(const QJsonObject
     return d;
 }
 
-void ApiClient::fetchRecipients(ListCallback<RecipientInfo> callback) {
-    getJsonArray(QStringLiteral("/recipients"), [callback](bool ok, const QByteArray& body) {
+void ApiClient::fetchRecipients(ListCallback<RecipientInfo> callback, int guardianUserId) {
+    QString path = QStringLiteral("/recipients");
+    if (guardianUserId > 0) path += QStringLiteral("?guardian_user_id=%1").arg(guardianUserId);
+    getJsonArray(path, [callback](bool ok, const QByteArray& body) {
         QVector<RecipientInfo> recipients;
         if (!ok) {
             callback(false, recipients);

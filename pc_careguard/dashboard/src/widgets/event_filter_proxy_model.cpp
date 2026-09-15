@@ -25,7 +25,19 @@ void EventFilterProxyModel::setDateRange(const QDate& start, const QDate& end) {
     invalidateFilter();
 }
 
+void EventFilterProxyModel::setRecipientNameAllowlist(const QStringList& names) {
+    const QSet<QString> next(names.begin(), names.end());
+    if (recipientAllowlist_ == next) return;
+    recipientAllowlist_ = next;
+    invalidateFilter();
+}
+
 bool EventFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const {
+    if (!recipientAllowlist_.isEmpty()) {
+        const QModelIndex idx = sourceModel()->index(sourceRow, EventTableModel::ColRecipient, sourceParent);
+        if (!recipientAllowlist_.contains(sourceModel()->data(idx, Qt::DisplayRole).toString())) return false;
+    }
+
     if (unresolvedOnly_) {
         const QModelIndex checkIdx = sourceModel()->index(sourceRow, 0, sourceParent);
         if (sourceModel()->data(checkIdx, EventTableModel::ResolvedRole).toBool()) return false;
@@ -44,8 +56,8 @@ bool EventFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex& s
             return sourceModel()->data(idx, Qt::DisplayRole).toString().contains(keyword,
                                                                                   Qt::CaseInsensitive);
         };
-        if (!matches(EventTableModel::ColRobot) && !matches(EventTableModel::ColRecipient) &&
-            !matches(EventTableModel::ColAssignee)) {
+        if (!matches(EventTableModel::ColEventId) && !matches(EventTableModel::ColRobot) &&
+            !matches(EventTableModel::ColRecipient) && !matches(EventTableModel::ColAssignee)) {
             return false;
         }
     }

@@ -2,6 +2,7 @@
 #include <QDate>
 #include <QMap>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QWidget>
 
@@ -19,6 +20,7 @@ class ApiClient;
 class WsClient;
 class QJsonObject;
 class QLineEdit;
+class P3RecipientDetailDialog;
 
 // P3 대상자 관리. gui/wireframe/v1/p3_recipient_management_wireframe.html,
 // CareGuard_DESIGN_SYSTEM.md §5-2(대상자 카드)·§6(idx 2)·§7-1/7-2(상태 판정·퀵액션) 기준.
@@ -137,9 +139,21 @@ class P3RecipientPage : public QWidget {
 public:
     explicit P3RecipientPage(QWidget* parent = nullptr);
 
+    // MainWindow가 앱 전체에서 공유하는 WsClient 하나를 내려준다 — 페이지마다 자기
+    // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
+    void setWsClient(WsClient* client);
+
+    // role=guardian이면 userId(careguard_user.id)를 넘겨 자신이 연결된 대상자만 받도록
+    // GET /recipients?guardian_user_id=를 쓴다. role이 그 외면 0을 넘겨 전체 목록으로 되돌린다.
+    // MainWindow::setUserRole()가 로그인 직후 호출한다.
+    void setGuardianUserId(int userId);
+
 signals:
     // 긴급 카드의 "이벤트 확인" 클릭. MainWindow가 P2 이벤트 페이지로 전환 + 필터링에 연결한다.
     void eventCheckRequested(const QString& recipientName);
+    // guardian 필터 적용 후(또는 해제 후) 대상자 이름 목록. MainWindow가 P2EventPage의
+    // 이벤트 필터에도 같은 이름 목록을 넘겨, 보호자가 자신의 대상자 이벤트만 보게 한다.
+    void guardianRecipientNamesChanged(const QStringList& names);
 
 protected:
     // 창 크기가 바뀔 때마다 카드 그리드 열 수를 다시 계산해 반응형으로 재배치한다 (P4와 동일 패턴).
@@ -167,13 +181,25 @@ private:
     // slotNo는 makeCardActions가 RecipientCard::meds에서 찾은 "미수령" 슬롯(1~3) —
     // 못 찾으면(이론상 Attention인데 meds에 Missed가 없는 경우) 0으로 온다.
     void requestMedicationReannounce(const QString& robotCode, const QString& recipientName, int slotNo);
-    // /ws/dashboard가 push하는 robot_status(로봇 연결/해제)를 받아 OFFLINE 카드를 자동으로
-    // 갱신한다 — "재연결 시도" 버튼 없이 로봇이 실제로 재연결되면 카드가 저절로 바뀐다.
+    // /ws/dashboard가 push하는 robot_status(로봇 연결/해제)·recipient_changed(대상자 정보
+    // 저장)를 받아 OFFLINE 카드/카드 목록을 자동으로 갱신한다 — "재연결 시도" 버튼 없이
+    // 로봇이 실제로 재연결되거나, 다른 PC가 대상자 정보를 저장하면 카드가 저절로 바뀐다.
     void handleWsMessage(const QJsonObject& message);
+    // recipient_changed가 왔을 때, 지금 그 대상자의 상세 모달이 열려 있으면(openDetailDialog_)
+    // GET /recipients/{id}로 새로 받아와 그 모달도 새로고침 없이 갱신한다 — 안 하면 모달을
+    // 열 때 받아온 스냅샷 그대로 남아, 닫았다 다시 열기 전까지 다른 PC의 수정(보호자·복약
+    // 스케줄 등, 목록 API엔 없는 필드)이 안 보였다.
+    void refreshOpenDetailDialog(int recipientId);
 
     ApiClient* apiClient_ = nullptr;
     WsClient* wsClient_ = nullptr;
     QVector<RecipientCard> recipients_;
+    int guardianUserId_ = 0;  // 0 = 필터 없음(admin/operator)
+
+    // 현재 열려 있는 상세 모달과 그 대상자 id — 없으면 -1/nullptr(다이얼로그는
+    // WA_DeleteOnClose라 닫히면 destroyed 시그널에서 이 둘을 되돌린다).
+    P3RecipientDetailDialog* openDetailDialog_ = nullptr;
+    int openDetailRecipientId_ = -1;
 
     QWidget* gridPage_ = nullptr;
     QGridLayout* grid_ = nullptr;

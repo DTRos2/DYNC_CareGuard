@@ -509,13 +509,19 @@ P3RecipientPage::P3RecipientPage(QWidget* parent) : QWidget(parent) {
     });
     pulseTimer_->start(Tokens::Motion::PULSE_PERIOD_MS);
 
-    // robot_status(로봇 연결/해제) push를 구독해 OFFLINE 카드를 자동으로 갱신한다
-    // (P5/P6와 같은 패턴 — 페이지마다 자기 WsClient를 따로 둔다).
-    wsClient_ = new WsClient(this);
-    connect(wsClient_, &WsClient::messageReceived, this, &P3RecipientPage::handleWsMessage);
-    wsClient_->connectToServer();
-
     rebuildGrid();
+    loadRecipientsFromServer();
+}
+
+void P3RecipientPage::setWsClient(WsClient* client) {
+    // robot_status(로봇 연결/해제) push를 구독해 OFFLINE 카드를 자동으로 갱신한다.
+    wsClient_ = client;
+    connect(wsClient_, &WsClient::messageReceived, this, &P3RecipientPage::handleWsMessage);
+}
+
+void P3RecipientPage::setGuardianUserId(int userId) {
+    if (guardianUserId_ == userId) return;
+    guardianUserId_ = userId;
     loadRecipientsFromServer();
 }
 
@@ -527,6 +533,7 @@ void P3RecipientPage::loadRecipientsFromServer() {
             return;
         }
         QVector<RecipientCard> cards;
+        QStringList names;
         for (const auto& info : items) {
             RecipientCard card;
             card.id = info.id;
@@ -544,10 +551,15 @@ void P3RecipientPage::loadRecipientsFromServer() {
             card.statusSummary = info.statusSummary;
             applyMedsToday(info.medsToday, card.meds);
             cards.append(card);
+            names.append(card.name);
         }
         recipients_ = cards;
         rebuildGrid();
-    });
+        // guardianUserId_==0(admin/operator)이면 빈 목록 = "필터 없음"으로 보낸다. names는
+        // 이미 fetchRecipients가 guardian_user_id로 걸러온 결과라 그대로 넘겨도 맞지만,
+        // P2EventPage 쪽 필터 의미(빈 목록=전체 허용)를 명확히 하기 위해 구분해서 보낸다.
+        emit guardianRecipientNamesChanged(guardianUserId_ > 0 ? names : QStringList());
+    }, guardianUserId_);
 }
 
 QWidget* P3RecipientPage::buildHeaderRow() {
@@ -828,6 +840,11 @@ void P3RecipientPage::handleWsMessage(const QJsonObject& message) {
         // 등록 모달에서 담당 대상자를 재배정했을 수 있다 — 부분 필드만 오므로
         // patrol_schedules_changed와 같은 이유로 GET /recipients를 통째로 다시 받는다.
         loadRecipientsFromServer();
+        // recipient_changed에만 recipient_id가 실려 온다(robot_recipient_changed는
+        // robot_id만 있음) — 그 대상자의 상세 모달이 지금 열려 있으면 같이 갱신한다.
+        // id가 없거나(robot_recipient_changed) 다른 대상자면 refreshOpenDetailDialog()
+        // 안의 recipientId<=0/openDetailRecipientId_ 불일치 가드에서 조용히 무시된다.
+        refreshOpenDetailDialog(message.value(QStringLiteral("recipient_id")).toInt());
         return;
     }
 
@@ -957,6 +974,30 @@ RecipientDetail recipientDetailFromApi(const ApiClient::RecipientDetailInfo& inf
 
 }  // namespace
 
+void P3RecipientPage::refreshOpenDetailDialog(int recipientId) {
+    if (!openDetailDialog_ || recipientId <= 0 || openDetailRecipientId_ != recipientId) return;
+
+    apiClient_->fetchRecipientDetail(
+        recipientId, [this, recipientId](bool ok, const ApiClient::RecipientDetailInfo& info, const QString&) {
+            if (!ok) return;
+            // 응답을 기다리는 동안 모달이 닫혔거나(openDetailDialog_ == nullptr) 다른 대상자의
+            // 모달로 바뀌었을 수 있어(openDetailRecipientId_ 변경) 다시 확인한다.
+            if (openDetailDialog_ && openDetailRecipientId_ == recipientId) {
+                RecipientDetail fresh = recipientDetailFromApi(info);
+                // level은 서버가 계산한 riskLevel일 뿐 OFFLINE을 모른다(recipientDetailFromApi
+                // 주석 참고) — openDetail()과 같은 이유로, 로봇 연결 여부는 이 창이 WS
+                // robot_status로 직접 덮어써둔 recipients_ 쪽 값을 그대로 가져와야 한다.
+                for (const auto& card : recipients_) {
+                    if (card.id == recipientId) {
+                        fresh.card.level = card.level;
+                        break;
+                    }
+                }
+                openDetailDialog_->applyRemoteUpdate(fresh);
+            }
+        });
+}
+
 void P3RecipientPage::openDetail(int recipientIndex) {
     if (recipientIndex < 0 || recipientIndex >= recipients_.size()) return;
     const RecipientCard card = recipients_[recipientIndex];
@@ -973,6 +1014,17 @@ void P3RecipientPage::openDetail(int recipientIndex) {
 
             auto* dialog = new P3RecipientDetailDialog(detail, operators, this);
             dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+            // 열려 있는 동안 recipient_changed가 오면(handleWsMessage) 이 다이얼로그를 다시
+            // 찾아 갱신할 수 있도록 기록해둔다. 닫히면(WA_DeleteOnClose) 되돌려서 이미 닫힌
+            // 모달을 갱신하려 들지 않게 한다.
+            openDetailDialog_ = dialog;
+            openDetailRecipientId_ = recipients_[recipientIndex].id;
+            connect(dialog, &QObject::destroyed, this, [this] {
+                openDetailDialog_ = nullptr;
+                openDetailRecipientId_ = -1;
+            });
+
             connect(dialog, &P3RecipientDetailDialog::saveRequested, this,
                     [this, recipientIndex](const RecipientDetail& saved) {
                         if (recipientIndex < recipients_.size()) {

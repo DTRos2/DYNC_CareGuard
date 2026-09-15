@@ -85,10 +85,11 @@ P8LogsPage::P8LogsPage(QWidget* parent) : QWidget(parent) {
     fetchAuditLog();
     fetchSystemEventLog();
     fetchPatrolRunLog();
+}
 
-    wsClient_ = new WsClient(this);
+void P8LogsPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
     connect(wsClient_, &WsClient::messageReceived, this, &P8LogsPage::handleWsMessage);
-    wsClient_->connectToServer();
 }
 
 void P8LogsPage::handleWsMessage(const QJsonObject& message) {

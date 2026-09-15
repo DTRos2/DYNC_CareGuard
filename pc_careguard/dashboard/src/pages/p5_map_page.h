@@ -27,6 +27,10 @@ class P5MapPage : public QWidget {
 public:
     explicit P5MapPage(QWidget* parent = nullptr);
 
+    // MainWindow가 앱 전체에서 공유하는 WsClient 하나를 내려준다 — 페이지마다 자기
+    // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
+    void setWsClient(WsClient* client);
+
 signals:
     // 파일로 맵을 등록·배포했을 때 — MainWindow가 P6PatrolPage로 중계해 맵 선택지에 반영한다.
     void mapRegistered(const QImage& mapImage, const QString& mapName, const QString& robotId,

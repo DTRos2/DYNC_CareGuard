@@ -27,6 +27,10 @@ class P1OverviewPage : public QWidget {
 public:
     explicit P1OverviewPage(QWidget* parent = nullptr);
 
+    // MainWindow가 앱 전체에서 공유하는 WsClient 하나를 내려준다 — 페이지마다 자기
+    // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
+    void setWsClient(WsClient* client);
+
 signals:
     // 로봇 상세 모달의 "이벤트로 이동" → MainWindow가 P2로 전환하고 그 이벤트를 연다
     // (P4VideoPage::eventDetailRequested와 같은 패턴).

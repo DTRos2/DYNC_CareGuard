@@ -17,6 +17,7 @@ class WsClient;
 class QJsonObject;
 class QLineEdit;
 class QComboBox;
+class QTabWidget;
 
 // P7 시스템 설정 — 로봇 관리 / 계정 관리 / 임계값·알림 3탭.
 // 사용자 로그·임계값·알림 로그·경로순찰 로그 3탭은 2026-09-11 사이드바 개편으로
@@ -30,6 +31,14 @@ public:
     // 로그인 성공 시 main.cpp -> MainWindow를 거쳐 실제 로그인 ID를 전달받는다.
     // 계정 삭제 체크박스/버튼 노출(isCurrentUserAdmin()) 판단의 기준이 된다.
     void setCurrentUserLoginId(const QString& loginId);
+
+    // role=operator면 로봇 관리·계정 관리 탭을 숨기고 임계값·알림 탭만 조회 전용으로 연다
+    // (요청 사양: operator는 이 페이지에서 탭이 하나뿐이고 읽기 전용). admin은 전체 그대로.
+    void setCurrentUserRole(const QString& role);
+
+    // MainWindow가 앱 전체에서 공유하는 WsClient 하나를 내려준다 — 페이지마다 자기
+    // WsClient를 따로 만들면 /ws/dashboard 소켓이 페이지 수만큼 중복으로 열린다.
+    void setWsClient(WsClient* client);
 
 private:
     struct RobotRow {
@@ -118,6 +127,8 @@ private:
     // setCurrentUserLoginId()로 실제 로그인 ID가 들어오기 전까지의 기본값.
     QString currentUserLoginId_ = QStringLiteral("admin");
 
+    QTabWidget* tabs_ = nullptr;
+
     QComboBox* thresholdRobotCombo_ = nullptr;
     QLineEdit* batteryAttentionEdit_ = nullptr;
     QLineEdit* batteryReturnEdit_ = nullptr;
@@ -125,6 +136,8 @@ private:
     QLineEdit* reconnectRetryEdit_ = nullptr;
     QLineEdit* medMissedWaitEdit_ = nullptr;
     QLineEdit* medReannounceEdit_ = nullptr;
+    QPushButton* saveThresholdsBtn_ = nullptr;
+    QPushButton* applyAllThresholdsBtn_ = nullptr;
 
     QNetworkAccessManager* netManager_ = nullptr;
     QString serverUrl_;

@@ -34,13 +34,13 @@ COMMENT ON COLUMN role.id IS '역할 PK, 자동 증가';
 COMMENT ON COLUMN role.code IS '역할 코드. 애플리케이션 분기 기준, 예: admin / operator / guardian';
 COMMENT ON COLUMN role.name IS '역할 표시 이름';
 COMMENT ON COLUMN role.description IS '역할 설명 및 권한 범위';
-COMMENT ON COLUMN role.is_active IS '사용 여부. guardian은 1차 구현에서 FALSE로 두어 로그인을 막는다';
+COMMENT ON COLUMN role.is_active IS '사용 여부. FALSE인 역할은 로그인이 거부된다(server/app/main.py의 /auth/login 참고)';
 COMMENT ON COLUMN role.created_at IS '역할 등록 시간';
 
 INSERT INTO role (code, name, description, is_active) VALUES
     ('admin',    '관리자',   '전체 기능 및 계정·설정 관리', TRUE),
     ('operator', '관제 담당자', '이벤트 처리, 영상 열람, 로봇 명령', TRUE),
-    ('guardian', '보호자',   '담당 대상자 정보 열람 및 메시지 등록. 1차 구현에서는 비활성', FALSE);
+    ('guardian', '보호자',   '담당 대상자 정보 열람 및 메시지 등록', TRUE);
 
 CREATE TABLE careguard_user (
     id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

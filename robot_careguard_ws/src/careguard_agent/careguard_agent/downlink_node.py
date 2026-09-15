@@ -25,6 +25,7 @@ import yaml
 from geometry_msgs.msg import Twist
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from std_msgs.msg import String
 
 from careguard_msgs.action import DeliverMedication, Patrol
 from careguard_msgs.msg import Waypoint as WaypointMsg
@@ -66,6 +67,13 @@ VOICE_ANNOUNCER_READY_TIMEOUT_SEC = 10.0
 # 같은 이유·같은 방식으로 audio_player가 이 토픽을 구독하기 시작했는지
 # 확인하는 용도로만 쓴다(이 노드가 직접 publish하지는 않음, patrol_task.py가 한다).
 VOICE_TOPIC = '/careguard/voice/announce'
+
+# careguard_perception/config.py의 TRIGGER_TOPIC과 같은 문자열 — PATROL_RECORDING_TOPIC과
+# 같은 이유·같은 방식으로 중복 정의한다. PATROL_RECORDING_TOPIC과 달리 이건 이
+# 노드가 직접 publish한다 — SOS 호출 버튼처럼 care_event_id/severity가 실려 온
+# patrol_start(_start_patrol 참고)를 받으면, video_recorder.py가 이벤트 클립
+# 녹화를 켜도록 이 토픽으로 신호를 보낸다.
+RECORD_TRIGGER_TOPIC = '/careguard/perception/record_trigger'
 
 
 class DownlinkNode(Node):
@@ -113,6 +121,9 @@ class DownlinkNode(Node):
         # P5 방향키 패널 -> 실제 구동. limo_base(/limo/limo_base)가 이미 /cmd_vel을
         # 구독하고 있다(실 로봇에서 topic info로 확인됨) — 네임스페이스 없이 그대로 쓴다.
         self._cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        # SOS 호출 버튼 등 care_event_id가 실린 patrol_start를 받았을 때
+        # video_recorder.py에 이벤트 클립 녹화를 켜라고 알리는 용도(_start_patrol 참고).
+        self._record_trigger_pub = self.create_publisher(String, RECORD_TRIGGER_TOPIC, 10)
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
@@ -255,9 +266,11 @@ class DownlinkNode(Node):
                 ['ros2', 'run', 'careguard_nav', 'initial_pose_setter'],
                 env={**os.environ, 'CAREGUARD_INIT_X': str(x), 'CAREGUARD_INIT_Y': str(y),
                      'CAREGUARD_INIT_YAW': str(yaw)},
-                # initial_pose_setter가 재시도 발행 구간을 3번/0.6초 -> 15번/약 3초로
-                # 늘렸다(DDS 디스커버리 직후 첫 메시지가 씹히는 문제 — 아래 이유 참고,
-                # SUBSCRIBER_WAIT_TIMEOUT_SEC 5초 + 발행 구간 약 3초 + 여유).
+                # initial_pose_setter의 재시도 발행 구간(3번/0.6초 -> 15번/약 3초 ->
+                # 5번/약 1초, 2026-09-14 — 파일 내 주석 참고: DDS 디스커버리 직후
+                # 첫 메시지가 씹히는 문제 대 P6 대시보드 마커 흔들림, 둘 사이 절충)
+                # 보다 여유 있게 잡은 타임아웃 — SUBSCRIBER_WAIT_TIMEOUT_SEC 5초 +
+                # 발행 구간 약 1초 + 넉넉한 margin.
                 capture_output=True, text=True, timeout=20,
             )
             if result.returncode != 0:
@@ -285,6 +298,21 @@ class DownlinkNode(Node):
         self._ensure_video_recorder_running()
         # 같은 이유로 audio_player도 patrol_task보다 먼저 떠 있어야 한다.
         self._ensure_voice_announcer_running()
+
+        # SOS 호출 버튼 자동 출동(patrol.py::dispatch_drive_to_point)만 severity를
+        # 실어 보낸다 — P6 "이동"/일반 순찰은 이 필드가 없으므로 녹화가 안 켜진다.
+        # video_recorder.py가 이미(위에서) 뜬 상태라 구독도 이미 잡혀 있다(__init__에서
+        # 노드 기동 즉시 먼저 띄워두는 이유 참고) — 여기서 또 late-joiner를 걱정할
+        # 필요는 없다.
+        severity = message.get('severity')
+        if severity:
+            trigger_msg = String()
+            trigger_msg.data = json.dumps({
+                'care_event_id': message.get('care_event_id'),
+                'severity': severity,
+                'reason': message.get('reason'),
+            })
+            self._record_trigger_pub.publish(trigger_msg)
 
         # patrol_task도 Nav2처럼 map_id 기준으로 (재)기동을 보장한다 — 아래 이유 참고.
         if map_id > 0:
@@ -708,12 +736,14 @@ class DownlinkNode(Node):
                 ['ros2', 'run', 'careguard_nav', 'initial_pose_setter'],
                 env={**os.environ, 'CAREGUARD_MAP_ID': str(map_id)},
                 # initial_pose_setter.py::publish_when_ready 참고 — DDS 디스커버리
-                # 직후 첫 메시지 유실 문제로 재시도 구간을 늘려서(3번/0.6초 ->
-                # 15번/약 3초) 여기 timeout도 같이 늘렸다(SUBSCRIBER_WAIT_TIMEOUT_SEC
-                # 5초 + 발행 구간 약 3초 + 여유). 실 로봇에서 이 값이 짧아 초기 위치
-                # 설정이 조용히 실패 -> global_costmap이 activating에 멈추고
-                # bt_navigator가 inactive라 순찰이 전부 무동작으로 끝나는 버그를
-                # 실제로 겪었다(2026-09-08).
+                # 직후 첫 메시지 유실 문제로 재시도 구간을 늘렸다가(3번/0.6초 ->
+                # 15번/약 3초), P6 대시보드 마커 흔들림 피드백으로 2026-09-14에
+                # 5번/약 1초로 다시 줄였다. timeout(20s)은 원래 늘렸던 여유
+                # (SUBSCRIBER_WAIT_TIMEOUT_SEC 5초 + 발행 구간 약 3초 + margin) 그대로
+                # 뒀다 — 실제 소요 시간이 줄었을 뿐이니 그대로 둬도 여유는 더 늘어날
+                # 뿐이다. 실 로봇에서 이 값이 짧아 초기 위치 설정이 조용히 실패 ->
+                # global_costmap이 activating에 멈추고 bt_navigator가 inactive라
+                # 순찰이 전부 무동작으로 끝나는 버그를 실제로 겪었다(2026-09-08).
                 capture_output=True, text=True, timeout=20,
             )
             if result.returncode != 0:

@@ -170,8 +170,6 @@ Tokens::Level riskLevelFromCode(const QString& code) {
 
 P1OverviewPage::P1OverviewPage(QWidget* parent) : QWidget(parent) {
     apiClient_ = new ApiClient(this);
-    wsClient_ = new WsClient(this);
-    connect(wsClient_, &WsClient::messageReceived, this, &P1OverviewPage::handleWsMessage);
 
     batteryRefreshTimer_ = new QTimer(this);
     batteryRefreshTimer_->setSingleShot(true);
@@ -192,7 +190,11 @@ P1OverviewPage::P1OverviewPage(QWidget* parent) : QWidget(parent) {
     populateTable();
     populateAlertFeed();
     loadFromServer();
-    wsClient_->connectToServer();
+}
+
+void P1OverviewPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
+    connect(wsClient_, &WsClient::messageReceived, this, &P1OverviewPage::handleWsMessage);
 }
 
 QWidget* P1OverviewPage::buildHeaderRow() {
@@ -395,9 +397,17 @@ void P1OverviewPage::populateAlertFeed() {
         return a.occurredAt > b.occurredAt;
     });
 
+    // events_ 자체(GET /events)는 날짜 제한이 없는 전체 이력이라, kMaxAlerts로만
+    // 자르면 오늘 이벤트가 적은 날엔 어제 이전 이벤트가 섞여 들어온다("실시간 알림"
+    // 이름과 안 맞음, 2026-09-14 리포트). rebuildRowsFromData가 쓰는 "진행 중 이벤트"
+    // (latestUnresolvedEventByRobot)는 미해결 이벤트를 날짜 상관없이 계속 보여줘야
+    // 하므로 events_ 자체는 안 건드리고, 이 피드에서만 오늘 날짜(로컬 기준)로 거른다.
+    const QDate today = QDate::currentDate();
+
     alerts_.clear();
     constexpr int kMaxAlerts = 20;
     for (const auto& event : sorted) {
+        if (event.occurredAt.toLocalTime().date() != today) continue;
         if (alerts_.size() >= kMaxAlerts) break;
         const char* level = Tokens::Prop::INFO;
         if (event.severity == QStringLiteral("emergency")) level = Tokens::Prop::EMERGENCY;
@@ -708,6 +718,21 @@ void P1OverviewPage::handleWsMessage(const QJsonObject& message) {
         return;
     }
 
+    if (type == QStringLiteral("recipient_changed") || type == QStringLiteral("robot_recipient_changed")) {
+        // recipient.py::update_recipient(이름 등 기본정보 저장)나 robots.py::
+        // assign_robot_recipient(담당 로봇 재배정)가 보내는 알림(2026-09-13 추가,
+        // P3/P5/P7의 같은 처리와 같은 이유) — recipients_는 loadFromServer()가 시작할
+        // 때 한 번만 받아오므로, 이게 없으면 이미 켜져 있던 다른 대시보드 창의
+        // 통합관제 테이블은 새로고침(재시작) 전까지 옛 값을 계속 보여줬다.
+        apiClient_->fetchRecipients([this](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
+            if (!ok) return;
+            recipients_ = items;
+            rebuildRowsFromData();
+            populateKpiRow();
+        });
+        return;
+    }
+
     if (type == QStringLiteral("system_event_created")) {
         // robot_ws.py가 배터리 임계값 등 로봇 쪽 시스템 이벤트를 감지했을 때 보내는
         // 알림(robot_ws.py:462) — event_created(scheduler.py)와 달리 payload 없이 type만
@@ -760,7 +785,12 @@ void P1OverviewPage::rebuildRowsFromData() {
         row.level = robot.isOnline ? (recipient ? riskLevelFromCode(recipient->level) : Tokens::Level::Normal)
                                     : Tokens::Level::Offline;
 
-        row.battery = liveBattery_.value(robot.code, -1);
+        // row.level/mission과 같은 이유(바로 위 주석 참고) — 통신이 끊긴 로봇은
+        // liveBattery_에 남아있는 마지막 값을 그대로 보여주면 "지금도 이 정도"라고
+        // 오해를 준다. 2026-09-14 "LIMO 통신이 끊겼는데 배터리 값이 그대로 뜬다"는
+        // 리포트로 실제 확인 — level/mission만 오프라인 처리가 돼 있고 배터리는
+        // 빠져 있었다. -1이면 테이블이 "-"로 표시한다(row.battery >= 0 분기 참고).
+        row.battery = robot.isOnline ? liveBattery_.value(robot.code, -1) : -1;
 
         row.medSteps = -1;
         if (recipient) {

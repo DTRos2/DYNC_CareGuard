@@ -163,7 +163,7 @@ QWidget* P2EventPage::buildFilterBar() {
     applyPeriodPreset(0);  // 초기 상태: 오늘 ~ 오늘, 읽기 전용
 
     searchEdit_ = new LiveSearchLineEdit(bar);
-    searchEdit_->setPlaceholderText(QStringLiteral("로봇·대상자·담당자 검색"));
+    searchEdit_->setPlaceholderText(QStringLiteral("이벤트 ID·로봇·대상자·담당자 검색"));
     connect(searchEdit_, &LiveSearchLineEdit::liveTextChanged, proxy_,
             &EventFilterProxyModel::setSearchKeyword);
     layout->addWidget(searchEdit_, /*stretch=*/1);
@@ -464,16 +464,24 @@ bool P2EventPage::eventFilter(QObject* watched, QEvent* event) {
     return QWidget::eventFilter(watched, event);
 }
 
+void P2EventPage::setRecipientNameFilter(const QStringList& names) {
+    proxy_->setRecipientNameAllowlist(names);
+}
+
 void P2EventPage::filterToRecipient(const QString& recipientName) {
     periodMonthBtn_->setChecked(true);  // 오늘 범위 밖(어제 등) 이벤트도 가리지 않도록 30일로 확장
     applyPeriodPreset(29);
     searchEdit_->setText(recipientName);
 }
 
-void P2EventPage::openEventByUid(const QString& eventUid) {
+void P2EventPage::filterToEventUid(const QString& eventUid) {
     periodMonthBtn_->setChecked(true);  // filterToRecipient()와 동일 — 오늘 범위 밖이어도 가리지 않음
     applyPeriodPreset(29);
     searchEdit_->setText(eventUid);
+}
+
+void P2EventPage::openEventByUid(const QString& eventUid) {
+    filterToEventUid(eventUid);
 
     // P4에서 방금 막 업로드가 끝나 새로 생긴 이벤트일 수 있어, 페이지 로드 시점 스냅샷
     // (model_)만 보지 않고 항상 한 번 다시 받아온 뒤에 연다.
