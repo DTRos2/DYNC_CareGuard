@@ -31,6 +31,7 @@ rsync -avz --delete \
     --exclude 'build' \
     --exclude 'install' \
     --exclude 'log' \
+    --exclude '.venv' \
     "$SRC_DIR" "$LIMO_HOST:$LIMO_WS_DIR/src/"
 
 if [ "${1:-}" = "--build" ]; then

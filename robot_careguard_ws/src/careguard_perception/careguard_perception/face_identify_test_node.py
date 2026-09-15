@@ -82,6 +82,18 @@ raw 유사도 점수 캡처 (2026-09-15 추가, 진단③용):
   값을 뽑아 학습 때 in-sample 검증 수치(같은 threshold=0.40 기준, unknown_2->B 최소
   거리 0.73)와 비교하면 됨 — compute_unknown2_vs_B_centroid.py(dev-machine
   scratchpad) 참고.
+
+등장 초반 vs 안정화 이후 비교 (2026-09-15 추가):
+  트랙(사람)이 화면에 처음 잡히는 순간 `[신규 감지] track_id=... 최초 등장 ...`
+  로그가 한 번 찍히고(bbox 크기 + yolo_conf 포함), 그 track_id의 raw score CSV
+  행에는 `track_age_frames`(1부터 증가, 감지 안 된 프레임은 카운트 안 함)와
+  `window_fill`/`min_window_fill`, `low_conf`, `yolo_confidence`, `bbox_w/h/area`가
+  같이 남는다. 같은 track_id로 `track_age_frames`가 작은(등장 초반) 행과 큰
+  (`stable_label`이 DECIDING_LABEL을 벗어난 이후, 안정화 구간) 행을 비교하면
+  ①YOLO confidence가 초반에 유독 낮은지 ②bbox 크기가 초반에 작거나 들쭉날쭉한지
+  ③window_fill이 min_window_fill 미만(=완화① 콜드스타트 게이팅이 실제로 작동
+  중)인지를 CSV만으로 바로 확인할 수 있다. 스키마가 바뀌면(컬럼 추가 등) 기존
+  CSV는 자동으로 `_old_schema_<timestamp>`로 보존되고 새 파일로 다시 시작한다.
 """
 import csv
 import sys
@@ -148,6 +160,18 @@ DEFAULT_MIN_WINDOW_FILL_RATIO = DEFAULT_ENTER_THRESHOLD
 # 검출이 신원 판정에 아예 안 들어가게 막음).
 DEFAULT_MIN_YOLO_CONFIDENCE = 0.5
 
+# ── raw score CSV 컬럼. track_age_frames(트랙이 감지된 프레임 수 누적, 안 보인
+# 프레임 제외)로 "등장 초반"(작은 값) vs "안정화 이후"(큰 값) 구간을 구분한다.
+# yolo_confidence/bbox_w/bbox_h/bbox_area는 low_conf 프레임(라벨 없음)에도 항상 남긴다 —
+# 등장 초반에 confidence가 낮은지/bbox가 불안정한지 확인하는 게 목적이라 이 값들은
+# 식별 성공 여부와 무관하게 필요함.
+RAW_SCORE_CSV_HEADER = [
+    "timestamp", "frame_count", "track_id", "track_age_frames", "low_conf",
+    "raw_label", "stable_label", "stable_frac", "window_fill", "min_window_fill",
+    "dist_person_A", "dist_person_B", "identity_threshold",
+    "yolo_confidence", "bbox_w", "bbox_h", "bbox_area",
+]
+
 
 def crop_with_margin(image_bgr, box, margin=CROP_MARGIN):
     x1, y1, x2, y2 = box
@@ -208,14 +232,20 @@ class FaceTrack:
     """프레임 간 같은 얼굴을 잇기 위한 최소한의 상태 — 정식 트래커가 아니라
     bbox 중심 거리로 매칭하는 단순 구현(테스트/디버깅 도구 스코프에 맞춤)."""
 
-    __slots__ = ("center", "window", "stable_label", "stable_frac", "missed_frames")
+    __slots__ = ("track_id", "center", "window", "stable_label", "stable_frac",
+                 "missed_frames", "track_age_frames")
 
-    def __init__(self, center, window_size):
+    def __init__(self, track_id, center, window_size):
+        self.track_id = track_id
         self.center = center
         self.window = deque(maxlen=window_size)
         self.stable_label = DECIDING_LABEL  # 완화① — 갓 생긴 트랙은 아직 아무 판정도 안 함
         self.stable_frac = 0.0
         self.missed_frames = 0
+        # ── 2026-09-15 추가: 이 트랙이 처음 감지된 뒤 몇 프레임째인지(감지된 프레임만
+        # 카운트, 안 보인 프레임은 제외) — "등장 초반" vs "안정화 이후" 구간을 raw score
+        # CSV에서 나중에 구분해서 비교하기 위함.
+        self.track_age_frames = 0
 
 
 class FaceIdentifyTestNode(Node):
@@ -269,18 +299,32 @@ class FaceIdentifyTestNode(Node):
         )
         if self.log_raw_scores:
             self.raw_score_log_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.raw_score_log_path.exists():
+                with open(self.raw_score_log_path, newline="") as f:
+                    existing_header = f.readline().strip()
+                if existing_header and existing_header != ",".join(RAW_SCORE_CSV_HEADER):
+                    # ── 스키마(컬럼)가 바뀌었는데 기존 파일에 이어 쓰면 컬럼이 어긋나서
+                    # 나중에 분석할 때 잘못 해석될 수 있음 — 옛 파일은 이름을 바꿔 보존하고
+                    # 새 헤더로 새로 시작한다.
+                    stamp = time.strftime("%Y%m%d_%H%M%S")
+                    archived = self.raw_score_log_path.with_name(
+                        f"{self.raw_score_log_path.stem}_old_schema_{stamp}{self.raw_score_log_path.suffix}"
+                    )
+                    self.raw_score_log_path.rename(archived)
+                    self.get_logger().warn(
+                        f"raw score CSV 스키마 변경 감지 — 기존 파일을 {archived}로 보존하고 "
+                        "새 헤더로 새로 씁니다."
+                    )
             is_new_file = not self.raw_score_log_path.exists()
             self._raw_score_file = open(self.raw_score_log_path, "a", newline="")
             self._raw_score_writer = csv.writer(self._raw_score_file)
             if is_new_file:
-                self._raw_score_writer.writerow([
-                    "timestamp", "frame_count", "track_id",
-                    "raw_label", "stable_label", "stable_frac",
-                    "dist_person_A", "dist_person_B", "identity_threshold",
-                ])
+                self._raw_score_writer.writerow(RAW_SCORE_CSV_HEADER)
             self.get_logger().info(
                 f"raw 유사도 점수를 매 프레임 CSV로 기록합니다: {self.raw_score_log_path} "
-                "(진단③ — 학습 때 in-sample 검증 수치와 실시간 점수를 나중에 비교하기 위함)"
+                "(진단③ — 학습 때 in-sample 검증 수치와 실시간 점수를 나중에 비교하기 위함. "
+                "track_age_frames 컬럼으로 '등장 초반'(값이 작음) vs '안정화 이후'(값이 큼) "
+                "구간을 나중에 필터링해서 비교할 수 있음)"
             )
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -398,12 +442,23 @@ class FaceIdentifyTestNode(Node):
                 track = self.tracks[best_id]
                 unmatched_track_ids.discard(best_id)
             else:
-                track = FaceTrack(det["center"], self.window_size)
-                self.tracks[self._next_track_id] = track
+                new_track_id = self._next_track_id
+                track = FaceTrack(new_track_id, det["center"], self.window_size)
+                self.tracks[new_track_id] = track
                 self._next_track_id += 1
+                x1, y1, x2, y2 = det["box"]
+                # ── 사람이 화면에 처음 등장하는 순간(새 트랙 생성 시점)을 로그로 남김 —
+                # 이 시각/프레임 번호를 raw score CSV의 track_age_frames=1 행과
+                # 맞춰보면 "등장 초반" 구간을 정확히 찾을 수 있다.
+                self.get_logger().info(
+                    f"[신규 감지] track_id={new_track_id} 최초 등장 (frame#{self.frame_count}) — "
+                    f"bbox={x2 - x1:.0f}x{y2 - y1:.0f}px  yolo_conf={det['conf']:.2f}"
+                    + ("  (⚠️ confidence 미달로 식별 파이프라인엔 안 들어감)" if det["low_conf"] else "")
+                )
 
             track.center = det["center"]
             track.missed_frames = 0
+            track.track_age_frames += 1
 
             if det["raw_label"] is not None:
                 track.window.append(det["raw_label"])
@@ -481,16 +536,21 @@ class FaceIdentifyTestNode(Node):
         if self.log_raw_scores:
             now = time.time()
             for det in detections:
-                # low_conf 프레임은 임베딩/거리 계산 자체를 안 했으므로(dists=None) 기록할
-                # raw score가 없다 — 건너뜀 (진단③ CSV는 실제 계산된 거리만 남긴다).
-                if det["dists"] is None:
-                    continue
                 track = det["track"]
+                x1, y1, x2, y2 = det["box"]
+                bbox_w, bbox_h = x2 - x1, y2 - y1
+                # low_conf 프레임은 임베딩/거리 계산 자체를 안 했으므로(dists=None) 거리
+                # 칼럼은 비워두지만, 등장 초반 진단에 필요한 yolo_confidence/bbox 크기/
+                # track_age_frames/window_fill은 low_conf 여부와 무관하게 항상 남긴다.
+                dist_a = f"{det['dists']['person_A']:.4f}" if det["dists"] is not None else ""
+                dist_b = f"{det['dists']['person_B']:.4f}" if det["dists"] is not None else ""
                 self._raw_score_writer.writerow([
-                    f"{now:.3f}", self.frame_count, id(track),
-                    det["raw_label"], track.stable_label, f"{track.stable_frac:.4f}",
-                    f"{det['dists']['person_A']:.4f}", f"{det['dists']['person_B']:.4f}",
-                    self.threshold,
+                    f"{now:.3f}", self.frame_count, track.track_id, track.track_age_frames,
+                    int(det["low_conf"]),
+                    det["raw_label"] or "", track.stable_label, f"{track.stable_frac:.4f}",
+                    len(track.window), self.min_window_fill,
+                    dist_a, dist_b, self.threshold,
+                    f"{det['conf']:.4f}", f"{bbox_w:.1f}", f"{bbox_h:.1f}", f"{bbox_w * bbox_h:.1f}",
                 ])
             self._raw_score_file.flush()
 
