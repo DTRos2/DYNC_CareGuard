@@ -11,6 +11,11 @@ Environment=ROS_DOMAIN_ID=0
 Environment=ROS_LOCALHOST_ONLY=1
 Environment=CAREGUARD_ROBOT_CODE=R-07
 Environment=CAREGUARD_SERVER_URL=http://192.168.230.7:8000
+# audio_player(TTS)가 paplay로 재생하려면 이 사용자의 PulseAudio 세션 소켓을
+# 찾아야 하는데, systemd 서비스는 로그인 세션과 환경이 분리돼 있어 XDG_RUNTIME_DIR이
+# 없으면 "Connection refused"로 조용히 재생만 실패한다(2026-09-15 R-07 실기 확인 —
+# TTS 합성까지는 성공하고 재생 단계에서만 막혔었다). id -u wego = 1000.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 ExecStartPre=/bin/sleep 1
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/wego_ws/install/setup.bash && source ~/robot_careguard_ws/install/setup.bash && exec ros2 run careguard_agent downlink_node'
 Restart=on-failure
