@@ -165,6 +165,16 @@ YOLO confidence/bbox 종횡비가 아닌 **완전히 다른 신호**(사람 전�
   그 앞단에 독립적으로 얹힌 것.
   사전 준비물 추가: person_yolo_weights(기본 ~/careguard_data/runs/
   yolov8n_coco/yolov8n.pt, 사전학습 COCO 가중치 그대로 — 재학습 없음).
+
+단계별 부하 측정(2026-09-15 추가, 최적화 없이 측정/로깅만): 30프레임마다
+[성능] 로그에 단계별(face_yolo/person_yolo/facenet_embed/adapter_zeroshot/
+render) 프레임당 평균 소요시간(ms), 전체 평균 처리시간, 실측 FPS(=이 창에서
+실제로 완료한 on_frame() 호출 수 / 경과 시간 — 콜백이 밀려서 프레임이
+드롭되는 경우까지 반영된 값), 이 프로세스의 CPU%/RSS 메모리(psutil)를 함께
+출력한다. GPU(cuda) 사용 시 각 단계 측정 직후 torch.cuda.synchronize()로
+동기화한 뒤 시간을 재므로(CUDA 커널은 비동기 큐잉이라 동기화 없인 이전
+단계 시간이 다음 단계로 새어 들어감), 단계별 숫자가 실제 그 단계의 소요
+시간을 정확히 반영한다.
 """
 import csv
 import os
@@ -175,6 +185,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import psutil
 from PIL import Image as PILImage
 import rclpy
 from rclpy.node import Node
@@ -215,6 +226,22 @@ COCO_PERSON_CLASS_ID = 0
 # "overlap_ratio": 얼굴 bbox 면적 대비 person bbox와 겹치는 비율이 이 값 이상인지.
 DEFAULT_PERSON_GATE_MODE = "center"
 DEFAULT_PERSON_GATE_OVERLAP_RATIO = 0.5
+
+# ── person_gate_interval 기본값(2026-09-15 최적화): 2026-09-15 부하 측정에서
+# person_yolo가 전체 처리시간의 ~40%(28~50ms/frame)를 차지하는 게 확인돼서, 매
+# 프레임 대신 N프레임마다 한 번만 돌리고 나머지는 마지막 검출 결과를 재사용한다.
+# 기본값 5로 잡은 근거:
+#   - 이 노드의 실측 처리율이 이미 초당 10~14프레임이라, N=5면 person_yolo를
+#     실제로 초당 2~3회만 돌리게 됨 — 사람이 그 사이(약 0.35~0.5초)에 화면
+#     밖으로 나가거나 완전히 새로 들어오는 정도의 이동은 흔치 않고, 설령
+#     생기더라도 기존 sliding-window(기본 window_size=15, enter_threshold=70%)
+#     다수결이 몇 프레임 단위 판정 흔들림을 이미 흡수하도록 설계돼 있어 부담이
+#     크지 않음.
+#   - N=5는 person_yolo의 프레임당 상각 비용을 80% 절감(5번 중 4번은 재사용)하는
+#     동시에, 무한정 늘리지 않아 "사람이 실제로 나갔는데 물체 판정이 계속 안
+#     걸리는" 지연도 최대 5프레임(초당 처리율 기준 약 0.35~0.5초)으로 제한.
+#   - 실측 후 환경(사람 이동 속도, 카메라 화각)에 맞춰 조정 권장 — 고정값 아님.
+DEFAULT_PERSON_GATE_INTERVAL = 5
 
 DECIDING_LABEL = "판정중"  # 콜드스타트: window가 아직 덜 찬 트랙의 상태(사람도, unknown도 아님)
 LOW_CONF_LABEL = "검출불안정"  # YOLO confidence가 threshold 미만이라 식별 파이프라인에 안 넘긴 프레임
@@ -393,6 +420,7 @@ class FaceIdentifyTestNode(Node):
         self.declare_parameter("person_min_confidence", DEFAULT_PERSON_MIN_CONFIDENCE)
         self.declare_parameter("person_gate_mode", DEFAULT_PERSON_GATE_MODE)
         self.declare_parameter("person_gate_overlap_ratio", DEFAULT_PERSON_GATE_OVERLAP_RATIO)
+        self.declare_parameter("person_gate_interval", DEFAULT_PERSON_GATE_INTERVAL)
         self.declare_parameter("enable_person_gate", True)
         self.declare_parameter("enable_display", True)
         self.declare_parameter("show_window", True)
@@ -436,7 +464,9 @@ class FaceIdentifyTestNode(Node):
         self.person_min_confidence = float(self.get_parameter("person_min_confidence").value)
         self.person_gate_mode = self.get_parameter("person_gate_mode").value
         self.person_gate_overlap_ratio = float(self.get_parameter("person_gate_overlap_ratio").value)
+        self.person_gate_interval = max(1, int(self.get_parameter("person_gate_interval").value))
         self.enable_person_gate = self.get_parameter("enable_person_gate").value
+        self._cached_person_boxes = []
 
         self.log_raw_scores = self.get_parameter("log_raw_scores").value
         self.raw_score_log_path = Path(self.get_parameter("raw_score_log_path").value).expanduser()
@@ -481,6 +511,13 @@ class FaceIdentifyTestNode(Node):
                 + f"person_min_confidence={self.person_min_confidence} — 얼굴이 어떤 person bbox "
                 f"안에도 없으면 식별 없이 '{OBJECT_LABEL}'로만 표시 "
                 "(enable_person_gate:=false로 끌 수 있음, 비교용)."
+            )
+            self.get_logger().info(
+                f"[최적화] person_gate_interval={self.person_gate_interval} — person_yolo를 매 "
+                f"프레임이 아니라 {self.person_gate_interval}프레임마다 한 번만 실행하고, 나머지 "
+                "프레임은 마지막 검출 결과를 그대로 재사용합니다(판정 자체를 건너뛰지 않음). "
+                "2026-09-15 부하 측정에서 person_yolo가 전체 처리시간의 ~40%를 차지해서 추가한 "
+                "최적화 — 기본값 근거는 코드 상단 DEFAULT_PERSON_GATE_INTERVAL 주석 참고."
             )
         else:
             self.person_yolo = None
@@ -549,6 +586,15 @@ class FaceIdentifyTestNode(Node):
         self.frame_count = 0
         self._frame_time_accum = 0.0  # ── enable_display/log_raw_scores 부하 비교용 계측(초)
         self._frame_time_count = 0
+        self._last_perf_log_time = time.perf_counter()  # ── 실측 FPS 계산용(경과 벽시계 시간 기준)
+        # ── 2026-09-15 추가: 단계별 부하 분해(측정/로깅만, 최적화 없음). 프레임마다
+        # 이 프레임에서 각 단계에 실제로 쓴 시간(초)을 담고, 30프레임마다 평균 내서 로그.
+        self._stage_time_accum = {
+            "face_yolo": 0.0, "person_yolo": 0.0,
+            "facenet_embed": 0.0, "adapter_zeroshot": 0.0, "render": 0.0,
+        }
+        self._proc = psutil.Process()
+        self._proc.cpu_percent(None)  # ── 첫 호출은 기준점만 잡음(값 버림), 이후 호출부터 유효
         # 카메라 드라이버가 qos_profile_sensor_data(best-effort)로 발행함 — video_recorder.py와
         # 동일하게 맞춰야 구독이 실제로 붙는다. 기본(reliable) QoS로는 DDS가 매칭을 거부해서
         # 콜백이 아예 안 불릴 수 있다.
@@ -639,6 +685,14 @@ class FaceIdentifyTestNode(Node):
         )
         self._open_raw_score_file(check_schema=False)
 
+    def _sync(self):
+        """GPU(cuda) 사용 시 동기화 — CUDA 커널은 비동기 큐잉이라, 단계별 시간을
+        정확히 재려면 각 단계 직후 완료를 기다려야 한다(안 그러면 이 단계의
+        연산이 다음 단계 측정 구간으로 새어 들어감). CPU 모드에선 아무 것도
+        안 함(no-op)."""
+        if self.device == "cuda":
+            torch.cuda.synchronize()
+
     def embed_crop(self, face_bgr):
         # ── face_embedding_diagnostic.py(학습/진단 파이프라인)와 리사이즈 알고리즘을
         # 맞추기 위해 cv2.resize(기본 INTER_LINEAR/bilinear) 대신 PIL Image.resize를
@@ -651,8 +705,15 @@ class FaceIdentifyTestNode(Node):
         t = torch.from_numpy(face_rgb).permute(2, 0, 1).float().unsqueeze(0).to(self.device)
         t = self.standardize(t)
         with torch.no_grad():
+            t0 = time.perf_counter()
             zero_shot_emb = self.embedder(t)  # InceptionResnetV1 출력은 이미 L2-normalize된 상태
+            self._sync()
+            self._stage_time_accum["facenet_embed"] += time.perf_counter() - t0
+
+            t0 = time.perf_counter()
             adapter_emb = F.normalize(self.adapter(zero_shot_emb), p=2, dim=1)
+            self._sync()
+            self._stage_time_accum["adapter_zeroshot"] += time.perf_counter() - t0
         # ── 실험C(이중 확인)용: adapter 적용 전 zero-shot 임베딩도 같이 반환.
         return adapter_emb[0], zero_shot_emb[0]
 
@@ -666,11 +727,15 @@ class FaceIdentifyTestNode(Node):
         Returns: (final_label, adapter_dist, adapter_dists, adapter_label, zs_label, zs_dist, zs_dists)
         adapter_dists/zs_dists는 {"person_A": dist, "person_B": dist} 전체(로그/진단용).
         """
+        # ── 단계별 부하 측정: 여기서부터 아래(dot-product 비교들)는 adapter_zeroshot
+        # 단계의 나머지 절반(embed_crop의 adapter forward에 이어서) — 같은 누적키에 더함.
+        t0 = time.perf_counter()
         adapter_dists = {name: float(1.0 - torch.dot(adapter_emb, c)) for name, c in self.centroids.items()}
         adapter_name, adapter_dist = min(adapter_dists.items(), key=lambda kv: kv[1])
         adapter_label = adapter_name if adapter_dist <= self.threshold else "unknown"
 
         if not self.enable_zero_shot_ensemble:
+            self._stage_time_accum["adapter_zeroshot"] += time.perf_counter() - t0
             return adapter_label, adapter_dist, adapter_dists, adapter_label, None, None, None
 
         zs_dists = {name: float(1.0 - torch.dot(zero_shot_emb, c)) for name, c in self.zero_shot_centroids.items()}
@@ -678,6 +743,7 @@ class FaceIdentifyTestNode(Node):
         zs_label = zs_name if zs_dist <= self.zero_shot_threshold else "unknown"
 
         final_label = adapter_label if (adapter_label != "unknown" and adapter_label == zs_label) else "unknown"
+        self._stage_time_accum["adapter_zeroshot"] += time.perf_counter() - t0
         return final_label, adapter_dist, adapter_dists, adapter_label, zs_label, zs_dist, zs_dists
 
     def _update_tracks(self, detections):
@@ -763,20 +829,44 @@ class FaceIdentifyTestNode(Node):
                 f"mean_pixel={image.mean():.1f} (0에 가까우면 디코딩/노출 문제 의심)"
             )
 
+        t0 = time.perf_counter()
         results = self.yolo.predict(image, verbose=False)[0]
+        self._sync()
+        self._stage_time_accum["face_yolo"] += time.perf_counter() - t0
         if self.frame_count % 30 == 1:
             self.get_logger().info(f"[진단] YOLO 검출 수: {len(results.boxes)}")
 
-        # ── 완화③ 사람 전신 게이트: 얼굴 검출과 완전히 별개로 COCO person 검출을
-        # 매 프레임 한 번만 실행하고, 아래에서 얼굴마다 재사용한다.
+        # ── 완화③ 사람 전신 게이트: 얼굴 검출과 완전히 별개로 COCO person 검출을 돌리고
+        # 아래에서 얼굴마다 재사용한다. 2026-09-15 부하 측정에서 person_yolo가 전체
+        # 처리시간의 ~40%(28~50ms/frame)를 차지하는 게 확인돼서, person_gate_interval
+        # (기본값·근거는 DEFAULT_PERSON_GATE_INTERVAL 정의부 참고) 프레임마다 한 번만
+        # 실제로 돌리고 나머지 프레임은 마지막 검출 결과(self._cached_person_boxes)를
+        # 그대로 재사용한다 — "판정을 건너뛰지 않고 마지막 결과를 유지"하는 방식.
         person_boxes = []
         if self.enable_person_gate:
-            person_results = self.person_yolo.predict(
-                image, classes=[COCO_PERSON_CLASS_ID], conf=self.person_min_confidence, verbose=False
-            )[0]
-            person_boxes = [tuple(float(v) for v in b.xyxy[0]) for b in person_results.boxes]
-            if self.frame_count % 30 == 1:
-                self.get_logger().info(f"[진단][완화③] person 검출 수: {len(person_boxes)}")
+            if (self.frame_count - 1) % self.person_gate_interval == 0:
+                t0 = time.perf_counter()
+                person_results = self.person_yolo.predict(
+                    image, classes=[COCO_PERSON_CLASS_ID], conf=self.person_min_confidence, verbose=False
+                )[0]
+                person_boxes = [tuple(float(v) for v in b.xyxy[0]) for b in person_results.boxes]
+                self._sync()
+                self._stage_time_accum["person_yolo"] += time.perf_counter() - t0
+                self._cached_person_boxes = person_boxes
+                if self.frame_count % 30 == 1:
+                    self.get_logger().info(
+                        f"[진단][완화③] person 검출 수: {len(person_boxes)} (신규 검출, "
+                        f"person_gate_interval={self.person_gate_interval})"
+                    )
+            else:
+                # ── 이번 프레임은 person_yolo를 안 돌리고 마지막 검출 결과를 그대로 씀
+                # (person_yolo 단계 시간은 0으로 잡힘 — 이게 바로 이번 최적화의 절감분).
+                person_boxes = self._cached_person_boxes
+                if self.frame_count % 30 == 1:
+                    self.get_logger().info(
+                        f"[진단][완화③] person 검출 수: {len(person_boxes)} (캐시 재사용, "
+                        f"person_gate_interval={self.person_gate_interval})"
+                    )
 
         detections = []
         for box in results.boxes:
@@ -863,7 +953,9 @@ class FaceIdentifyTestNode(Node):
         # 없앰). 검출/신원판단/CSV 로깅/annotated 토픽 발행은 이 값과 무관하게 그대로
         # 동작 — 이 분기 밖에서 이미 다 끝난 뒤라 영향 없음(headless 순찰 대비).
         if self.enable_display:
+            t0 = time.perf_counter()
             self._draw_detections(image, detections)
+            self._stage_time_accum["render"] += time.perf_counter() - t0
 
         out_msg = self.bridge.cv2_to_imgmsg(image, encoding="bgr8")
         out_msg.header = msg.header
@@ -875,20 +967,40 @@ class FaceIdentifyTestNode(Node):
                 self.get_logger().info("q 입력 — 노드 종료")
                 rclpy.shutdown()
 
-        # ── enable_display/log_raw_scores 부하 비교용 계측: 30프레임마다 평균
-        # on_frame() 처리 시간(ms)을 로그로 남긴다 — 두 설정(둘 다 켬 vs 둘 다 끔)으로
-        # 각각 실행해서 이 로그만 비교하면 실측 부하 차이를 확인할 수 있음.
+        # ── 단계별 부하 측정(2026-09-15, 최적화 없이 측정/로깅만): 30프레임마다
+        # 단계별 평균 소요시간 + 전체 평균 처리시간 + 실측 FPS(=이 구간에서 실제로
+        # 완료한 on_frame() 호출 수 / 경과 벽시계 시간 — 콜백이 밀려 프레임이
+        # 드롭되는 경우까지 반영됨) + 이 프로세스의 CPU%/RSS 메모리(psutil)를
+        # 한 줄로 남긴다. enable_display/log_raw_scores 조합별로 이 로그만 비교하면
+        # 실측 부하 차이를 바로 확인할 수 있다.
         self._frame_time_accum += time.perf_counter() - frame_start
         self._frame_time_count += 1
         if self._frame_time_count >= 30:
-            avg_ms = self._frame_time_accum / self._frame_time_count * 1000
+            now = time.perf_counter()
+            n = self._frame_time_count
+            avg_ms = self._frame_time_accum / n * 1000
+            elapsed = now - self._last_perf_log_time
+            fps = n / elapsed if elapsed > 0 else float("nan")
+            stage_ms = {k: v / n * 1000 for k, v in self._stage_time_accum.items()}
+            cpu_pct = self._proc.cpu_percent(None)  # 이전 호출~지금까지의 평균 CPU 사용률(%)
+            rss_mb = self._proc.memory_info().rss / 1024 / 1024
             self.get_logger().info(
-                f"[성능] 최근 {self._frame_time_count}프레임 평균 on_frame() 처리시간: "
-                f"{avg_ms:.1f}ms (enable_display={self.enable_display}, "
-                f"log_raw_scores={self.log_raw_scores})"
+                f"[성능] 최근 {n}프레임 — 전체 평균 {avg_ms:.1f}ms/frame, 실측 FPS={fps:.1f} "
+                f"(enable_display={self.enable_display}, log_raw_scores={self.log_raw_scores}, "
+                f"enable_person_gate={self.enable_person_gate}, "
+                f"enable_zero_shot_ensemble={self.enable_zero_shot_ensemble}) | "
+                f"단계별(ms/frame): face_yolo={stage_ms['face_yolo']:.1f} "
+                f"person_yolo={stage_ms['person_yolo']:.1f} "
+                f"facenet_embed={stage_ms['facenet_embed']:.1f} "
+                f"adapter_zeroshot={stage_ms['adapter_zeroshot']:.1f} "
+                f"render={stage_ms['render']:.1f} | "
+                f"CPU={cpu_pct:.0f}% RSS={rss_mb:.0f}MB"
             )
             self._frame_time_accum = 0.0
             self._frame_time_count = 0
+            self._last_perf_log_time = now
+            for k in self._stage_time_accum:
+                self._stage_time_accum[k] = 0.0
 
     def _draw_detections(self, image, detections):
         """enable_display=True일 때만 호출됨 — bbox+라벨 그리기 전용, 검출/신원판단/
