@@ -65,18 +65,44 @@ import threading
 import time
 from typing import Optional, Tuple
 
+import cv2
+import numpy as np
 import rclpy
 import requests
 import websockets
 import yaml
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import CompressedImage
 
 from . import ws_config
 
 RECONNECT_DELAY_SEC = 3.0
+
+# 충전소 도킹 정렬(ArUco) — 2026-09-15, R-06 충전소에 붙인 마커로 Nav2 도착 후
+# 마지막 접근을 시각 서보로 정밀 정렬한다. 이 로봇의 카메라(/camera/camera_info)는
+# 캘리브레이션이 안 돼 있어(k/d 전부 0) solvePnP 기반 3D 포즈 추정은 못 쓰고,
+# 이미지 평면상 마커 중심의 좌우 오프셋(조향)과 마커가 보이는 픽셀 폭(거리 proxy,
+# 가까울수록 커짐)만으로 정렬하는 image-based visual servo로 간다 — 카메라 캘리브레이션
+# 이 스코프 밖이라는 판단(2026-09-15 논의).
+ARUCO_DICT = cv2.aruco.DICT_4X4_50
+ARUCO_MARKER_ID = 17
+ARUCO_MAX_LINEAR_MPS = 0.08
+ARUCO_MAX_ANGULAR_RADPS = 0.6
+# 마커 바운딩박스 폭이 이 픽셀 수 이상으로 보이면 "충분히 접근했다"고 보고 멈춘다 —
+# 카메라 캘리브레이션이 없어 실측 거리(cm)로 환산할 수 없으므로, 실제 로봇에서 충전
+# 단자가 닿는 시점의 마커 크기를 보고 튜닝해야 하는 값이다(2026-09-15 시점 추정치,
+# 첫 실기 테스트 후 조정 필요).
+ARUCO_DOCK_CONTACT_WIDTH_PX = 220
+# 마커가 화면 중심에서 이 비율(가로폭 대비) 이상 벗어나 있으면 전진하지 않고 제자리
+# 회전으로 먼저 정렬한다 — 크게 틀어진 채로 전진하면 마커를 화면 밖으로 놓치기 쉽다.
+ARUCO_CENTER_DEADBAND_RATIO = 0.35
+ARUCO_LOST_MARKER_TIMEOUT_SEC = 6.0
+ARUCO_DOCK_TIMEOUT_SEC = 25.0
+ARUCO_CONTROL_INTERVAL_SEC = 0.1
 
 # 서버에서 받아온 맵을 저장해둘 자리 — careguard_agent(LIMO)의 NAV_MAP_DIR과
 # 같은 이유(SLAM 산출물이 아니라 순찰용으로 서버에서 도로 받아온 사본)로 이름을
@@ -120,6 +146,16 @@ class DownlinkNode(Node):
         self._loop = None
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
         self._thread.start()
+
+        # 충전소 도킹(ArUco) — 카메라 프레임은 uplink_node도 독립적으로 같은 토픽을
+        # 구독해 서버로 relay하고 있어 구독자가 둘이어도 문제없다(ROS2 토픽은 다대다).
+        self._latest_frame_lock = threading.Lock()
+        self._latest_frame: Optional[np.ndarray] = None
+        self.create_subscription(CompressedImage, '/camera/image_raw/compressed',
+                                  self._on_camera_frame_for_dock, qos_profile_sensor_data)
+        self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self._aruco_dictionary = cv2.aruco.Dictionary_get(ARUCO_DICT)
+        self._aruco_params = cv2.aruco.DetectorParameters_create()
 
     def _run_ws_loop(self):
         self._loop = asyncio.new_event_loop()
@@ -279,6 +315,8 @@ class DownlinkNode(Node):
                 self.get_logger().info('충전소 복귀 주행이 취소됐습니다')
             else:
                 self.get_logger().info(f'충전소 복귀 결과: {"성공" if success else "실패"}')
+                if success:
+                    self._dock_with_aruco()
         finally:
             self._nav_active = False
 
@@ -327,6 +365,7 @@ class DownlinkNode(Node):
                     self.get_logger().error('충전소 복귀 실패')
                     self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'failed'})
                     return
+                self._dock_with_aruco()
 
             self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'completed'})
             self.get_logger().info(f'순찰 완료: run_id={run_id}')
@@ -338,6 +377,102 @@ class DownlinkNode(Node):
             self.get_logger().warn('취소할 진행 중인 주행이 없습니다')
             return
         self._cancel_requested.set()
+
+    def _on_camera_frame_for_dock(self, msg: CompressedImage):
+        # uplink_node도 이 토픽을 독립적으로 구독해 relay한다 — 여기선 디코딩한
+        # BGR 이미지를 도킹 루프가 쓸 수 있게 저장만 해둔다(relay와는 무관).
+        if not msg.data:
+            return
+        image = cv2.imdecode(np.frombuffer(bytes(msg.data), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return
+        with self._latest_frame_lock:
+            self._latest_frame = image
+
+    def _publish_cmd_vel(self, linear_x: float, angular_z: float):
+        twist = Twist()
+        twist.linear.x = linear_x
+        twist.angular.z = angular_z
+        self._cmd_vel_pub.publish(twist)
+
+    def _dock_with_aruco(self):
+        """Nav2가 충전 웨이포인트까지 도착한 뒤, ArUco 마커(DICT_4X4_50, id=ARUCO_MARKER_ID)로
+        마지막 접근을 시각 서보로 정렬한다 — Nav2의 목표 도달 반경(기본 수십 cm)만으론
+        충전 단자를 실제로 맞대기엔 부정확해서 이 단계가 필요하다(2026-09-15 요청).
+
+        카메라 캘리브레이션이 없어(모듈 상단 상수 주석 참고) 이미지 평면 기준으로만
+        제어한다: 마커 중심의 좌우 픽셀 오프셋으로 조향하고, 마커 바운딩박스 폭을
+        거리 대용으로 써서 충분히 커지면(ARUCO_DOCK_CONTACT_WIDTH_PX) 접촉으로 보고
+        멈춘다. 마커를 한 번도 못 보거나 놓친 채로 오래(ARUCO_LOST_MARKER_TIMEOUT_SEC)
+        지나면, 또는 전체 시간이 ARUCO_DOCK_TIMEOUT_SEC를 넘으면 안전하게 정지하고
+        포기한다 — 마커 없이 추측 주행(dead reckoning)으로 충전소에 부딪히는 상황을
+        피하려는 것이다. patrol_stop(취소 요청)도 즉시 반영한다.
+        """
+        self.get_logger().info('ArUco 충전소 도킹 정렬을 시작합니다')
+        start = time.monotonic()
+        last_seen = start
+        docked = False
+        try:
+            while True:
+                now = time.monotonic()
+                if self._cancel_requested.is_set():
+                    self.get_logger().info('도킹 정렬이 취소됐습니다')
+                    return
+                if now - start > ARUCO_DOCK_TIMEOUT_SEC:
+                    self.get_logger().error('도킹 정렬 제한 시간 초과 — 포기합니다')
+                    return
+                if now - last_seen > ARUCO_LOST_MARKER_TIMEOUT_SEC:
+                    self.get_logger().error('충전소 ArUco 마커를 놓쳐 도킹 정렬을 포기합니다')
+                    return
+
+                with self._latest_frame_lock:
+                    frame = None if self._latest_frame is None else self._latest_frame.copy()
+                if frame is None:
+                    time.sleep(ARUCO_CONTROL_INTERVAL_SEC)
+                    continue
+
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                corners, ids, _ = cv2.aruco.detectMarkers(
+                    gray, self._aruco_dictionary, parameters=self._aruco_params)
+
+                marker_corners = None
+                if ids is not None:
+                    for c, marker_id in zip(corners, ids.flatten()):
+                        if int(marker_id) == ARUCO_MARKER_ID:
+                            marker_corners = c[0]  # (4, 2)
+                            break
+
+                if marker_corners is None:
+                    self._publish_cmd_vel(0.0, 0.0)
+                    time.sleep(ARUCO_CONTROL_INTERVAL_SEC)
+                    continue
+
+                last_seen = now
+                center_x = float(np.mean(marker_corners[:, 0]))
+                width_px = float(np.linalg.norm(marker_corners[0] - marker_corners[1]))
+                image_width = frame.shape[1]
+                offset_ratio = (center_x - image_width / 2.0) / (image_width / 2.0)  # -1..1
+
+                if width_px >= ARUCO_DOCK_CONTACT_WIDTH_PX:
+                    self.get_logger().info(f'충전소 마커 접근 완료(폭 {width_px:.0f}px) — 도킹 정렬 종료')
+                    docked = True
+                    return
+
+                angular_z = max(-ARUCO_MAX_ANGULAR_RADPS,
+                                 min(ARUCO_MAX_ANGULAR_RADPS, -offset_ratio * ARUCO_MAX_ANGULAR_RADPS))
+                if abs(offset_ratio) > ARUCO_CENTER_DEADBAND_RATIO:
+                    # 많이 틀어져 있으면 제자리 정렬부터 — 틀어진 채 전진하면 마커가
+                    # 화면 밖으로 나가버리기 쉽다.
+                    linear_x = 0.0
+                else:
+                    # 마커 폭이 목표에 가까워질수록(=가까워질수록) 속도를 줄인다.
+                    approach_ratio = max(0.0, 1.0 - width_px / ARUCO_DOCK_CONTACT_WIDTH_PX)
+                    linear_x = ARUCO_MAX_LINEAR_MPS * approach_ratio
+                self._publish_cmd_vel(linear_x, angular_z)
+                time.sleep(ARUCO_CONTROL_INTERVAL_SEC)
+        finally:
+            self._publish_cmd_vel(0.0, 0.0)
+            self._send({'type': 'dock_result', 'docked': docked})
 
     def _to_pose_stamped(self, x: float, y: float, yaw: float) -> PoseStamped:
         pose = PoseStamped()
