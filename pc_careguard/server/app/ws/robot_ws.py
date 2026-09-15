@@ -433,6 +433,29 @@ def _save_slam_result(message: dict) -> Optional[int]:
     return map_id
 
 
+def _infer_battery_state_from_history(cur, robot_id: int) -> str:
+    """이 프로세스가 이 로봇의 배터리 상태를 아직 한 번도 못 봤을 때(재시작 직후)
+    마지막 system_event로 실제 상태를 복원한다 — 무조건 "normal"로 가정하지 않는다
+    (_handle_battery_state 호출부 주석 참고)."""
+    cur.execute(
+        """
+        SELECT event_type FROM system_event
+        WHERE robot_id = %(robot_id)s
+          AND event_type IN ('battery_attention', 'battery_return_needed', 'battery_recovered')
+        ORDER BY id DESC LIMIT 1
+        """,
+        {"robot_id": robot_id},
+    )
+    row = cur.fetchone()
+    if row is None:
+        return "normal"
+    if row["event_type"] == "battery_return_needed":
+        return "return_needed"
+    if row["event_type"] == "battery_attention":
+        return "attention"
+    return "normal"
+
+
 def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
     """시스템 설정 > 임계값·알림의 "배터리 주의/복귀" 값과 비교해 임계값을 넘는
     순간에만 system_event를 한 번 남긴다(§_battery_alert_state 주석 참고).
@@ -461,7 +484,18 @@ def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:
         attention_pct = thresholds["battery_attention_pct"] if thresholds else 30
         return_pct = thresholds["battery_return_pct"] if thresholds else 28
 
-        previous_state = _battery_alert_state.get(robot_code, "normal")
+        if robot_code in _battery_alert_state:
+            previous_state = _battery_alert_state[robot_code]
+        else:
+            # 서버(uvicorn) 재시작 직후 이 로봇의 첫 battery_state 메시지 — 무조건
+            # "normal"로 가정하면, 재시작 전부터 이미 attention/return_needed였던
+            # 로봇도 "방금 새로 그 상태가 됐다"고 오판해서 중복 알림을 남긴다(2026-09-15
+            # careguard-server 재시작 3초 뒤 R-07이 이미 attention 상태였는데도 같은
+            # 44%에서 또 "배터리 주의" 로그가 생긴 걸로 실제 확인 — 심하면 이미 진행
+            # 중인 충전 복귀 명령이 재시작마다 다시 나갈 수도 있다). 마지막
+            # system_event로 실제 상태를 복원한다.
+            previous_state = _infer_battery_state_from_history(cur, robot_id)
+            _battery_alert_state[robot_code] = previous_state
 
         if previous_state == "return_needed" and percentage <= return_pct + _BATTERY_RECOVERY_MARGIN_PCT:
             # 여유분(_BATTERY_RECOVERY_MARGIN_PCT)을 확실히 넘기 전까지는
