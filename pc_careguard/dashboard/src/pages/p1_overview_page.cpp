@@ -566,7 +566,7 @@ void P1OverviewPage::populateTable() {
             // "최근 미션" 이력도 로봇별로 조회하는 API가 따로 없어 비워둔다 — 지어낸
             // 값을 보여주는 것보단 빈 채로 두는 쪽이 낫다.
 
-            auto* modal = new RobotControlModal(data, this);
+            auto* modal = new RobotControlModal(data, wsClient_, this);
             modal->setAttribute(Qt::WA_DeleteOnClose);
             connect(modal, &RobotControlModal::eventNavigationRequested, this,
                     &P1OverviewPage::eventNavigationRequested);
