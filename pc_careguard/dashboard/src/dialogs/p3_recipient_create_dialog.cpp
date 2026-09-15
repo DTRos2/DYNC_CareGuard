@@ -91,18 +91,13 @@ QLabel* makePriorityPill(int priority, bool emergencyFixed, QWidget* parent) {
     return pill;
 }
 
-// 로봇 하나당 맵 하나가 고정으로 딸린 이 앱의 기존 mock 관례(R-01~04 ↔ 4개 주소) — 별도
-// 로봇/맵 카탈로그가 없어 p6_patrol_page.cpp/mapping_status_overlay.cpp와 같은 값을 쓴다.
-const QStringList kRobotCodes = {QStringLiteral("R-01"), QStringLiteral("R-02"), QStringLiteral("R-03"),
-                                  QStringLiteral("R-04")};
-const QStringList kRobotMaps = {QStringLiteral("행복빌라 302"), QStringLiteral("은빛아파트 101"),
-                                 QStringLiteral("솔마을 7호"), QStringLiteral("동산주택 2층")};
 
 }  // namespace
 
 P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, const QVector<OperatorOption>& operators,
-                                                   QWidget* parent)
-    : QDialog(parent), nextCode_(nextCode) {
+                                                   const QVector<RobotOption>& robots,
+                                                   const QVector<MapOption>& maps, QWidget* parent)
+    : QDialog(parent), nextCode_(nextCode), robots_(robots), maps_(maps) {
     setModal(true);
     // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
@@ -228,29 +223,93 @@ P3RecipientCreateDialog::P3RecipientCreateDialog(const QString& nextCode, const 
     robotMapRow->setSpacing(10);
     robotCombo_ = new CareGuardComboBox(body);
     robotCombo_->addItem(QStringLiteral("로봇 선택"));
-    robotCombo_->addItems(kRobotCodes);
+    // 이미 다른 대상자가 담당 중인 로봇은 "R-05 · 김순자 배정 중"처럼 이름을 같이 보여주고
+    // 주의색으로 강조한다 — 로봇 한 대를 여러 대상자가 같이 담당할 수 있어(2026-09-15) 고르는
+    // 것 자체는 막지 않되, 이미 누가 있는지는 고르기 전에 알 수 있어야 한다(요청, 2026-09-15).
+    for (const auto& r : robots_) {
+        const bool occupied = !r.assignedRecipientName.isEmpty();
+        robotCombo_->addItem(occupied ? QStringLiteral("%1 · %2 배정 중").arg(r.code, r.assignedRecipientName)
+                                        : r.code);
+        if (occupied) robotCombo_->setItemData(robotCombo_->count() - 1, Tokens::ATTENTION.main, Qt::ForegroundRole);
+    }
     robotMapRow->addWidget(robotCombo_, 1);
 
     mapCombo_ = new CareGuardComboBox(body);
     mapCombo_->addItem(QStringLiteral("맵 선택"));
+    // 로봇을 몰라도 맵 이름을 아는 경우가 있어(요청 사양, 2026-09-15) 로봇 선택 여부와
+    // 무관하게 처음부터 전체 맵 목록을 다 보여준다 — 예전엔 로봇을 고르기 전엔 이 콤보가
+    // 통째로 비어 있었다. robotCombo_와 같은 이유로 배정 중인 맵도 이름을 같이 보여준다.
+    for (const auto& m : maps_) {
+        const bool occupied = !m.assignedRecipientName.isEmpty();
+        mapCombo_->addItem(occupied ? QStringLiteral("%1 · %2 배정 중").arg(m.name, m.assignedRecipientName)
+                                      : m.name,
+                            m.robotCode);
+        if (occupied) mapCombo_->setItemData(mapCombo_->count() - 1, Tokens::ATTENTION.main, Qt::ForegroundRole);
+    }
     robotMapRow->addWidget(mapCombo_, 1);
     layout->addLayout(robotMapRow);
 
+    // robotCombo_<->mapCombo_ 양방향 동기화 — 어느 쪽을 먼저 골라도 나머지가 맞춰진다.
+    // syncingRobotMap_으로 서로가 서로를 다시 부르는 재귀를 막는다. 이미 배정 중인 로봇/맵을
+    // 고르면 confirmSharedAssignment()로 먼저 확인하고, 취소하면 lastRobotIndex_/lastMapIndex_
+    // (마지막 확정 값)로 되돌린다 — p7_account_dialog.cpp::handleRecipientReassignCheck와 같은
+    // 확인 모달 패턴을 쓰되, 여기는 재배정이 아니라 추가라 되돌리는 목적만 같다.
     connect(robotCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
-        mapCombo_->clear();
-        mapCombo_->addItem(QStringLiteral("맵 선택"));
-        if (index >= 1 && index <= kRobotMaps.size()) {
-            // 로봇을 고르면 그 로봇에 매핑된 맵 하나만 후보로 뜬다(§ 와이어프레임 안내 문구).
-            mapCombo_->addItem(kRobotMaps[index - 1]);
-            mapCombo_->setCurrentIndex(1);
+        if (syncingRobotMap_) return;
+        if (index >= 1 && index <= robots_.size() && !robots_[index - 1].assignedRecipientName.isEmpty()) {
+            const RobotOption& r = robots_[index - 1];
+            if (!confirmSharedAssignment(QStringLiteral("로봇 %1").arg(r.code), r.assignedRecipientName)) {
+                syncingRobotMap_ = true;
+                robotCombo_->setCurrentIndex(lastRobotIndex_);
+                syncingRobotMap_ = false;
+                return;
+            }
         }
+        lastRobotIndex_ = index;
+        syncingRobotMap_ = true;
+        if (index >= 1 && index <= robots_.size()) {
+            const QString robotCode = robots_[index - 1].code;
+            int found = -1;
+            for (int i = 0; i < maps_.size(); ++i) {
+                if (maps_[i].robotCode == robotCode) { found = i; break; }
+            }
+            mapCombo_->setCurrentIndex(found >= 0 ? found + 1 : 0);
+        } else {
+            mapCombo_->setCurrentIndex(0);
+        }
+        lastMapIndex_ = mapCombo_->currentIndex();
+        syncingRobotMap_ = false;
         refreshValidation();
     });
-    connect(mapCombo_, &QComboBox::currentIndexChanged, this, &P3RecipientCreateDialog::refreshValidation);
+    connect(mapCombo_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (syncingRobotMap_) return;
+        if (index >= 1 && index <= maps_.size() && !maps_[index - 1].assignedRecipientName.isEmpty()) {
+            const MapOption& m = maps_[index - 1];
+            if (!confirmSharedAssignment(QStringLiteral("맵 '%1'").arg(m.name), m.assignedRecipientName)) {
+                syncingRobotMap_ = true;
+                mapCombo_->setCurrentIndex(lastMapIndex_);
+                syncingRobotMap_ = false;
+                return;
+            }
+        }
+        lastMapIndex_ = index;
+        syncingRobotMap_ = true;
+        if (index >= 1 && index <= maps_.size()) {
+            const QString robotCode = maps_[index - 1].robotCode;
+            int found = -1;
+            for (int i = 0; i < robots_.size(); ++i) {
+                if (robots_[i].code == robotCode) { found = i; break; }
+            }
+            robotCombo_->setCurrentIndex(found >= 0 ? found + 1 : 0);
+        }
+        lastRobotIndex_ = robotCombo_->currentIndex();
+        syncingRobotMap_ = false;
+        refreshValidation();
+    });
 
     auto* hintLabel = new QLabel(body);
     hintLabel->setProperty("role", "warning");
-    hintLabel->setText(QStringLiteral("ⓘ 로봇을 먼저 고르면 해당 로봇에 매핑된 맵만 표시됩니다"));
+    hintLabel->setText(QStringLiteral("ⓘ 로봇 또는 맵 중 하나만 골라도 나머지가 자동으로 맞춰집니다"));
     layout->addWidget(hintLabel);
 
     layout->addWidget(buildGuardianSection());
@@ -993,6 +1052,23 @@ void P3RecipientCreateDialog::removeSchedule(int index) {
     refreshScheduleTable();
 }
 
+bool P3RecipientCreateDialog::confirmSharedAssignment(const QString& targetLabel, const QString& recipientName) {
+    // p7_account_dialog.cpp::handleRecipientReassignCheck와 같은 모양(Ok/Cancel 버튼 텍스트만
+    // 바꿔 쓰는 QMessageBox)이지만, 저쪽과 달리 "한 로봇=한 대상자" 불변식이 없어(로봇 한 대를
+    // 여러 대상자가 같이 담당 가능, 2026-09-15 정정) 기존 담당자가 초기화된다는 경고가 아니라
+    // 그냥 추가 여부만 묻는다.
+    QMessageBox box(this);
+    box.setWindowTitle(QStringLiteral("대상자 추가"));
+    box.setIcon(QMessageBox::Question);
+    box.setText(QStringLiteral("%1는 이미 %2 님이 담당하고 있습니다.").arg(targetLabel, recipientName));
+    box.setInformativeText(QStringLiteral("대상자를 추가하시겠습니까?"));
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.button(QMessageBox::Ok)->setText(QStringLiteral("추가"));
+    box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+    return box.exec() == QMessageBox::Ok;
+}
+
 void P3RecipientCreateDialog::refreshValidation() {
     // 담당 로봇·맵 배정은 필수에서 제외한다(리뷰 지적) — 맵·로봇 매핑 페이지에서 나중에
     // 배정할 수도 있으니 등록 시점에 반드시 골라야 할 이유가 없다.
@@ -1023,8 +1099,12 @@ void P3RecipientCreateDialog::handleRegisterClicked() {
     RecipientCard card;
     card.code = nextCode_;
     card.name = nameEdit_->text().trimmed();
-    card.robotCode =
-        robotCombo_->currentIndex() > 0 ? kRobotCodes[robotCombo_->currentIndex() - 1] : QStringLiteral("미배정");
+    // currentText()는 안 쓴다 — "배정 중" 표시가 붙은 항목이면 그 꾸밈 텍스트까지 통째로
+    // robotCode가 돼버린다(2026-09-15 "이미 배정된 로봇 표시" 추가로 생긴 함정). robots_에서
+    // 실제 코드만 뽑는다.
+    card.robotCode = (robotCombo_->currentIndex() > 0 && robotCombo_->currentIndex() <= robots_.size())
+                          ? robots_[robotCombo_->currentIndex() - 1].code
+                          : QStringLiteral("미배정");
     card.address = addressEdit_->text().trimmed();
     card.operatorId = operatorCombo_->currentData().toInt();
     card.operatorName = card.operatorId > 0 ? operatorCombo_->currentText() : QString();
