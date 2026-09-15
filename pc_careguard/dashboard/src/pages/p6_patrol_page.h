@@ -312,6 +312,13 @@ private:
     // "웨이포인트/경로 변경됨" — refreshRobotStateBtn_ 옆에만 보이는 상태 배지
     // (updateRefreshBadge()가 staleMapIds_ 기준으로 show/hide한다).
     QLabel* refreshStaleBadge_;
+    // "스케줄 주행 취소" — 헤더 행 맨 우측. 스케줄(자동 트리거) 주행 중일 때만 보인다.
+    // 경로 박스의 testBtn_("경로 주행"/"주행 취소")는 사람이 그 버튼으로 직접 시작한
+    // 주행에만 "주행 취소"로 토글돼야 하는데, 스케줄이 시작한 주행도 isPatrolling_만
+    // 보고 똑같이 토글해버려서 "내가 안 눌렀는데 취소 버튼이 떠 있다" 리포트가 있었다
+    // (2026-09-15) — updateDrivingButtonsEnabled()가 activePatrolTrigger_로 스케줄
+    // 주행을 구분해 이 버튼만 보여주고, testBtn_/웨이포인트 팝오버는 계속 비활성 상태로 둔다.
+    QPushButton* scheduleCancelBtn_;
     QVector<MapData> maps_;
     int currentMapIndex_;
     // waypoints_changed/patrol_routes_changed WS로 "저장된 웨이포인트/경로가 이 맵
