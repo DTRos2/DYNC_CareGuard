@@ -63,6 +63,24 @@
     rqt 실행 후 Plugins -> Visualization -> Image View에서 토픽 드롭다운에 뜨는
     `/face_identify_test/annotated`를 선택하면 박스+라벨이 그려진 화면이 보인다.
 
+화면 표시 끄기(2026-09-15 추가, headless 순찰 대비): `enable_display:=false`면
+bbox/라벨을 그리는 cv2.rectangle/putText 연산 자체를 건너뛰고(불필요한 연산
+부담 제거), cv2.imshow/waitKey도 show_window 값과 무관하게 전부 안 뜬다.
+annotated 토픽은 계속 발행되지만 그림 없는 원본 프레임이 나간다. 검출·신원
+판단(adapter/zero-shot/사람전신 게이트)·raw score CSV·콘솔 로그는 이 값과
+무관하게 항상 그대로 동작 — 순수하게 "화면에 그려서 보여주는" 부분만 분리한
+것.
+
+raw score CSV 크기 관리(2026-09-15 추가): raw_score_max_size_mb(기본
+50, 0 이하면 끔) — CSV가 이 크기를 넘으면 매 프레임 기록 직후 자동으로
+`_rotated_<timestamp>`를 붙여 보존하고 헤더부터 새로 시작한다(스키마 변경
+시의 `_old_schema_<timestamp>` 아카이브와 같은 방식, 별도 이름으로 구분).
+시간 기준 자동 삭제/압축 대신 크기 기준 롤오버를 골랐다 — 디스크를 못 채우게
+막는 게 실제 운영 리스크의 핵심이고(며칠 켜놔도 특정 크기 이상은 절대 안
+쌓임), 디렉터리 스캔·파일명 날짜 파싱·삭제 스케줄링이 필요한 시간 기준
+방식보다 구현이 훨씬 단순하다 — 이미 있는 os.path.getsize() 체크 한 줄과
+스키마-변경 시 쓰던 것과 동일한 rename 패턴만 재사용하면 됨.
+
 사용법 (로봇에서, ROS2 환경 소싱 + DISPLAY 있는 세션(NoMachine 등)에서):
     ros2 run careguard_perception face_identify_test_node --ros-args \\
         -p yolo_weights:=/home/wego/careguard_data/runs/face_detect_v4_burstsafe/weights/best.pt \\
@@ -149,6 +167,7 @@ YOLO confidence/bbox 종횡비가 아닌 **완전히 다른 신호**(사람 전�
   yolov8n_coco/yolov8n.pt, 사전학습 COCO 가중치 그대로 — 재학습 없음).
 """
 import csv
+import os
 import sys
 import time
 from collections import Counter, deque
@@ -232,6 +251,9 @@ DEFAULT_MIN_WINDOW_FILL_RATIO = DEFAULT_ENTER_THRESHOLD
 # 자체를 안 하고 LOW_CONF_LABEL로만 표시(사람이 화면에 막 들어오는 순간의 불완전한
 # 검출이 신원 판정에 아예 안 들어가게 막음).
 DEFAULT_MIN_YOLO_CONFIDENCE = 0.5
+
+# ── raw score CSV 크기 기준 롤오버(2026-09-15) — 0 이하면 끔.
+DEFAULT_RAW_SCORE_MAX_SIZE_MB = 50
 
 # ── raw score CSV 컬럼. track_age_frames(트랙이 감지된 프레임 수 누적, 안 보인
 # 프레임 제외)로 "등장 초반"(작은 값) vs "안정화 이후"(큰 값) 구간을 구분한다.
@@ -372,6 +394,7 @@ class FaceIdentifyTestNode(Node):
         self.declare_parameter("person_gate_mode", DEFAULT_PERSON_GATE_MODE)
         self.declare_parameter("person_gate_overlap_ratio", DEFAULT_PERSON_GATE_OVERLAP_RATIO)
         self.declare_parameter("enable_person_gate", True)
+        self.declare_parameter("enable_display", True)
         self.declare_parameter("show_window", True)
         self.declare_parameter("window_size", DEFAULT_WINDOW_SIZE)
         self.declare_parameter("enter_threshold", DEFAULT_ENTER_THRESHOLD)
@@ -383,6 +406,7 @@ class FaceIdentifyTestNode(Node):
             "raw_score_log_path",
             str(Path.home() / "careguard_data/face_identify_test_raw_scores.csv"),
         )
+        self.declare_parameter("raw_score_max_size_mb", DEFAULT_RAW_SCORE_MAX_SIZE_MB)
         self.declare_parameter("min_window_fill_ratio", DEFAULT_MIN_WINDOW_FILL_RATIO)
         self.declare_parameter("min_yolo_confidence", DEFAULT_MIN_YOLO_CONFIDENCE)
 
@@ -394,6 +418,7 @@ class FaceIdentifyTestNode(Node):
         zero_shot_centroids_path = self.get_parameter("zero_shot_centroids_path").value
         self.zero_shot_threshold = float(self.get_parameter("zero_shot_identity_threshold").value)
         self.enable_zero_shot_ensemble = self.get_parameter("enable_zero_shot_ensemble").value
+        self.enable_display = self.get_parameter("enable_display").value
         self.show_window = self.get_parameter("show_window").value
         self.window_size = int(self.get_parameter("window_size").value)
         self.enter_threshold = float(self.get_parameter("enter_threshold").value)
@@ -415,6 +440,10 @@ class FaceIdentifyTestNode(Node):
 
         self.log_raw_scores = self.get_parameter("log_raw_scores").value
         self.raw_score_log_path = Path(self.get_parameter("raw_score_log_path").value).expanduser()
+        raw_score_max_size_mb = float(self.get_parameter("raw_score_max_size_mb").value)
+        self.raw_score_max_bytes = (
+            int(raw_score_max_size_mb * 1024 * 1024) if raw_score_max_size_mb > 0 else None
+        )
 
         self.get_logger().warn(
             "⚠️  [테스트/디버깅 전용] 이 identity 판단은 unknown_1/2 단 두 명(32장)만으로 "
@@ -423,29 +452,13 @@ class FaceIdentifyTestNode(Node):
         )
         if self.log_raw_scores:
             self.raw_score_log_path.parent.mkdir(parents=True, exist_ok=True)
-            if self.raw_score_log_path.exists():
-                with open(self.raw_score_log_path, newline="") as f:
-                    existing_header = f.readline().strip()
-                if existing_header and existing_header != ",".join(RAW_SCORE_CSV_HEADER):
-                    # ── 스키마(컬럼)가 바뀌었는데 기존 파일에 이어 쓰면 컬럼이 어긋나서
-                    # 나중에 분석할 때 잘못 해석될 수 있음 — 옛 파일은 이름을 바꿔 보존하고
-                    # 새 헤더로 새로 시작한다.
-                    stamp = time.strftime("%Y%m%d_%H%M%S")
-                    archived = self.raw_score_log_path.with_name(
-                        f"{self.raw_score_log_path.stem}_old_schema_{stamp}{self.raw_score_log_path.suffix}"
-                    )
-                    self.raw_score_log_path.rename(archived)
-                    self.get_logger().warn(
-                        f"raw score CSV 스키마 변경 감지 — 기존 파일을 {archived}로 보존하고 "
-                        "새 헤더로 새로 씁니다."
-                    )
-            is_new_file = not self.raw_score_log_path.exists()
-            self._raw_score_file = open(self.raw_score_log_path, "a", newline="")
-            self._raw_score_writer = csv.writer(self._raw_score_file)
-            if is_new_file:
-                self._raw_score_writer.writerow(RAW_SCORE_CSV_HEADER)
+            self._open_raw_score_file(check_schema=True)
+            size_note = (
+                f"raw_score_max_size_mb={raw_score_max_size_mb}MB 넘으면 자동 롤오버"
+                if self.raw_score_max_bytes else "크기 롤오버 꺼짐(raw_score_max_size_mb<=0)"
+            )
             self.get_logger().info(
-                f"raw 유사도 점수를 매 프레임 CSV로 기록합니다: {self.raw_score_log_path} "
+                f"raw 유사도 점수를 매 프레임 CSV로 기록합니다: {self.raw_score_log_path} ({size_note}). "
                 "(진단③ — 학습 때 in-sample 검증 수치와 실시간 점수를 나중에 비교하기 위함. "
                 "track_age_frames 컬럼으로 '등장 초반'(값이 작음) vs '안정화 이후'(값이 큼) "
                 "구간을 나중에 필터링해서 비교할 수 있음)"
@@ -534,6 +547,8 @@ class FaceIdentifyTestNode(Node):
 
         self.bridge = CvBridge()
         self.frame_count = 0
+        self._frame_time_accum = 0.0  # ── enable_display/log_raw_scores 부하 비교용 계측(초)
+        self._frame_time_count = 0
         # 카메라 드라이버가 qos_profile_sensor_data(best-effort)로 발행함 — video_recorder.py와
         # 동일하게 맞춰야 구독이 실제로 붙는다. 기본(reliable) QoS로는 DDS가 매칭을 거부해서
         # 콜백이 아예 안 불릴 수 있다.
@@ -543,16 +558,86 @@ class FaceIdentifyTestNode(Node):
         self.get_logger().info(f"구독 시작: {camera_topic} (qos=sensor_data/best_effort)")
 
         self.annotated_pub = self.create_publisher(Image, "face_identify_test/annotated", 10)
-        self.get_logger().info(
-            "박스+라벨 그린 화면을 'face_identify_test/annotated' 토픽(비압축 Image)으로도 "
-            "발행합니다 — rqt Image View에서 이 토픽을 선택해서 보세요 (cv2.imshow가 이 "
-            "환경에서 안 뜨는 경우가 확인되어, 이쪽이 실제로 동작하는 방법입니다)."
-        )
-        if self.show_window:
+
+        if self.enable_display:
             self.get_logger().info(
-                "cv2.imshow 창을 띄웁니다 — DISPLAY가 없는 plain SSH 세션에서는 창이 뜨지 "
-                "않습니다(rviz2와 동일한 제약). NoMachine 등 GUI 세션에서 실행하세요."
+                "박스+라벨 그린 화면을 'face_identify_test/annotated' 토픽(비압축 Image)으로도 "
+                "발행합니다 — rqt Image View에서 이 토픽을 선택해서 보세요 (cv2.imshow가 이 "
+                "환경에서 안 뜨는 경우가 확인되어, 이쪽이 실제로 동작하는 방법입니다)."
             )
+            if self.show_window:
+                self.get_logger().info(
+                    "cv2.imshow 창을 띄웁니다 — DISPLAY가 없는 plain SSH 세션에서는 창이 뜨지 "
+                    "않습니다(rviz2와 동일한 제약). NoMachine 등 GUI 세션에서 실행하세요."
+                )
+        else:
+            self.get_logger().info(
+                "[headless] enable_display=false — bbox/라벨 그리기 연산 자체를 건너뜁니다. "
+                "'face_identify_test/annotated' 토픽엔 그림 없는 원본 프레임이 그대로 발행되고, "
+                "cv2.imshow도 안 뜹니다. 검출/신원판단/CSV 로깅/콘솔 로그는 평소와 동일하게 동작합니다."
+            )
+
+    def _open_raw_score_file(self, check_schema):
+        """raw_score_log_path에 CSV writer를 새로 연다(최초 오픈/롤오버 공용).
+
+        check_schema=True(최초 오픈 시)면 기존 파일의 헤더가 현재
+        RAW_SCORE_CSV_HEADER와 다를 때 `_old_schema_<timestamp>`로 보존 후
+        새로 시작한다. 롤오버 호출(check_schema=False) 시점엔 이미 이 프로세스가
+        쓴 파일이라 스키마가 같음이 보장되므로 그 검사를 생략한다."""
+        if check_schema and self.raw_score_log_path.exists():
+            with open(self.raw_score_log_path, newline="") as f:
+                existing_header = f.readline().strip()
+            if existing_header and existing_header != ",".join(RAW_SCORE_CSV_HEADER):
+                # ── 스키마(컬럼)가 바뀌었는데 기존 파일에 이어 쓰면 컬럼이 어긋나서
+                # 나중에 분석할 때 잘못 해석될 수 있음 — 옛 파일은 이름을 바꿔 보존하고
+                # 새 헤더로 새로 시작한다.
+                stamp = time.strftime("%Y%m%d_%H%M%S")
+                archived = self.raw_score_log_path.with_name(
+                    f"{self.raw_score_log_path.stem}_old_schema_{stamp}{self.raw_score_log_path.suffix}"
+                )
+                self.raw_score_log_path.rename(archived)
+                self.get_logger().warn(
+                    f"raw score CSV 스키마 변경 감지 — 기존 파일을 {archived}로 보존하고 "
+                    "새 헤더로 새로 씁니다."
+                )
+
+        is_new_file = not self.raw_score_log_path.exists()
+        self._raw_score_file = open(self.raw_score_log_path, "a", newline="")
+        self._raw_score_writer = csv.writer(self._raw_score_file)
+        if is_new_file:
+            self._raw_score_writer.writerow(RAW_SCORE_CSV_HEADER)
+            self._raw_score_file.flush()
+
+    def _rotate_raw_score_file_if_needed(self):
+        """raw_score_max_size_mb(2026-09-15 추가)를 넘으면 현재 파일을
+        `_rotated_<timestamp>`로 보존하고 헤더부터 새로 시작한다 — 헤드리스로
+        며칠씩 켜놔도 디스크를 한없이 못 채우게 크기로 상한을 둔다. 시간 기준
+        자동 삭제 대신 이 방식을 고른 이유는 클래스 docstring 참고."""
+        if self.raw_score_max_bytes is None:
+            return
+        size = os.path.getsize(self.raw_score_log_path)
+        if size < self.raw_score_max_bytes:
+            return
+
+        self._raw_score_file.close()
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        rotated = self.raw_score_log_path.with_name(
+            f"{self.raw_score_log_path.stem}_rotated_{stamp}{self.raw_score_log_path.suffix}"
+        )
+        # ── raw_score_max_size_mb를 작게 잡아 테스트하는 등, 같은 초(second) 안에
+        # 롤오버가 여러 번 일어나면 타임스탬프만으론 파일명이 겹쳐서 이전 롤오버
+        # 파일이 rename()에 덮여 조용히 사라질 수 있다 — 겹치면 번호를 붙여 피한다.
+        n = 2
+        while rotated.exists():
+            rotated = self.raw_score_log_path.with_name(
+                f"{self.raw_score_log_path.stem}_rotated_{stamp}_{n}{self.raw_score_log_path.suffix}"
+            )
+            n += 1
+        self.raw_score_log_path.rename(rotated)
+        self.get_logger().info(
+            f"raw score CSV가 {size / 1024 / 1024:.1f}MB에 도달 — {rotated}로 보존하고 새로 시작합니다."
+        )
+        self._open_raw_score_file(check_schema=False)
 
     def embed_crop(self, face_bgr):
         # ── face_embedding_diagnostic.py(학습/진단 파이프라인)와 리사이즈 알고리즘을
@@ -666,6 +751,7 @@ class FaceIdentifyTestNode(Node):
         }
 
     def on_frame(self, msg: CompressedImage):
+        frame_start = time.perf_counter()  # ── enable_display/log_raw_scores 부하 비교용 계측
         image = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
 
         self.frame_count += 1
@@ -770,7 +856,43 @@ class FaceIdentifyTestNode(Node):
                     "" if det["num_person_boxes"] is None else det["num_person_boxes"],
                 ])
             self._raw_score_file.flush()
+            self._rotate_raw_score_file_if_needed()
 
+        # ── 화면 표시 분리(2026-09-15): enable_display=False면 그리기 연산 자체를
+        # 건너뛴다(단순히 imshow만 끄는 게 아니라 cv2.rectangle/putText 연산 부담도
+        # 없앰). 검출/신원판단/CSV 로깅/annotated 토픽 발행은 이 값과 무관하게 그대로
+        # 동작 — 이 분기 밖에서 이미 다 끝난 뒤라 영향 없음(headless 순찰 대비).
+        if self.enable_display:
+            self._draw_detections(image, detections)
+
+        out_msg = self.bridge.cv2_to_imgmsg(image, encoding="bgr8")
+        out_msg.header = msg.header
+        self.annotated_pub.publish(out_msg)
+
+        if self.enable_display and self.show_window:
+            cv2.imshow("face_identify_test (q로 종료)", image)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                self.get_logger().info("q 입력 — 노드 종료")
+                rclpy.shutdown()
+
+        # ── enable_display/log_raw_scores 부하 비교용 계측: 30프레임마다 평균
+        # on_frame() 처리 시간(ms)을 로그로 남긴다 — 두 설정(둘 다 켬 vs 둘 다 끔)으로
+        # 각각 실행해서 이 로그만 비교하면 실측 부하 차이를 확인할 수 있음.
+        self._frame_time_accum += time.perf_counter() - frame_start
+        self._frame_time_count += 1
+        if self._frame_time_count >= 30:
+            avg_ms = self._frame_time_accum / self._frame_time_count * 1000
+            self.get_logger().info(
+                f"[성능] 최근 {self._frame_time_count}프레임 평균 on_frame() 처리시간: "
+                f"{avg_ms:.1f}ms (enable_display={self.enable_display}, "
+                f"log_raw_scores={self.log_raw_scores})"
+            )
+            self._frame_time_accum = 0.0
+            self._frame_time_count = 0
+
+    def _draw_detections(self, image, detections):
+        """enable_display=True일 때만 호출됨 — bbox+라벨 그리기 전용, 검출/신원판단/
+        로깅 로직과 완전히 분리."""
         for det in detections:
             x1, y1, x2, y2 = det["box"]
             track = det["track"]
@@ -811,16 +933,6 @@ class FaceIdentifyTestNode(Node):
             cv2.rectangle(image, (int(x1), ty - th - 6), (int(x1) + tw + 6, ty + 2), color, -1)
             cv2.putText(image, label, (int(x1) + 3, ty - 3),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        out_msg = self.bridge.cv2_to_imgmsg(image, encoding="bgr8")
-        out_msg.header = msg.header
-        self.annotated_pub.publish(out_msg)
-
-        if self.show_window:
-            cv2.imshow("face_identify_test (q로 종료)", image)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                self.get_logger().info("q 입력 — 노드 종료")
-                rclpy.shutdown()
 
 
 def main(args=None):
