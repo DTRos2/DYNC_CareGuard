@@ -279,8 +279,13 @@ void P6PatrolPage::updateDrivingButtonsEnabled() {
     // 눌러도(비활성화라 눌리지도 않았지만) 멈출 방법이 없었다는 리포트로 추가했다.
     // drivingWaypointId_가 비어 있으면(팝오버의 개별 웨이포인트 이동이 아니라) 이
     // 버튼이 시작한 경로 전체 주행이라는 뜻이다 — runTestRun()이 성공 시 isPatrolling_만
-    // 켜고 drivingWaypointId_는 안 건드리는 것과 짝이 맞다.
-    const bool isRoutePatrolling = isPatrolling_ && drivingWaypointId_.isEmpty();
+    // 켜고 drivingWaypointId_는 안 건드리는 것과 짝이 맞다. 스케줄(자동 트리거) 주행은
+    // 이 버튼으로 시작한 게 아니므로 제외한다 — 안 그러면 isPatrolling_만 보고 그대로
+    // "주행 취소"로 바뀌어서, 사람이 누르지도 않은 버튼이 취소 버튼처럼 떠 있는
+    // 것처럼 보였다("경로박스에 주행취소 버튼이 나와" 리포트, 2026-09-15). 스케줄
+    // 주행 중엔 대신 scheduleCancelBtn_(헤더 맨 우측)이 뜬다.
+    const bool isScheduleDriving = isPatrolling_ && activePatrolTrigger_ == QStringLiteral("schedule");
+    const bool isRoutePatrolling = isPatrolling_ && drivingWaypointId_.isEmpty() && !isScheduleDriving;
     if (isRoutePatrolling) {
         testBtn_->setText(QStringLiteral("주행 취소"));
         testBtn_->setProperty("variant", "danger");
@@ -291,11 +296,14 @@ void P6PatrolPage::updateDrivingButtonsEnabled() {
     } else {
         testBtn_->setText(QStringLiteral("경로 주행"));
         testBtn_->setProperty("variant", "secondary");
+        // 스케줄 주행 중엔 drivable이 이미 false(canDrive()가 isPatrolling_을 보므로)라
+        // 자연히 비활성화된다 — 웨이포인트 단독 이동 중일 때와 동일한 잠금.
         testBtn_->setEnabled(drivable);
         testBtn_->setToolTip(drivable ? QString() : QStringLiteral("로봇 ws 연결을 확인해주세요"));
     }
     testBtn_->style()->unpolish(testBtn_);
     testBtn_->style()->polish(testBtn_);
+    scheduleCancelBtn_->setVisible(isScheduleDriving);
     refreshPopoverDriveButton();
 }
 
@@ -426,6 +434,17 @@ QWidget* P6PatrolPage::buildHeaderRow() {
     layout->addWidget(refreshStaleBadge_);
 
     layout->addStretch();
+
+    // 스케줄(자동 트리거) 주행 중에만 나타나는 취소 버튼 — 맨 우측. testBtn_/웨이포인트
+    // 팝오버와 달리 "사람이 이 버튼으로 직접 시작한 주행"이 아니므로 그쪽 버튼들을
+    // "주행 취소"로 바꾸지 않는다(updateDrivingButtonsEnabled() 참고) — 취소 자체는
+    // cancelCurrentDrive()가 트리거 종류와 무관하게 "지금 이 로봇이 하고 있는 주행
+    // 전체"를 멈추는 같은 API(POST /patrol-runs/cancel)라 그대로 재사용한다.
+    scheduleCancelBtn_ = new QPushButton(QStringLiteral("스케줄 주행 취소"), row);
+    scheduleCancelBtn_->setProperty("variant", "danger");
+    scheduleCancelBtn_->setVisible(false);
+    connect(scheduleCancelBtn_, &QPushButton::clicked, this, [this] { cancelCurrentDrive(QString()); });
+    layout->addWidget(scheduleCancelBtn_);
 
     return row;
 }
