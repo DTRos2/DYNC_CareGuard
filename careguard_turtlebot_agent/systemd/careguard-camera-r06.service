@@ -13,7 +13,25 @@ ExecStartPre=/bin/sleep 1
 # NV21로 자동 선택되는데, compressed_image_transport의 JPEG 인코더가 NV21을 인식하지
 # 못해 "Unrecognized image encoding [nv21]" 에러와 함께 매 프레임 빈 CompressedImage만
 # 발행한다(2026-09-11 실제로 확인·재현). RGB888로 지정하면 정상적으로 JPEG 압축된다.
+# 2026-09-15: 이 카메라가 만드는 640x480 JPEG 프레임(compressed_image_transport가
+# /camera/image_raw에서 자동 파생)을 실제로 쓰는 쪽(uplink_node.py의 CAMERA_SEND_
+# INTERVAL_SEC, ArUco 도킹의 ARUCO_CONTROL_INTERVAL_SEC)은 전부 초당 몇 장 수준인데,
+# 드라이버 자체는 카메라 원본 캡처 속도(30fps) 그대로 매 프레임을 압축하고 있었다 —
+# 이게 CPU 94%(라즈베리파이4 코어 하나를 거의 통째로 씀)의 주범이었다(실측 확인,
+# docs/TroubleShooting/2026-09-15-turtlebot-aruco-cpu-overload.md 참고 — 그 문서는
+# 상시 구독 문제였고 이건 그 이후 남은 드라이버 자체 부하). FrameDurationLimits는
+# libcamera 컨트롤(마이크로초 단위 [min,max] 프레임 주기)로, camera_ros 노드가 뜬
+# 뒤 파라미터로 받는다 — 근데 camera.launch.py는 camera/format 두 개만 선언된
+# launch 인자라 launch 커맨드라인으로는 안 먹는다(`--show-args`로 실제 확인함).
+# 그래서 ExecStartPost로 노드가 뜬 뒤 `ros2 param set`으로 따로 걸어준다. 5fps로
+# 제한(200000us=200ms) — 화질(해상도)은 그대로 두고 아무도 안 쓰는 나머지 프레임만
+# 애초에 안 찍게 한다. 실 로봇에서 직접 확인: camera_container CPU 94% -> 19%로 감소.
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && exec ros2 launch camera_ros camera.launch.py camera:=0 format:=RGB888'
+# 카메라 노드(/camera)가 파라미터 서비스를 advertise할 때까지 몇 초 걸려서 넉넉히
+# 기다린다 — 앞에 '-'는 이 명령이 실패해도(예: 타이밍이 안 맞아 param set이 한
+# 번 실패) 서비스 전체를 죽이지 않는다는 뜻(카메라 자체는 기본 30fps로라도 계속
+# 돌아가는 게, 이 튜닝 하나 때문에 카메라가 아예 안 뜨는 것보다 낫다).
+ExecStartPost=-/bin/bash -c 'sleep 8 && source /opt/ros/humble/setup.bash && ros2 param set /camera FrameDurationLimits "[200000,200000]"'
 # on-failure가 아니라 always다 — ros2 launch는 하위 component_container가
 # "Device or resource busy"/세그폴트 등으로 죽어도 launch 프로세스 자체는 exit
 # code 0으로 끝내버려서(2026-09-12 R-05에서 실제로 이 상태로 멈춰있던 걸 발견),
