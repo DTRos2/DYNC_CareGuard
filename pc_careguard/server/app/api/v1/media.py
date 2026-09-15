@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import anyio.from_thread
 import yaml
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from psycopg2.extras import Json
 
@@ -467,7 +467,7 @@ def list_video_events(
 
 
 @video_events_router.post("/{camera_recording_id}/view", response_model=RecordVideoViewResponse)
-def record_video_view(camera_recording_id: int, body: RecordVideoViewReques, current_user: CurrentUser = Depends(get_current_user)):
+def record_video_view(camera_recording_id: int, body: RecordVideoViewRequest, current_user: CurrentUser = Depends(get_current_user)):
     """영상 열람 사실을 감사 로그(user_action_log)에 기록한다.
 
     view_count 전용 컬럼은 없다 — list_video_events()와 마찬가지로 이 테이블을 그때그때

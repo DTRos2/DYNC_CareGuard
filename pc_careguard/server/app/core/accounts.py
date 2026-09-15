@@ -2,7 +2,7 @@ from collections import defaultdict
 
 import bcrypt
 import psycopg2
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from . import db
@@ -17,6 +17,7 @@ from ..schemas import (
     UpdateAccountRequest,
 )
 from ..ws import dashboard_ws
+from ..core.auth import CurrentUser, require_roles
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -65,7 +66,7 @@ def _row_to_item(row, charge_summary: str = None) -> AccountItem:
 
 
 @router.get("", response_model=List[AccountItem])
-def list_accounts():
+def list_accounts(current_user: CurrentUser = Depends(require_roles("admin"))):
     """계정 관리 탭 목록. P7SettingsPage가 화면 진입 시 이걸로 채운다."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(LIST_QUERY)
@@ -88,7 +89,7 @@ def list_accounts():
 
 
 @router.get("/recipients", response_model=List[RecipientOption])
-def list_assignable_recipients():
+def list_assignable_recipients(current_user: CurrentUser = Depends(require_roles("admin"))):
     """계정 수정 모달의 "담당 대상자" 체크리스트를 채우는 목록."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -105,7 +106,7 @@ def list_assignable_recipients():
 
 
 @router.put("/{user_id}/recipients", status_code=204)
-def assign_recipients(user_id: int, payload: AssignRecipientsRequest):
+def assign_recipients(user_id: int, payload: AssignRecipientsRequest, current_user: CurrentUser = Depends(require_roles("admin"))):
     """이 계정이 담당할 대상자 목록을 통째로 교체한다.
 
     기존에 이 계정 담당이었지만 새 목록에서 빠진 대상자는 미배정(NULL)으로 되돌리고,
@@ -129,7 +130,7 @@ def assign_recipients(user_id: int, payload: AssignRecipientsRequest):
         conn.commit()
 
 @router.put("/{user_id}/guardian-recipients", status_code=204)
-def assign_guardian_recipients(user_id: int, payload: AssignRecipientsRequest):
+def assign_guardian_recipients(user_id: int, payload: AssignRecipientsRequest, current_user: CurrentUser = Depends(require_roles("admin"))):
     """이 보호자 계정이 볼 대상자 목록을 통째로 교체한다. assign_recipients(operator)와 동일 패턴."""
     with db.get_connection() as conn, conn.cursor() as cur:
         cur.execute("SELECT 1 FROM careguard_user WHERE id = %s AND deleted_at IS NULL", (user_id,))
@@ -149,7 +150,7 @@ def assign_guardian_recipients(user_id: int, payload: AssignRecipientsRequest):
 
 
 @router.post("", response_model=RegisterAccountResponse, status_code=201)
-def register_account(payload: RegisterAccountRequest):
+def register_account(payload: RegisterAccountRequest, current_user: CurrentUser = Depends(require_roles("admin"))):
     """계정 등록 모달의 "등록" 버튼이 호출하는 엔드포인트. 비밀번호는 여기서 해시한다."""
     _check_password_policy(payload.password)
 
@@ -189,7 +190,7 @@ def register_account(payload: RegisterAccountRequest):
 
 
 @router.patch("/{user_id}", response_model=AccountItem)
-def update_account(user_id: int, payload: UpdateAccountRequest):
+def update_account(user_id: int, payload: UpdateAccountRequest, current_user: CurrentUser = Depends(require_roles("admin"))):
     """계정 수정 모달의 "저장" 버튼이 호출하는 엔드포인트. 표시 이름·역할·활성 상태를 갱신한다.
 
     로그인 ID는 수정 모달에서 잠겨 있어 여기서 바꾸지 않는다.
@@ -256,7 +257,7 @@ def update_account(user_id: int, payload: UpdateAccountRequest):
 
 
 @router.patch("/{user_id}/password", status_code=204)
-def change_password(user_id: int, payload: ChangePasswordRequest):
+def change_password(user_id: int, payload: ChangePasswordRequest, current_user: CurrentUser = Depends(require_roles("admin"))):
     """계정 수정 모달의 "변경" 버튼이 호출하는 엔드포인트. 새 비밀번호를 해시해 저장한다."""
     _check_password_policy(payload.new_password)
     password_hash = bcrypt.hashpw(payload.new_password.encode(), bcrypt.gensalt()).decode()
@@ -279,7 +280,7 @@ def change_password(user_id: int, payload: ChangePasswordRequest):
 
 
 @router.post("/delete", status_code=204)
-def delete_accounts(payload: DeleteAccountsRequest):
+def delete_accounts(payload: DeleteAccountsRequest, current_user: CurrentUser = Depends(require_roles("admin"))):
     """계정 관리 탭의 체크박스로 선택한 계정들을 삭제한다. 관리자 권한 여부는 클라이언트에서 판단한다.
 
     실제 행은 지우지 않고 deleted_at을 채운다 — list_accounts()의 WHERE u.deleted_at IS NULL

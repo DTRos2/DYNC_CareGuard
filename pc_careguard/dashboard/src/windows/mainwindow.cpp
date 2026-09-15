@@ -162,6 +162,8 @@ void MainWindow::addNavButton(QVBoxLayout* sidebarLayout, const QIcon& icon, con
     sidebarLayout->addWidget(btn);
     group->addButton(btn, pageIndex);
     if (pageIndex == 0) btn->setChecked(true);
+    navButtons_[pageIndex] = btn;
+
 }
 
 QWidget* MainWindow::buildSidebar() {
@@ -177,10 +179,11 @@ QWidget* MainWindow::buildSidebar() {
     connect(navGroup_, &QButtonGroup::idClicked, this,
             [this](int id) { pageStack_->setCurrentIndex(id); });
 
-    auto addGroupLabel = [&](const QString& text) {
+    auto addGroupLabel = [&](const QString& text) -> QLabel* {
         auto* label = new QLabel(text, sidebar);
         label->setObjectName("navGroup");
         layout->addWidget(label);
+        return label;
     };
 
     addGroupLabel(QStringLiteral("관제"));
@@ -191,11 +194,11 @@ QWidget* MainWindow::buildSidebar() {
     addNavButton(layout, SimpleIcons::heart(Tokens::TEXT_SECONDARY, 14), QStringLiteral("대상자"), 2,
                  navGroup_);
 
-    addGroupLabel(QStringLiteral("기록"));
+    recordGroupLabel_ = addGroupLabel(QStringLiteral("기록"));
     addNavButton(layout, SimpleIcons::video(Tokens::TEXT_SECONDARY, 14), QStringLiteral("영상"), 3,
                  navGroup_);
 
-    addGroupLabel(QStringLiteral("설정"));
+    settingsGroupLabel_ = addGroupLabel(QStringLiteral("설정"));
     addNavButton(layout, SimpleIcons::mapPin(Tokens::TEXT_SECONDARY, 14), QStringLiteral("맵·로봇"), 4,
                  navGroup_);
     addNavButton(layout, SimpleIcons::route(Tokens::TEXT_SECONDARY, 14), QStringLiteral("순찰·경로"), 5,
@@ -203,7 +206,7 @@ QWidget* MainWindow::buildSidebar() {
     addNavButton(layout, SimpleIcons::settings(Tokens::TEXT_SECONDARY, 14), QStringLiteral("시스템"), 6,
                  navGroup_);
 
-    addGroupLabel(QStringLiteral("로그"));
+    logGroupLabel_ = addGroupLabel(QStringLiteral("로그"));
     addNavButton(layout, SimpleIcons::list(Tokens::TEXT_SECONDARY, 14), QStringLiteral("통합 로그"), 7,
                  navGroup_);
 
@@ -252,7 +255,20 @@ void MainWindow::setUserName(const QString& name) {
 }
 
 void MainWindow::setUserRole(const QString& role) {
-    // 지금은 저장만 해두고, 쓰는 곳(사이드바 role 분기)은 다음 단계에서 추가
+    role_ = role;
+    const bool isGuardian = (role == QStringLiteral("guardian"));
+
+    for (auto it = navButtons_.constBegin(); it != navButtons_.constEnd(); ++it) {
+        const int pageIndex = it.key();
+        const bool guardianVisible = (pageIndex == 1 || pageIndex == 2);
+        it.value()->setVisible(!isGuardian || guardianVisible);
+    }
+    if (recordGroupLabel_ != nullptr) recordGroupLabel_->setVisible(!isGuardian);
+    if (settingsGroupLabel_ != nullptr) settingsGroupLabel_->setVisible(!isGuardian);
+    if (logGroupLabel_ != nullptr) logGroupLabel_->setVisible(!isGuardian);
+
+    // guardian이면 통합관제(0번)가 숨겨지니, 처음 보여줄 화면을 이벤트(1번)로 맞춘다.
+    if (isGuardian) switchToPage(1);
 }
 
 void MainWindow::setAuthToken(const QString& token) {

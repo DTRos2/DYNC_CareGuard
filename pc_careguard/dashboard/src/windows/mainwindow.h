@@ -1,5 +1,6 @@
 #pragma once
 #include <QMainWindow>
+#include <QMap>
 
 class QLabel;
 class QStackedWidget;
@@ -13,6 +14,7 @@ class P6PatrolPage;
 class P4VideoPage;
 class P7SettingsPage;
 class P8LogsPage;
+class QPushButton;
 
 // 공통 셸: TopBar + Sidebar + QStackedWidget.
 // CareGuard_DESIGN_SYSTEM.md §3(공통 셸 구조), §4-2(objectName), §6(페이지 인벤토리) 참고.
@@ -53,4 +55,9 @@ private:
     QLabel* userLabel_;
     QLabel* emergencyBadge_;
     QLabel* attentionBadge_;
+    QMap<int, QPushButton*> navButtons_;
+    QLabel* recordGroupLabel_ = nullptr;
+    QLabel* settingsGroupLabel_ = nullptr;
+    QLabel* logGroupLabel_ = nullptr;
+    QString role_;
 };
