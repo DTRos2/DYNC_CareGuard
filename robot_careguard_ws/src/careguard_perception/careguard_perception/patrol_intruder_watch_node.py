@@ -92,7 +92,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from sensor_msgs.msg import CameraInfo, CompressedImage, LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from cv_bridge import CvBridge
 import tf2_ros
 
@@ -113,6 +113,8 @@ from config import (  # noqa: E402
     CAMERA_TOPIC,
     INTRUDER_STATUS_TOPIC,
     PATROL_RECORDING_TOPIC,
+    PERSON_DETECTED_TOPIC,
+    PERSON_RECOGNIZED_TOPIC,
 )
 from face_embedding_adapter_model import ResidualAdapter  # noqa: E402  (재사용)
 from face_pipeline_common import (  # noqa: E402
@@ -303,6 +305,11 @@ class PatrolIntruderWatchNode(Node):
         )
         self.create_subscription(String, PATROL_RECORDING_TOPIC, self._on_patrol_trigger, 10)
         self._intruder_pub = self.create_publisher(String, INTRUDER_STATUS_TOPIC, 10)
+        # 2단계 서보모터 트리거 — careguard_hw 쪽 아두이노 브리지 노드 전용,
+        # 로봇 로컬(서버로 안 올라감). PERSON_DETECTED_TOPIC 주석 참고.
+        self._person_detected_pub = self.create_publisher(Bool, PERSON_DETECTED_TOPIC, 10)
+        # 대상자 인식 캡처(증거 사진, care_event 없음) — 서버로 relay됨. PERSON_RECOGNIZED_TOPIC 참고.
+        self._person_recognized_pub = self.create_publisher(String, PERSON_RECOGNIZED_TOPIC, 10)
 
         if self.enable_approach:
             # camera_info/scan은 카메라 드라이버가 이미지와 함께 보통 같은 QoS(대개
@@ -680,9 +687,29 @@ class PatrolIntruderWatchNode(Node):
             self.get_logger().info(
                 f"[인식됨] track_id={track_id} -> {name}(recipient_id={label}) "
                 f"— {'근접 재확인' if verified else '원거리 판정(재확인 없음)'}으로 확정"
-                # TODO(2단계): 여기가 서보모터 트리거 지점 — 대상자 확인되면
-                # 아두이노 서보를 동작시킨다(팀원 하드웨어 인터페이스 확정 후 연결).
             )
+            # 2단계 서보모터 트리거 — 팀원 제공 스펙(person.png)대로 Bool true 한 번만
+            # 쏘고 끝. 같은 사람이 계속 프레임에 잡히면 판정될 때마다(디바운스 없이)
+            # 매번 다시 발행된다 — 서보 쪽에서 중복 수신에 안전하게 설계돼 있어야 한다
+            # (예: 이미 열려있으면 다시 열어도 무해해야 함, 팀원 하드웨어 구현 책임).
+            bool_msg = Bool()
+            bool_msg.data = True
+            self._person_detected_pub.publish(bool_msg)
+
+            image_b64 = self._capture_face_image(det)
+            payload = {
+                "type": "person_recognized",
+                "track_id": track_id,
+                "recipient_id": label,
+                "verified_at_close_range": verified,
+                "nearest_dist": round(dist, 4) if dist is not None else None,
+                "run_id": self._current_run_id,
+            }
+            if image_b64 is not None:
+                payload["image_base64"] = image_b64
+            out = String()
+            out.data = json.dumps(payload)
+            self._person_recognized_pub.publish(out)
             return
 
         payload = {
@@ -692,7 +719,7 @@ class PatrolIntruderWatchNode(Node):
             "nearest_dist": round(dist, 4) if dist is not None else None,
             "run_id": self._current_run_id,
         }
-        image_b64 = self._capture_intruder_image(det)
+        image_b64 = self._capture_face_image(det)
         if image_b64 is not None:
             payload["image_base64"] = image_b64
         out = String()
@@ -703,18 +730,18 @@ class PatrolIntruderWatchNode(Node):
             f"care_event 신고 발행{'' if image_b64 is not None else ' (사진 없음)'}"
         )
 
-    def _capture_intruder_image(self, det):
-        """침입자로 확정되는 순간의 얼굴 캡처를 JPEG+base64로 인코딩해 반환한다.
+    def _capture_face_image(self, det):
+        """대상자 인식/침입자 확정 순간의 얼굴 캡처를 JPEG+base64로 인코딩해 반환한다.
 
-        WS/HTTP 왕복 없이 intruder_detected 메시지 자체에 이미지를 실어 보낸다 —
-        care_event가 서버에서 만들어지기 전엔 entity_id로 쓸 care_event.id를 아직
-        몰라서, 파일부터 올리고 나중에 연결하는 map_image 방식(placeholder entity_id
-        재연결)을 쓰려면 레이스 컨디션을 감수해야 한다. 대신 이 메시지 안에 이미지를
-        같이 실으면 서버가 care_event를 만든 "직후" 이미 알고 있는 그 id로 바로
-        files 행을 만들 수 있다 — 재연결 단계 자체가 필요 없다.
+        WS/HTTP 왕복 없이 intruder_detected/person_recognized 메시지 자체에 이미지를
+        실어 보낸다 — care_event(침입자 쪽만 해당)가 서버에서 만들어지기 전엔
+        entity_id로 쓸 id를 아직 몰라서, 파일부터 올리고 나중에 연결하는 map_image
+        방식(placeholder entity_id 재연결)을 쓰려면 레이스 컨디션을 감수해야 한다.
+        대신 이 메시지 안에 이미지를 같이 실으면 서버가 (필요하면) id를 만든 "직후"
+        바로 files 행을 만들 수 있다 — 재연결 단계 자체가 필요 없다.
 
-        실패해도(프레임이 아직 없거나 인코딩 오류) None을 반환해 침입자 신고 자체는
-        사진 없이 계속 진행되게 한다 — 증거 사진은 있으면 좋은 것이지 신고를 막을
+        실패해도(프레임이 아직 없거나 인코딩 오류) None을 반환해 판정/신고 자체는
+        사진 없이 계속 진행되게 한다 — 증거 사진은 있으면 좋은 것이지 판정을 막을
         이유는 아니다.
         """
         if self._last_frame is None:
