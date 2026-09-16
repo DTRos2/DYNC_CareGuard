@@ -40,7 +40,7 @@
 전부 URL 쿼리 파라미터로 넘긴다 (파일 상단 `CONFIG` 기본값을 직접 고쳐도 됨):
 
 ```
-index.html?robot=R-01&robot_id=1&server=http://192.168.230.13:8000
+index.html?robot=R-01&robot_id=1&server=http://192.168.230.7:8000
 ```
 
 - `robot` — `dashboard_ws` 메시지의 `robot_code`와 매칭할 값 (기본 `R-01`)
@@ -49,23 +49,47 @@ index.html?robot=R-01&robot_id=1&server=http://192.168.230.13:8000
 
 ## 로봇에서 풀스크린(kiosk)으로 띄우기
 
-로봇 온보드 PC에 Chrome/Chromium이 있다는 전제. 터미널에서:
+로봇 온보드 PC(wego@192.168.230.42)엔 Chrome/Chromium이 없고 원래 **Firefox만
+설치돼 있었다**(2026-09-16 확인, `chromium-browser: command not found`). Firefox는
+멀티프로세스 구조라 이 정적 페이지 하나 띄우는 데도 프로세스 12개·RAM 1.3GB를
+먹는데, 이 Jetson은 안 그래도 여유 메모리가 350MB 수준·load average가 코어 6개
+기준 5.0으로 이미 빠듯해서(2026-09-16 실측) 순찰 등 다른 작업과 상시 동시 실행하기엔
+부담이 컸다. 그래서 **`epiphany-browser`(WebKitGTK 기반, GNOME 기본 브라우저)로
+교체 설치**했다(`sudo apt install epiphany-browser`, 2026-09-16) — 같은 페이지를
+훨씬 적은 프로세스/메모리로 띄울 수 있다.
 
 ```bash
-chromium-browser --kiosk --noerrdialogs --disable-infobars \
-  --incognito \
-  "file:///home/<user>/DYNC_CareGuard/pc_careguard/robot_kiosk/index.html?robot=R-01&robot_id=1&server=http://192.168.230.13:8000"
+mkdir -p /tmp/careguard-kiosk-profile   # --application-mode는 프로필 디렉토리가
+                                         # 미리 존재해야 한다(없으면 바로 에러)
+epiphany --application-mode --profile=/tmp/careguard-kiosk-profile \
+  "file:///home/wego/careguard_kiosk/robot_kiosk/index.html?robot=R-01&robot_id=1&server=http://192.168.230.7:8000"
 ```
 
-- `--kiosk`: 주소창/탭 없이 전체화면
-- `--incognito`: 매번 깨끗한 상태로 시작(캐시된 옛날 화면이 잠깐 보이는 것 방지)
+떠 있는 창에서 **F11**을 한 번 눌러 전체화면으로 전환한다 (epiphany엔 Firefox
+`--kiosk`에 대응하는 플래그가 없고, `wmctrl`/`xdotool`도 로봇에 안 깔려 있어서
+전체화면 전환을 스크립트로 자동화하진 못했다 — 필요하면 나중에 설치해서 자동화 가능).
+
+- `--application-mode`(`-a`): 주소창/탭 없는 웹앱 스타일 창
+- `--profile=/tmp/careguard-kiosk-profile`: Firefox `--incognito`와 같은 목적 —
+  매번 깨끗한 프로필로 시작(캐시된 옛날 화면 방지)
 - 부팅 시 자동 실행하려면 이 명령을 `~/.config/autostart/careguard-kiosk.desktop`
   같은 autostart 항목이나 systemd user service로 등록
 - `file://`로 직접 열어도 되고, 원한다면 로봇 PC에서 `python3 -m http.server`로
   이 폴더를 서빙해 `http://localhost:8080/index.html?...`로 열어도 된다(둘 다
   동일하게 동작 — `fetch`/`WebSocket` 대상은 `server` 파라미터가 결정하므로 이
   폴더를 어디서 서빙하는지와 무관함)
-- 종료: `Alt+F4` 또는 `xdotool key alt+F4` (원격 SSH에서 kiosk 끄고 싶을 때)
+- `server` 파라미터의 IP는 관제 PC(`pastel`, `pc_careguard/dashboard/.env`의
+  `CAREGUARD_SERVER_URL`)가 DHCP로 바뀔 때마다 같이 바뀔 수 있다 — 화면이 "서버
+  연결 끊김"에 멈춰 있으면 가장 먼저 이 IP가 최신인지부터 의심할 것
+  (2026-09-16: 옛 기본값 `192.168.230.13`이 이미 stale해서 한 번 이 문제로 헤맴)
+- 종료: 전체화면에서 `F11`로 빠져나온 뒤 창 닫기, 또는 SSH로 `pkill -f epiphany`.
+  (예전 Firefox 방식일 땐 NoMachine 세션에서 `Alt+F4`가 NoMachine 클라이언트
+  창만 닫고 원격 세션 안 브라우저엔 전달 안 되는 문제가 있었다 — epiphany도
+  같은 NoMachine 제약이 있을 수 있으니 Alt+F4 대신 `pkill`을 우선 시도할 것)
+- kiosk 자체(브라우저)는 서버와 HTTP/WS로만 통신하고 ROS2 DDS(`/cmd_vel`, 순찰
+  명령 등)와는 통신 경로가 완전히 분리돼 있어 로봇 명령 자체를 막지는 않는다 —
+  다만 온보드 리소스를 같이 쓰므로, 부담을 줄이려고 Firefox 대신 epiphany를
+  쓰기로 한 것
 
 ## 참고: 목업 이미지에 대해
 

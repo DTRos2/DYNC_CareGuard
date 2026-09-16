@@ -156,7 +156,7 @@
   var params = new URLSearchParams(location.search);
   var CONFIG = {
     // 서버(uvicorn)가 떠 있는 PC 주소. dashboard/.env의 CAREGUARD_SERVER_URL과 같은 값.
-    serverBase: params.get('server') || 'http://192.168.230.13:8000',
+    serverBase: params.get('server') || 'http://192.168.230.7:8000',
     // dashboard_ws가 broadcast하는 메시지의 robot_code와 매칭할 값 (예: R-01)
     robotCode: params.get('robot') || 'R-01',
     // GET /robots/{robot_id}/thresholds, GET /patrol-runs?robot_id= 에 쓸 숫자 DB id
