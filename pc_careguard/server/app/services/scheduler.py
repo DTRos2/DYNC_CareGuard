@@ -26,13 +26,16 @@ async def run_scheduler_loop() -> None:
     while True:
         try:
             await _tick()
-        except Exception:
-            # 개별 tick 실패로 스케줄러 자체가 죽으면 안 된다 — 다음 tick에서 다시 시도한다.
-            pass
+        except Exception as exc:  # noqa: BLE001 - 개별 tick 실패로 스케줄러 자체가
+            # 죽으면 안 된다 — 다음 tick에서 다시 시도한다. 예전엔 원인도 안 남기고
+            # 조용히 삼켜서(pass), "스케줄이 있는데 순찰이 하나도 안 시작됨" 같은
+            # 증상이 나면 원인을 찾을 방법이 없었다(2026-09-16 실제로 겪음) — 최소한
+            # 콘솔에는 남긴다.
+            print(f'[scheduler] _tick 실패: {exc!r}')
         try:
             await _medication_tick()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - 위와 같은 이유
+            print(f'[scheduler] _medication_tick 실패: {exc!r}')
         await asyncio.sleep(POLL_INTERVAL_SEC)
 
 

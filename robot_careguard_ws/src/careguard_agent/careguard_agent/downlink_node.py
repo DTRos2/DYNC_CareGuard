@@ -92,6 +92,16 @@ PILLBOX_SLOT_SERVICE = '/careguard/hw/pillbox_slot'
 # 최대 시간 — 시리얼 포트 열기 정도라 Nav2보다는 훨씬 빠르지만 여유를 둔다.
 PILLBOX_CONTROLLER_READY_TIMEOUT_SEC = 10.0
 
+# pillbox_controller.py에 넘길 아두이노 시리얼 포트 — CAREGUARD_NAV2_PARAMS_FILE과
+# 같은 관례(환경변수로 로봇별 하드웨어 경로를 뺌). 이 값을 안 넘기면(예전 구현)
+# pillbox_controller.py의 serial_port 파라미터 기본값이 빈 문자열이라 항상
+# FakePillboxBackend로 뜬다 — 아두이노가 실제로 연결돼 있어도 자동 기동 경로에선
+# 서보가 절대 안 움직이는 조용한 버그였다(2026-09-16 발견). R-07의 이 보드는
+# CP210x USB-시리얼 브리지라 /dev/ttyACM0이 아니라 /dev/ttyUSB0으로 잡힌다
+# (lsusb로 "Silicon Labs CP210x UART Bridge" 확인, 2026-09-16) — 흔한 Arduino
+# Uno(16U2, ttyACM*)와 달리 이 보드는 CP210x라 이름이 다르다.
+PILLBOX_SERIAL_PORT = os.environ.get('CAREGUARD_PILLBOX_SERIAL_PORT', '/dev/ttyUSB0')
+
 # medication_task가 떠서 /deliver_medication 액션 서버를 advertise할 때까지
 # 기다리는 최대 시간. patrol_task와 같은 이유로 여유를 둔다.
 MEDICATION_TASK_READY_TIMEOUT_SEC = 15.0
@@ -1109,7 +1119,9 @@ class DownlinkNode(Node):
         self._kill_external_process_group('careguard_hw pillbox_controller', '(정리) 이전 pillbox_controller')
 
         self._pillbox_controller_process = subprocess.Popen(
-            ['ros2', 'run', 'careguard_hw', 'pillbox_controller'], start_new_session=True)
+            ['ros2', 'run', 'careguard_hw', 'pillbox_controller',
+             '--ros-args', '-p', f'serial_port:={PILLBOX_SERIAL_PORT}'],
+            start_new_session=True)
 
         if not self._pillbox_client.wait_for_service(timeout_sec=PILLBOX_CONTROLLER_READY_TIMEOUT_SEC):
             self.get_logger().warn(

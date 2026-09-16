@@ -4,13 +4,17 @@
 medication_task.py가 유일한 클라이언트다. 실제 펌웨어(firmware/pillbox_firmware/
 pillbox_firmware.ino)와 짝을 맞춘 프로토콜:
 
-  PC -> 펌웨어: "OPEN A\n" / "OPEN B\n" — 그 즉시 서보를 여는 것 외에 펌웨어가
-    할 일이 없다. "닫기" 명령은 없다 — 펌웨어가 IR 감지 1초 후 스스로 닫기
-    때문(pillbox_firmware.ino의 CLOSE_DELAY). 그래서 PillboxSlot.srv도 "열기"
-    하나만 있다.
-  펌웨어 -> PC: "OK A\n" / "OK B\n" — 방금 받은 OPEN 명령 ack.
-                "CLOSED A\n" / "CLOSED B\n" — 그 라인이 IR 감지 1초 후 스스로
-                닫힘(=회수 확인 겸 배출 완료) — 이걸 IR_TRIGGERED_TOPIC으로 relay.
+  PC -> 펌웨어: "OPEN A\n" / "OPEN B\n" — 그 즉시 서보를 연다. 평상시엔 펌웨어가
+    IR 감지 1초 후 스스로 닫으므로(pillbox_firmware.ino의 CLOSE_DELAY) 닫기
+    명령이 필요 없었지만, 2026-09-16부터 "CLOSE A\n" / "CLOSE B\n"도 추가됐다 —
+    medication_task.py가 회수 대기 시간(RETRIEVAL_TIMEOUT_SEC) 안에 IR 감지를
+    못 받으면(jammed) 열린 채로 방치하지 않고 이 명령으로 강제로 닫는다.
+  펌웨어 -> PC: "OK A\n" / "OK B\n" — 방금 받은 OPEN/CLOSE 명령 ack(같은 응답을
+                공유한다).
+                "CLOSED A\n" / "CLOSED B\n" — IR 감지 1초 후 스스로 닫힐 때만
+                오는 알림(=회수 확인 겸 배출 완료) — 이걸 IR_TRIGGERED_TOPIC으로
+                relay한다. CLOSE 명령으로 강제로 닫힌 경우엔 이 알림이 안 온다
+                (IR이 안 눌렸으니 회수된 게 아니라서 — pillbox_firmware.ino 참고).
                 그 외 줄(주기적인 "IR-A(9번): 감지 | IR-B(8번): 없음" 디버그
                 출력)은 무시.
 
@@ -30,6 +34,7 @@ slot_to_channel()로 순환 배치한다: 1번(아침)→A, 2번(점심)→B, 3�
 실 시리얼 포트로 오가는 걸 아직 한 번도 확인 못 했다.
 """
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -55,8 +60,11 @@ IR_TRIGGERED_TOPIC = '/careguard/hw/ir_triggered'
 # 이동이 다 끝난 뒤에야 찍힌다(handleSerialCommand()가 moveServoTo()를 블로킹으로
 # 부름) — 즉 최악의 경우 150 * 30ms ≈ 4.5초가 걸린 "다음"에야 ack가 온다. 예전엔
 # 3.0초였는데, 실 하드웨어로 확인해보니(2026-09-11) 서보는 실제로 열렸는데도 ack가
-# 3초 안에 안 와서 hw_error로 잘못 끝나는 버그였다 — 4.5초보다 확실히 크게 잡는다.
-ACK_TIMEOUT_SEC = 6.0
+# 3초 안에 안 와서 hw_error로 잘못 끝나는 버그였다 — 4.5초보다 크게 6.0초로 올렸었다.
+# 2026-09-16: 그런데도 R-07 실기에서 hw_error가 계속 재현돼(연결 94초 뒤, 갓 시작된
+# 직후도 아닌 상황) 6초조차 마진이 부족한 것으로 보여 10.0초로 더 올린다 — 4.5초
+# 최악 소요시간 대비 두 배 이상 여유.
+ACK_TIMEOUT_SEC = 10.0
 
 # slot_no(1~3) -> 서보 채널('A'/'B'). 3번(저녁)이 1번(아침) 칸을 재사용한다 —
 # 클래스 docstring의 하드웨어 제약 참고.
@@ -80,6 +88,13 @@ class SerialPillboxBackend:
         if serial is None:
             raise RuntimeError('pyserial이 설치돼 있지 않습니다 (python3-serial)')
         self._serial = serial.Serial(port, baudrate, timeout=1.0)
+        # 대부분의 아두이노 호환 보드는 시리얼 포트가 열리는 순간(DTR 신호) 자동으로
+        # 리셋된다 — 그 직후 명령을 바로 보내면 보드가 아직 setup()도 못 끝낸 상태라
+        # "OPEN A"가 씹히고 ACK_TIMEOUT_SEC 뒤 hw_error로 실패한다(2026-09-16 R-07
+        # 실기에서 재부팅 직후 실제로 겪음 — 시리얼 모니터로 보드 자체는 정상 동작
+        # 확인했는데도 첫 명령만 실패). 부트로더+스케치 초기화가 끝날 시간을 넉넉히
+        # 확보한 뒤에야 명령을 받기 시작한다.
+        time.sleep(2.0)
         self._write_lock = threading.Lock()
         self._on_line = on_line
         self._ack_events = {'A': threading.Event(), 'B': threading.Event()}
@@ -107,11 +122,21 @@ class SerialPillboxBackend:
             if self._on_line:
                 self._on_line(line)
 
-    def open_slot(self, channel: str) -> bool:
+    def _send(self, command: str, channel: str) -> bool:
         self._ack_events[channel].clear()
         with self._write_lock:
-            self._serial.write(f'OPEN {channel}\n'.encode('ascii'))
+            self._serial.write(f'{command} {channel}\n'.encode('ascii'))
         return self._ack_events[channel].wait(timeout=ACK_TIMEOUT_SEC)
+
+    def open_slot(self, channel: str) -> bool:
+        return self._send('OPEN', channel)
+
+    def close_slot(self, channel: str) -> bool:
+        # 2026-09-16 추가 — medication_task.py가 RETRIEVAL_TIMEOUT_SEC 안에 IR
+        # 감지를 못 받았을 때(jammed) 열린 채로 방치하지 않고 강제로 닫는 용도.
+        # pillbox_firmware.ino의 새 "CLOSE A/B" 명령과 짝을 맞춘다 — ack는 OPEN과
+        # 같은 "OK A/B" 줄을 그대로 재사용한다.
+        return self._send('CLOSE', channel)
 
     def close(self):
         self._running = False
@@ -123,6 +148,9 @@ class FakePillboxBackend:
     직접 pub해서 대신 확인)."""
 
     def open_slot(self, channel: str) -> bool:
+        return True
+
+    def close_slot(self, channel: str) -> bool:
         return True
 
     def close(self):
@@ -173,11 +201,27 @@ class PillboxController(Node):
             self.get_logger().error(str(exc))
             response.success = False
             return response
+        action = 'CLOSE' if request.close else 'OPEN'
         try:
-            response.success = self._backend.open_slot(channel)
+            # request.close(2026-09-16 추가) — medication_task.py가 회수 대기
+            # 시간이 지나도록 IR 감지를 못 받으면 여기로 강제 닫기를 요청한다.
+            if request.close:
+                response.success = self._backend.close_slot(channel)
+            else:
+                response.success = self._backend.open_slot(channel)
         except Exception as exc:  # noqa: BLE001 - 통신 예외도 실패 응답으로 수렴
-            self.get_logger().error(f'서보 제어 실패: {exc}')
+            self.get_logger().error(f'서보 제어 실패({action} {channel}): {exc}')
             response.success = False
+            return response
+
+        # 2026-09-16 추가 — 예전엔 ack 타임아웃으로 실패해도(response.success=False,
+        # 예외 없음) 아무 로그가 안 남아서 medication_task.py의 "hw_error" 로그만
+        # 보고는 원인(ack 타임아웃인지, 다른 이유인지)을 알 수 없었다. 최소한
+        # 여기서라도 "무엇을, 왜" 실패했는지 남긴다.
+        if not response.success:
+            self.get_logger().error(
+                f'{action} {channel} 실패 — {ACK_TIMEOUT_SEC:.0f}초 안에 아두이노 "OK {channel}" '
+                'ack를 못 받았습니다(시리얼 연결/전원/펌웨어 상태를 확인하세요)')
         return response
 
 

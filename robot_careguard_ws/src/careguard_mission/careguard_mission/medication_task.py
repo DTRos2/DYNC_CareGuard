@@ -8,16 +8,17 @@ careguard_msgs/action/DeliverMedication 액션 서버. 두 클라이언트가 �
     "복약 재안내" 버튼)
 
 patrol_task.py와 달리 이 노드는 map_id/Nav2에 안 묶인다 — video_recorder/
-audio_player처럼 한 번 뜨면 계속 재사용되는 노드로 다룰 것(downlink_node.py에
-_ensure_medication_task_running 추가는 아직 TODO, 지금은 launch에서 수동으로
-같이 띄운다고 가정).
+audio_player처럼 한 번 뜨면 계속 재사용되는 노드다. downlink_node.py::
+_ensure_medication_task_running이 __init__ 시점에 자동으로 띄운다(2026-09-16
+완료 — pillbox_controller와 같은 이유·같은 패턴).
 
 하드웨어 쪽(careguard_hw/pillbox_controller.py + pillbox_firmware.ino)은 실제
-프로토콜을 반영했다 — 중요한 건 "닫기"가 이 액션의 책임이 아니라는 것: 펌웨어가
-IR 감지 1초 후 스스로 닫으므로(pillbox_controller.py 상단 주석 참고), 이 액션은
-"열기"만 명령하고 IR_TRIGGERED_TOPIC으로 오는 "그 채널이 닫혔다" 알림을 그대로
-"회수 확인+배출 완료"로 받아들인다(waiting_retrieval 다음에 별도 closing 단계가
-없다).
+프로토콜을 반영했다 — 정상 회수(IR 감지)면 "닫기"가 이 액션의 책임이 아니다:
+펌웨어가 IR 감지 1초 후 스스로 닫으므로(pillbox_controller.py 상단 주석 참고),
+IR_TRIGGERED_TOPIC으로 오는 "그 채널이 닫혔다" 알림을 그대로 "회수 확인+배출
+완료"로 받아들인다. 2026-09-16부터는 RETRIEVAL_TIMEOUT_SEC 안에 그 알림을 못
+받으면(jammed) 이 액션이 직접 CLOSE 명령을 보내 강제로 닫는다(_close_slot) —
+그래야 실패해도 칸이 열린 채로 방치되지 않는다.
 
 의존하는 한 조각은 이 스코프에서 아직 없다 — "사람 인식": careguard_perception에
 실시간 추론 노드가 없다(있는 건 auto_face_capture_node.py, YOLO 학습용 데이터
@@ -63,18 +64,25 @@ DEFAULT_PERSON_TIMEOUT_SEC = 60.0
 # IR 센서로 "꺼냄"(=펌웨어가 스스로 닫음)이 감지되길 기다리는 최대 시간 —
 # person_timeout_sec과 별개 상수인 이유: 이건 "이미 약통을 연 뒤" 단계라 사람이
 # 눈앞에 없어서 실패하는 person_timeout_sec과는 다른 실패 모드(jammed)로
-# 구분해야 한다. 2026-09-16: 5초로 낮춤 — "약통을 열었는데 못 먹었다"를 그 자리에서
-# 바로 실패로 잡아 robot_ws.py::_handle_medication_done의 실시간 미수령 경보
-# (MED_MISSED/MED_MISSED_STREAK, TTS+녹화)로 즉시 이어지게 하려는 의도적 변경 —
-# 예전 30초는 "혹시 몰라 넉넉히 기다린다"는 취지였지만, 그만큼 실패 판단과 보호자
-# 알림이 늦어졌다.
-RETRIEVAL_TIMEOUT_SEC = 5.0
+# 구분해야 한다.
+#
+# 2026-09-16: 5초 -> 15초 -> 20초로 두 번 늘렸다. 이 값은 펌웨어의 CLOSE_DELAY
+# (pillbox_firmware.ino — IR 감지 후 실제로 닫히고 "CLOSED" 알림을 보내기까지의
+# 지연, 현재 5초)와 반드시 같이 봐야 한다: 여기서 기다리는 건 "IR 감지" 자체가
+# 아니라 "CLOSED 알림"이고, 그 알림은 감지 시점으로부터 CLOSE_DELAY만큼 지난
+# 뒤에야 온다. 그래서 사람이 실제로 여유 있게 성공하려면 약통이 열린 뒤
+# (RETRIEVAL_TIMEOUT_SEC - CLOSE_DELAY)초 안에는 손을 넣어야 한다 — 그 창을
+# 넘겨서 손을 넣으면 CLOSED 알림이 오기 전에 이 타임아웃이 먼저 끝나 강제
+# CLOSE(jammed)로 처리된다. CLOSE_DELAY를 나중에 또 조정하면 이 값도 같이
+# 검토해야 한다.
+RETRIEVAL_TIMEOUT_SEC = 20.0
 
 # hw 서비스(OPEN 명령) 응답을 기다리는 최대 시간. pillbox_controller.py의
-# ACK_TIMEOUT_SEC(6초 — 실 서보가 0->150도 움직이는 데 최악의 경우 ≈4.5초 걸림,
-# 2026-09-11 실 하드웨어로 확인)보다 반드시 커야 한다 — 안 그러면 서보가 아직
-# 움직이는 중인데 이 타임아웃이 먼저 끊겨 hw_error로 잘못 끝난다(실제로 겪은 버그).
-HW_SERVICE_TIMEOUT_SEC = 8.0
+# ACK_TIMEOUT_SEC(2026-09-16 기준 10.0초 — 실 서보가 0->150도 움직이는 데 최악의
+# 경우 ≈4.5초 걸림, 2026-09-11 실 하드웨어로 확인, 이후 6초도 마진 부족으로 재현돼
+# 10초로 재조정)보다 반드시 커야 한다 — 안 그러면 서보가 아직 움직이는 중인데 이
+# 타임아웃이 먼저 끊겨 hw_error로 잘못 끝난다(실제로 겪은 버그, 두 번 반복됨).
+HW_SERVICE_TIMEOUT_SEC = 12.0
 
 
 class MedicationTask(Node):
@@ -128,11 +136,24 @@ class MedicationTask(Node):
             self._ir_triggered.set()
 
     def _open_slot(self, slot_no: int) -> bool:
+        return self._call_pillbox(slot_no, close=False)
+
+    def _close_slot(self, slot_no: int) -> bool:
+        # 2026-09-16 추가 — RETRIEVAL_TIMEOUT_SEC 안에 IR 감지(회수)를 못 받았을
+        # 때(jammed) 열린 채로 방치하지 않고 강제로 닫는다. pillbox_controller.py/
+        # pillbox_firmware.ino의 새 CLOSE 명령과 짝을 맞춘다 — 정상 회수(IR 감지)
+        # 때와 달리 IR_TRIGGERED_TOPIC 알림은 안 오므로 self._ir_triggered는
+        # 여전히 unset 상태로 남고, 결과(status)는 그대로 'jammed'다(닫혔다고
+        # "배출 성공"으로 바뀌는 게 아니라 "안전하게 잠갔다"는 뜻일 뿐).
+        return self._call_pillbox(slot_no, close=True)
+
+    def _call_pillbox(self, slot_no: int, close: bool) -> bool:
         if not self._pillbox_client.wait_for_service(timeout_sec=HW_SERVICE_TIMEOUT_SEC):
             self.get_logger().error(f'하드웨어 서비스({PILLBOX_SLOT_SERVICE})를 찾을 수 없습니다')
             return False
         request = PillboxSlot.Request()
         request.slot_no = slot_no
+        request.close = close
         future = self._pillbox_client.call_async(request)
         # medication_client.py와 달리 이 노드 자신의 executor를 그대로 쓸 수
         # 있다 — _execute()는 이미 별도 goal 스레드에서 돌고, 이 서비스 콜백
@@ -196,13 +217,21 @@ class MedicationTask(Node):
                 result.status = 'hw_error'
                 return result
 
-            # "닫기"는 명령하지 않는다 — 펌웨어가 IR 감지 1초 후 스스로 닫고
-            # "CLOSED <채널>"을 알려준다(pillbox_controller.py가 그걸 이 토픽으로
-            # relay). 그러니 waiting_retrieval을 통과하는 순간이 곧 배출 완료다.
+            # 정상 회수(IR 감지)면 명령을 따로 안 보낸다 — 펌웨어가 IR 감지 1초 후
+            # 스스로 닫고 "CLOSED <채널>"을 알려준다(pillbox_controller.py가 그걸
+            # 이 토픽으로 relay). 그러니 waiting_retrieval을 통과하는 순간이 곧
+            # 배출 완료다.
             goal_handle.publish_feedback(DeliverMedication.Feedback(phase='waiting_retrieval'))
             if not self._ir_triggered.wait(timeout=RETRIEVAL_TIMEOUT_SEC):
                 self.get_logger().warn(
-                    f'{RETRIEVAL_TIMEOUT_SEC}초 안에 회수가 감지되지 않았습니다 — 칸이 열린 채로 남습니다')
+                    f'{RETRIEVAL_TIMEOUT_SEC}초 안에 회수가 감지되지 않았습니다 — 강제로 닫습니다')
+                # 2026-09-16 추가 — 예전엔 여기서 그냥 실패로 끝내고 칸이 열린 채로
+                # 방치됐다. 실패 자체(jammed)는 그대로 두고(닫혔다고 배출에 성공한
+                # 게 되는 게 아님), 물리적으로만 안전하게 잠근다. 이 호출 자체가
+                # 실패해도(아두이노 응답 없음 등) jammed 결과 자체는 바뀌지 않는다 —
+                # 로그만 남기고 계속 진행한다.
+                if not self._close_slot(slot_no):
+                    self.get_logger().error('강제 닫기 명령이 실패했습니다 — 칸이 열린 채로 남을 수 있습니다')
                 goal_handle.abort()
                 result.status = 'jammed'
                 return result

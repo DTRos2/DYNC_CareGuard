@@ -115,6 +115,8 @@ from config import (  # noqa: E402
     PATROL_RECORDING_TOPIC,
     PERSON_DETECTED_TOPIC,
     PERSON_RECOGNIZED_TOPIC,
+    TRIGGER_TOPIC,
+    VOICE_TOPIC,
 )
 from face_embedding_adapter_model import ResidualAdapter  # noqa: E402  (재사용)
 from face_pipeline_common import (  # noqa: E402
@@ -310,6 +312,14 @@ class PatrolIntruderWatchNode(Node):
         self._person_detected_pub = self.create_publisher(Bool, PERSON_DETECTED_TOPIC, 10)
         # 대상자 인식 캡처(증거 사진, care_event 없음) — 서버로 relay됨. PERSON_RECOGNIZED_TOPIC 참고.
         self._person_recognized_pub = self.create_publisher(String, PERSON_RECOGNIZED_TOPIC, 10)
+        # 침입자 확정 순간 로봇이 그 자리에서 바로 음성 안내 + 영상 증거를 남기는 용도
+        # (2026-09-16 추가) — 예전엔 서버에 care_event(INTRUDER)만 올라가고 로봇
+        # 자신은 아무 반응이 없었다(음성도, 녹화도 안 됨). patrol_task.py가 이미 쓰는
+        # 것과 같은 토픽들이라 서버 왕복 없이 바로 발행할 수 있다(medication_alert처럼
+        # "오늘 몇 번째"를 서버 DB에서 세어야 하는 값이 아니라, 지금 이 순간 확정된
+        # 사실 자체라 로봇이 판단을 즉시 알 수 있음).
+        self._voice_pub = self.create_publisher(String, VOICE_TOPIC, 10)
+        self._record_trigger_pub = self.create_publisher(String, TRIGGER_TOPIC, 10)
 
         if self.enable_approach:
             # camera_info/scan은 카메라 드라이버가 이미지와 함께 보통 같은 QoS(대개
@@ -729,6 +739,24 @@ class PatrolIntruderWatchNode(Node):
             f"[침입자 감지] track_id={track_id} verified={verified} — 등록 대상자와 불일치, "
             f"care_event 신고 발행{'' if image_b64 is not None else ' (사진 없음)'}"
         )
+
+        # care_event(INTRUDER)가 emergency로 만들어지는 것과 같은 심각도로 그 자리에서
+        # 바로 음성 안내 + 이벤트 클립 녹화를 켠다. care_event_id는 서버가 나중에
+        # INSERT하면서 만드는 값이라 여기서는 모른다(video_recorder.py는 None이어도
+        # 사이드카에만 영향 있을 뿐 녹화 자체는 정상 동작한다).
+        voice_msg = String()
+        voice_msg.data = json.dumps({'text': '침입자가 감지되었습니다.'})
+        self._voice_pub.publish(voice_msg)
+
+        trigger_msg = String()
+        trigger_msg.data = json.dumps({
+            'care_event_id': None, 'severity': 'emergency', 'reason': '침입자 감지',
+            # downlink_node.py::_handle_medication_alert와 같은 이유 — 위에서 이미
+            # 더 구체적인 문구를 안내했으므로 video_recorder.py의 일반 문구("긴급
+            # 이벤트 발생! 영상 녹화를 시작합니다")는 겹쳐 나오지 않게 끈다.
+            'skip_announce': True,
+        })
+        self._record_trigger_pub.publish(trigger_msg)
 
     def _capture_face_image(self, det):
         """대상자 인식/침입자 확정 순간의 얼굴 캡처를 JPEG+base64로 인코딩해 반환한다.
