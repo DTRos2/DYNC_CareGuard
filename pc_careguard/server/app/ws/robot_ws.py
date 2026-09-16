@@ -412,15 +412,32 @@ async def _handle_message(robot_code: str, message: dict) -> None:
         # 여기 patrol_done 바로 아래 둔다. scheduler.py::_medication_tick()이
         # 'delivered' medication_log를 찾아 "미수령"을 걸러내는데, 지금까지는
         # 이걸 남기는 프로덕션 코드가 하나도 없었다 — 이 핸들러가 그 첫 writer다.
-        row = _handle_medication_done(
+        result = _handle_medication_done(
             robot_code, message.get("schedule_id", 0), message.get("slot_no", 0), message.get("status", "hw_error")
         )
-        if row is not None:
+        if result is not None:
             await dashboard_ws.broadcast({
                 "type": "medication_done", "robot_code": robot_code,
                 "schedule_id": message.get("schedule_id"), "slot_no": message.get("slot_no"),
                 "status": message.get("status"),
             })
+            alert = result.get("alert")
+            if alert is not None:
+                # status=='jammed'(약통은 열렸는데 못 꺼내감) — 오늘 몇 번째인지에 따라
+                # _handle_medication_done이 이미 care_event(MED_MISSED/MED_MISSED_STREAK)를
+                # 만들어뒀다. 대시보드엔 실시간 알림으로, 로봇에겐 TTS 음성+영상 녹화
+                # 트리거로 각각 내려보낸다(로봇이 지금 그 자리에 있으므로 즉시 안내).
+                await dashboard_ws.broadcast({
+                    "type": "event_created", "event_uid": alert["event_uid"],
+                    "severity": alert["severity"], "event_type": alert["event_type"],
+                    "event_type_label": EVENT_TYPE_LABELS[alert["event_type"]],
+                    "summary": alert["summary"], "occurred_at": alert["occurred_at"],
+                    "resolved": False, "robot_code": robot_code,
+                })
+                await send_command(robot_code, {
+                    "type": "medication_alert", "care_event_id": alert["event_id"],
+                    "severity": alert["severity"], "text": alert["summary"],
+                })
 
     elif msg_type == "intruder_detected":
         # careguard_perception/patrol_intruder_watch_node.py가 순찰 중 이 로봇에
@@ -780,7 +797,12 @@ async def _resume_patrol_run(run_id: int) -> None:
 _MEDICATION_STATUS_TO_RESULT = {
     "delivered": "delivered",
     "timeout": "not_found",
-    "jammed": "error",
+    # jammed는 "약통은 열렸는데 RETRIEVAL_TIMEOUT_SEC 안에 꺼내가지 않음" — 배출
+    # 자체(서보 동작)는 성공했으니 hw_error와 다르다. "대기 초과"라는 뜻 그대로
+    # medication_log.result의 'missed'(대기 초과, 스키마 코멘트 참고)로 매핑해서
+    # error(배출 오류, 서보/통신 실제 고장)와 구분한다 — 이래야 아래 미수령 카운트
+    # (오늘 recipient당 'missed' 총합)에 제대로 잡힌다.
+    "jammed": "missed",
     "hw_error": "error",
     "cancelled": "skipped",
 }
@@ -796,6 +818,19 @@ def _handle_medication_done(robot_code: str, schedule_id: int, slot_no: int, sta
     0(P3 수동 재안내처럼 특정 회차와 안 묶인 즉시 호출)이면 patrol.py::
     start_patrol_run의 recipient 조회와 같은 방식(로봇에 배정된 대상자 1명)으로
     대체한다 — 그마저 없으면(대상자 미배정 로봇) 기록을 포기한다(로그만 남김).
+
+    status가 'jammed'(약통은 열렸는데 대상자가 RETRIEVAL_TIMEOUT_SEC 안에 꺼내가지
+    않음, _MEDICATION_STATUS_TO_RESULT 참고)로 오면 result='missed'로 남기고,
+    그 자리에서 바로 오늘 recipient의 총 미수령 횟수를 세어 care_event를 만든다
+    (1번째=MED_MISSED/attention, 2번째부터=MED_MISSED_STREAK/emergency — 아침/점심/
+    저녁처럼 서로 다른 schedule_id를 합산한 하루 총계 기준이지, 같은 스케줄의 연속
+    재시도 기준이 아니다). scheduler.py::_medication_tick()의 시간 기반 반응형
+    감지(로봇이 아예 안 왔을 때의 안전망)와 이중으로 안 걸리도록, 그쪽은 이제
+    "오늘 이 스케줄에 로그가 하나도 없을 때"만 동작하게 바꿔뒀다 — 로봇이 이미
+    시도(성공이든 실패든)한 스케줄은 여기서 이미 처리됐으므로 건너뛴다.
+
+    반환값의 "alert"는 위에서 만든 care_event 정보(호출부가 대시보드 브로드캐스트 +
+    로봇에게 TTS/녹화 명령을 내려보내는 데 씀) — 해당 없으면(delivered 등) None.
     """
     result = _MEDICATION_STATUS_TO_RESULT.get(status, "error")
     with db.get_connection() as conn, conn.cursor() as cur:
@@ -858,8 +893,62 @@ def _handle_medication_done(robot_code: str, schedule_id: int, slot_no: int, sta
             ),
         )
         row = cur.fetchone()
+
+        alert = None
+        if result == "missed":
+            # 대상자가 "오늘" 몇 번째로 못 먹었는지 — schedule_id가 아니라 recipient_id
+            # 기준으로 하루 전체를 합산한다(아침 스케줄과 저녁 스케줄은 서로 다른
+            # schedule_id지만, "오늘 하루 총 몇 번 놓쳤는지"가 사용자 요구사항이다).
+            # 지금 막 커밋 전 이 행도 카운트에 포함해야 하므로 COUNT는 이 INSERT와
+            # 같은 트랜잭션 안에서 한다(commit 전).
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n FROM medication_log
+                WHERE recipient_id = %s AND result = 'missed' AND created_at::date = CURRENT_DATE
+                """,
+                (recipient_id,),
+            )
+            missed_today = cur.fetchone()["n"]
+
+            # 1번째는 주의(MED_MISSED), 2번째부터는 긴급(MED_MISSED_STREAK)으로
+            # 격상한다 — 연속(같은 스케줄 반복)이 아니라 "오늘 서로 다른 시간대(아침/
+            # 점심/저녁)를 합쳐 몇 번 놓쳤는지" 기준. 다음날이 되면 created_at::date가
+            # 바뀌므로 카운트는 자동으로 0부터 다시 시작한다(별도 리셋 로직 불필요).
+            if missed_today == 1:
+                event_type, severity = "MED_MISSED", "attention"
+                summary = "약을 복용하지 않았습니다"
+            else:
+                event_type, severity = "MED_MISSED_STREAK", "emergency"
+                summary = f"약을 {missed_today}번 복용하지 않았습니다"
+
+            event_uid = f"EV-{robot_code}-{datetime.now(timezone.utc):%y%m%d}-{uuid.uuid4().hex[:8]}"
+            cur.execute(
+                """
+                INSERT INTO care_event (event_uid, recipient_id, robot_id, trigger_path, event_type,
+                    severity, summary, evidence, occurred_at)
+                VALUES (%s, %s, %s, 'C', %s, %s, %s, %s, NOW())
+                RETURNING id, occurred_at
+                """,
+                (
+                    event_uid, recipient_id, robot_id, event_type, severity, summary,
+                    json.dumps({
+                        "schedule_id": schedule_id, "slot_no": slot_no, "missed_today": missed_today,
+                    }),
+                ),
+            )
+            event_row = cur.fetchone()
+            cur.execute(
+                "UPDATE medication_log SET care_event_id = %s WHERE id = %s",
+                (event_row["id"], row["id"]),
+            )
+            alert = {
+                "event_uid": event_uid, "event_id": event_row["id"], "event_type": event_type,
+                "severity": severity, "summary": summary, "occurred_at": event_row["occurred_at"].isoformat(),
+                "recipient_id": recipient_id,
+            }
+
         conn.commit()
-    return row
+    return {"log_id": row["id"], "alert": alert}
 
 
 def _update_patrol_run(run_id, **fields) -> None:

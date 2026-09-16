@@ -29,6 +29,7 @@ from std_msgs.msg import String
 
 from careguard_msgs.action import DeliverMedication, Patrol
 from careguard_msgs.msg import Waypoint as WaypointMsg
+from careguard_msgs.srv import PillboxSlot
 
 from . import media_uploader, ws_config
 
@@ -81,6 +82,20 @@ VOICE_TOPIC = '/careguard/voice/announce'
 # 녹화를 켜도록 이 토픽으로 신호를 보낸다.
 RECORD_TRIGGER_TOPIC = '/careguard/perception/record_trigger'
 
+# careguard_hw/pillbox_controller.py가 advertise하는 서비스 — medication_task.py의
+# 같은 이름 상수와 동일한 문자열이어야 한다(패키지 간 공유 없이 각자 하드코딩하는
+# 기존 방식). 이 노드가 직접 호출하지는 않는다 — _ensure_pillbox_controller_running이
+# "서비스가 떴는지"만 확인하는 용도로 클라이언트를 하나 들고 있는다.
+PILLBOX_SLOT_SERVICE = '/careguard/hw/pillbox_slot'
+
+# pillbox_controller가 떠서 PILLBOX_SLOT_SERVICE를 advertise할 때까지 기다리는
+# 최대 시간 — 시리얼 포트 열기 정도라 Nav2보다는 훨씬 빠르지만 여유를 둔다.
+PILLBOX_CONTROLLER_READY_TIMEOUT_SEC = 10.0
+
+# medication_task가 떠서 /deliver_medication 액션 서버를 advertise할 때까지
+# 기다리는 최대 시간. patrol_task와 같은 이유로 여유를 둔다.
+MEDICATION_TASK_READY_TIMEOUT_SEC = 15.0
+
 
 class DownlinkNode(Node):
     def __init__(self):
@@ -93,6 +108,9 @@ class DownlinkNode(Node):
         # _run_ws_loop 스레드가 아니라 main()의 rclpy.spin이 돌리므로 블로킹 호출을
         # 넣으면 그동안 다른 모든 명령 처리가 멈춘다).
         self._medication_client = ActionClient(self, DeliverMedication, 'deliver_medication')
+        # _ensure_pillbox_controller_running이 "서비스가 떴는지"만 확인하는 용도 —
+        # 이 노드가 직접 PillboxSlot을 호출하지는 않는다(그건 medication_task.py의 역할).
+        self._pillbox_client = self.create_client(PillboxSlot, PILLBOX_SLOT_SERVICE)
         # 지금 진행 중인 Patrol goal의 핸들 — patrol_stop이 취소할 대상을 찾는 데 쓴다.
         # send_goal_async()의 반환값(Future)을 예전엔 아무 데도 안 담아둬서, "취소"라는
         # 개념 자체가 구조적으로 불가능했다(patrol_task.py의 cancel_callback 부재와
@@ -129,6 +147,12 @@ class DownlinkNode(Node):
         # SLAM만 하는 상황에서도 매번 로딩되면 불필요한 자원 낭비다. 실제 순찰이 시작될
         # 때(_start_patrol)만 띄운다 — _ensure_patrol_intruder_watch_running 참고.
         self._patrol_intruder_watch_process = None
+        # pillbox_controller(careguard_hw)/medication_task(careguard_mission)도
+        # video_recorder/audio_player와 같은 이유로 map_id에 안 묶이고, P3 "복약
+        # 재안내"(순찰과 무관한 즉시 호출)를 위해서도 상시 대기가 맞다 — __init__
+        # 시점에 같이 띄운다.
+        self._pillbox_controller_process = None
+        self._medication_task_process = None
         self._ws = None
         # P5 방향키 패널 -> 실제 구동. limo_base(/limo/limo_base)가 이미 /cmd_vel을
         # 구독하고 있다(실 로봇에서 topic info로 확인됨) — 네임스페이스 없이 그대로 쓴다.
@@ -136,6 +160,11 @@ class DownlinkNode(Node):
         # SOS 호출 버튼 등 care_event_id가 실린 patrol_start를 받았을 때
         # video_recorder.py에 이벤트 클립 녹화를 켜라고 알리는 용도(_start_patrol 참고).
         self._record_trigger_pub = self.create_publisher(String, RECORD_TRIGGER_TOPIC, 10)
+        # 서버가 "medication_alert" 명령(_handle_medication_alert 참고)으로 내려보내는
+        # TTS 문구를 audio_player가 재생하도록 쏘는 용도 — patrol_task.py도 같은
+        # 토픽에 발행하지만(그쪽은 순찰 중 안내), 이 명령은 순찰 여부와 무관하게 P3
+        # 수동 재안내처럼 언제든 올 수 있어 이 노드가 직접 들고 있어야 한다.
+        self._voice_pub = self.create_publisher(String, VOICE_TOPIC, 10)
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
@@ -151,6 +180,11 @@ class DownlinkNode(Node):
         # 서버 웹소켓 연결(위 _thread)은 별도 스레드라 이 대기와 무관하게 계속 진행된다.
         self._ensure_video_recorder_running()
         self._ensure_voice_announcer_running()
+        # pillbox_controller를 medication_task보다 먼저 띄운다 — medication_task._open_slot()
+        # 자체에 재시도(HW_SERVICE_TIMEOUT_SEC)가 있어 순서가 엄격하진 않지만, 하드웨어
+        # 브리지가 먼저 뜨는 게 자연스러운 의존 순서다.
+        self._ensure_pillbox_controller_running()
+        self._ensure_medication_task_running()
 
     def _run_ws_loop(self):
         asyncio.set_event_loop(self._loop)
@@ -223,6 +257,8 @@ class DownlinkNode(Node):
             self._set_initial_pose(message)
         elif msg_type == 'shutdown_all':
             self._shutdown_everything(message)
+        elif msg_type == 'medication_alert':
+            self._handle_medication_alert(message)
 
     def _handle_cmd_vel(self, message: dict):
         twist = Twist()
@@ -427,6 +463,35 @@ class DownlinkNode(Node):
         # task.py._deliver_medication과 같은 토픽 재사용) 여기서 또 처리할 필요가
         # 없다(patrol_start의 _on_patrol_result와 같은 이유).
         goal_handle.get_result_async()
+
+    def _handle_medication_alert(self, message: dict):
+        """서버 robot_ws.py::_handle_medication_done이 'jammed'(약통은 열렸는데
+        RETRIEVAL_TIMEOUT_SEC 안에 못 꺼내감)를 감지하고 오늘 recipient의 미수령
+        횟수를 세어 care_event(MED_MISSED/MED_MISSED_STREAK)를 만든 직후 내려보낸다.
+        로봇이 지금 그 자리에 있으므로(방금 그 배출을 직접 수행한 로봇이 이 명령을
+        받는다) 두 가지를 바로 한다:
+          1. text를 음성 안내로 재생(patrol_task.py의 _publish_voice와 같은 토픽 —
+             audio_player가 재생) — "약을 복용하지 않았습니다"/"약을 N번 복용하지
+             않았습니다".
+          2. severity를 실어 record_trigger를 발행 — video_recorder.py가 이벤트
+             pre/post 클립을 남긴다(_start_patrol의 SOS 경로와 같은 방식).
+             skip_announce=True를 같이 실어서, video_recorder.py가 record_trigger
+             마다 기본으로 트는 일반 문구("주의/긴급 이벤트 발생! 영상 녹화를
+             시작합니다")는 끈다 — 1번에서 이미 더 구체적인 문구를 안내했으므로
+             두 문구가 겹쳐 나오는 걸 막는다(video_recorder.py::_on_trigger 참고).
+        """
+        text = message.get('text')
+        if text:
+            self._voice_pub.publish(String(data=json.dumps({'text': text})))
+
+        severity = message.get('severity')
+        if severity:
+            self._record_trigger_pub.publish(String(data=json.dumps({
+                'care_event_id': message.get('care_event_id'),
+                'severity': severity,
+                'reason': text,
+                'skip_announce': True,
+            })))
 
     def _on_patrol_goal_response(self, future):
         """patrol_task의 액션 서버가 goal을 accept/reject한 직후 온다 — accept면 그
@@ -680,6 +745,12 @@ class DownlinkNode(Node):
                 and self._patrol_intruder_watch_process.poll() is None):
             self._terminate_process_group(self._patrol_intruder_watch_process, 'patrol_intruder_watch_node')
             self._patrol_intruder_watch_process = None
+        if self._pillbox_controller_process is not None and self._pillbox_controller_process.poll() is None:
+            self._terminate_process_group(self._pillbox_controller_process, 'pillbox_controller')
+            self._pillbox_controller_process = None
+        if self._medication_task_process is not None and self._medication_task_process.poll() is None:
+            self._terminate_process_group(self._medication_task_process, 'medication_task')
+            self._medication_task_process = None
 
         self._kill_external_process_group('careguard_bringup teleop_launch.py', '베이스 구동')
         self._kill_external_process_group('careguard_agent uplink_node', '업링크')
@@ -959,6 +1030,62 @@ class DownlinkNode(Node):
             'patrol_recording 토픽을 구독하지 않았습니다 — 순찰은 계속 진행하지만 대상자/침입자 '
             '판별이 안 될 수 있습니다')
         return False
+
+    def _ensure_pillbox_controller_running(self) -> bool:
+        """pillbox_controller(careguard_hw)가 이미 떠있는지 확인하고, 아니면 새로
+        띄운다. _ensure_video_recorder_running과 같은 패턴 — map_id에 안 묶이고
+        (아두이노 시리얼 브리지일 뿐 맵 지식이 필요 없다), __init__ 시점에 상시
+        띄워둔다(video_recorder/audio_player와 같은 이유 — P3 "복약 재안내"는
+        순찰과 무관하게 아무 때나 올 수 있다).
+
+        준비 확인은 PillboxSlot 서비스가 실제로 advertise됐는지로 한다
+        (self._pillbox_client.wait_for_service) — count_subscribers 기반 판단과
+        달리 서비스는 클라이언트가 직접 물어볼 수 있어 더 정확하다.
+
+        실패해도(아두이노 미연결/시리얼 포트 오류 등) 이 노드 자체는 계속 뜬다 —
+        medication_task._open_slot()이 실제로 배출을 시도할 때 자기 타임아웃으로
+        hw_error를 내는 게 맞는 실패 경로이지, 여기서 다운링크 전체를 막을 이유는
+        없다.
+        """
+        if self._pillbox_controller_process is not None and self._pillbox_controller_process.poll() is None:
+            return True  # 이미 떠있다 — 재사용
+
+        self._kill_external_process_group('careguard_hw pillbox_controller', '(정리) 이전 pillbox_controller')
+
+        self._pillbox_controller_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_hw', 'pillbox_controller'], start_new_session=True)
+
+        if not self._pillbox_client.wait_for_service(timeout_sec=PILLBOX_CONTROLLER_READY_TIMEOUT_SEC):
+            self.get_logger().warn(
+                f'{PILLBOX_CONTROLLER_READY_TIMEOUT_SEC:.0f}초 안에 pillbox_controller가 '
+                'PillboxSlot 서비스를 advertise하지 않았습니다 — 복약 배출이 hw_error로 실패할 수 있습니다')
+            return False
+        return True
+
+    def _ensure_medication_task_running(self) -> bool:
+        """medication_task(careguard_mission)가 이미 떠있는지 확인하고, 아니면
+        새로 띄운다. _ensure_pillbox_controller_running과 같은 이유로 __init__
+        시점에 상시 띄워둔다 — patrol_task.py의 medication_client.py(순찰 중
+        자동 경로)와 이 노드 자신의 self._medication_client(P3 수동 재안내) 둘 다
+        이 액션 서버 하나를 공유하므로, 어느 경로가 먼저 오든 이미 떠있어야 한다.
+
+        준비 확인은 patrol_task와 같은 방식 — 이 노드가 이미 들고 있는
+        self._medication_client.wait_for_server()로 확인한다.
+        """
+        if self._medication_task_process is not None and self._medication_task_process.poll() is None:
+            return True  # 이미 떠있다 — 재사용
+
+        self._kill_external_process_group('careguard_mission medication_task', '(정리) 이전 medication_task')
+
+        self._medication_task_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_mission', 'medication_task'], start_new_session=True)
+
+        if not self._medication_client.wait_for_server(timeout_sec=MEDICATION_TASK_READY_TIMEOUT_SEC):
+            self.get_logger().warn(
+                f'{MEDICATION_TASK_READY_TIMEOUT_SEC:.0f}초 안에 medication_task 액션 서버가 '
+                '안 떴습니다 — 복약 배출 요청이 응답 없이 실패할 수 있습니다')
+            return False
+        return True
 
     def _download_map(self, map_id: int) -> Tuple[str, bool]:
         """서버 GET /maps/active에서 이 로봇의 활성 맵 메타데이터+이미지를 받아

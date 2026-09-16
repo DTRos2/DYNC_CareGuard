@@ -221,12 +221,17 @@ class PatrolTask(Node):
         self.get_logger().info(f'복약 전달 결과: {status}')
         if status == 'delivered':
             self._publish_voice('약을 전달했습니다.')
-        elif status in ('timeout', 'jammed'):
+        elif status == 'timeout':
             # hw_error는 여기서 안내하지 않는다 — 통신 자체가 끊긴 상황이라 로봇
             # 스피커까지 정상 동작할지 알 수 없고, 억지로 재생 시도하다 또 다른
             # 예외를 만들 이유가 없다(patrol_task._execute의 다른 실패 경로들과
             # 같은 "확실한 것만 안내한다" 원칙).
             self._publish_voice('약 전달에 실패했습니다. 담당자에게 알려드릴게요.')
+        # status == 'jammed'는 여기서 일반 문구를 안내하지 않는다 — robot_ws.py::
+        # _handle_medication_done이 오늘 미수령 횟수를 세어 더 구체적인 문구("약을
+        # 복용하지 않았습니다"/"약을 N번 복용하지 않았습니다")를 downlink_node.py의
+        # medication_alert 명령으로 곧 내려보낸다(2026-09-16). 여기서 일반 문구까지
+        # 먼저 재생하면 몇 초 뒤 그 구체적 문구와 겹쳐서 두 번 안내하게 된다.
 
     # ---------- 접근(approach) 끼어들기 ----------
 

@@ -63,9 +63,12 @@ DEFAULT_PERSON_TIMEOUT_SEC = 60.0
 # IR 센서로 "꺼냄"(=펌웨어가 스스로 닫음)이 감지되길 기다리는 최대 시간 —
 # person_timeout_sec과 별개 상수인 이유: 이건 "이미 약통을 연 뒤" 단계라 사람이
 # 눈앞에 없어서 실패하는 person_timeout_sec과는 다른 실패 모드(jammed)로
-# 구분해야 한다. 펌웨어 CLOSE_DELAY(1초)보다는 훨씬 넉넉하게 잡는다 — 그 1초는
-# "감지된 뒤" 닫히기까지의 시간이지, "언제 감지되는지"는 사람 행동에 달려있다.
-RETRIEVAL_TIMEOUT_SEC = 30.0
+# 구분해야 한다. 2026-09-16: 5초로 낮춤 — "약통을 열었는데 못 먹었다"를 그 자리에서
+# 바로 실패로 잡아 robot_ws.py::_handle_medication_done의 실시간 미수령 경보
+# (MED_MISSED/MED_MISSED_STREAK, TTS+녹화)로 즉시 이어지게 하려는 의도적 변경 —
+# 예전 30초는 "혹시 몰라 넉넉히 기다린다"는 취지였지만, 그만큼 실패 판단과 보호자
+# 알림이 늦어졌다.
+RETRIEVAL_TIMEOUT_SEC = 5.0
 
 # hw 서비스(OPEN 명령) 응답을 기다리는 최대 시간. pillbox_controller.py의
 # ACK_TIMEOUT_SEC(6초 — 실 서보가 0->150도 움직이는 데 최악의 경우 ≈4.5초 걸림,
