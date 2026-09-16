@@ -415,6 +415,25 @@ async def _handle_message(robot_code: str, message: dict) -> None:
         if event_payload is not None:
             await dashboard_ws.broadcast(event_payload)
 
+    elif msg_type == "person_recognized":
+        # careguard_perception/patrol_intruder_watch_node.py가 등록된 대상자로 확정한
+        # 순간 보낸다 — intruder_detected와 달리 알림이 아니라 인식 기록이라 care_event를
+        # 만들지 않고 캡처 사진만 files에 저장한다(있으면). recipient_id가 없거나
+        # image_base64가 없으면 저장할 것도 없어 조용히 무시한다.
+        _handle_person_recognized(robot_code, message)
+
+
+def _handle_person_recognized(robot_code: str, message: dict) -> None:
+    recipient_id = message.get("recipient_id")
+    image_b64 = message.get("image_base64")
+    if recipient_id is None or not image_b64:
+        return
+    try:
+        image_bytes = base64.b64decode(image_b64)
+        media.save_recognition_capture(robot_code, recipient_id, image_bytes)
+    except Exception:
+        pass
+
 
 def _save_slam_result(message: dict) -> Optional[int]:
     """slam_job을 saved로 표시하고 map 행을 새로 만든다.

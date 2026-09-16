@@ -31,6 +31,7 @@ video_events_router = APIRouter(prefix="/video-events", tags=["video-events"])
 VIDEO_DIR = config.STORAGE_DIR / "videos"
 MAP_DIR = config.STORAGE_DIR / "maps"
 INTRUDER_CAPTURE_DIR = config.STORAGE_DIR / "intruder_captures"
+RECOGNITION_CAPTURE_DIR = config.STORAGE_DIR / "recognition_captures"
 
 
 def _relative_storage_path(absolute_path: Path) -> str:
@@ -136,6 +137,37 @@ def save_intruder_capture(robot_code: str, care_event_id: int, image_bytes: byte
             RETURNING id
             """,
             (str(care_event_id), _relative_storage_path(storage_path), filename, retention_until),
+        )
+        file_id = cur.fetchone()["id"]
+        conn.commit()
+
+    return file_id
+
+
+def save_recognition_capture(robot_code: str, recipient_id, image_bytes: bytes) -> int:
+    """patrol_intruder_watch_node.py가 대상자로 확정(person_recognized WS 메시지)하며
+    함께 보낸 얼굴 캡처(JPEG bytes)를 저장하고 files.id를 반환한다.
+
+    save_intruder_capture와 달리 care_event가 없다(알림이 아니라 인식 기록이라서) —
+    그래서 entity_id는 새로 만든 이벤트 id가 아니라 recipient_id를 그대로 쓴다.
+    """
+    robot_dir = RECOGNITION_CAPTURE_DIR / robot_code
+    robot_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{uuid.uuid4().hex}.jpg"
+    storage_path = robot_dir / filename
+    storage_path.write_bytes(image_bytes)
+
+    retention_until = datetime.now(timezone.utc) + timedelta(days=RETENTION_DAYS_PATROL_SNAPSHOT)
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO files (entity_type, entity_id, storage_path, original_filename, retention_until)
+            VALUES ('recipient_recognition_capture', %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (str(recipient_id), _relative_storage_path(storage_path), filename, retention_until),
         )
         file_id = cur.fetchone()["id"]
         conn.commit()
