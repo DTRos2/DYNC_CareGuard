@@ -377,9 +377,9 @@ QWidget* P7SettingsPage::buildThresholdTab() {
                                    Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
     medLayout->setSpacing(8);
     medLayout->addWidget(sectionLabel(QStringLiteral("복약 공통")));
-    medMissedWaitEdit_ = thresholdField("10");
+    medMissedWaitEdit_ = thresholdField("600");
     medLayout->addWidget(
-        thresholdRow(QStringLiteral("미수령 판정 시간"), medMissedWaitEdit_, QStringLiteral("분")));
+        thresholdRow(QStringLiteral("미수령 판정 시간"), medMissedWaitEdit_, QStringLiteral("초")));
     medReannounceEdit_ = thresholdField("2");
     medLayout->addWidget(
         thresholdRow(QStringLiteral("재안내 횟수"), medReannounceEdit_, QStringLiteral("회")));
@@ -1198,7 +1198,7 @@ void P7SettingsPage::fetchRobotThresholds(int robotDbId) {
             batteryAttentionEdit_->setText(QString::number(body.value("battery_attention_pct").toInt(30)));
             batteryReturnEdit_->setText(QString::number(body.value("battery_return_pct").toInt(28)));
             voiceWaitEdit_->setText(QString::number(body.value("voice_wait_sec").toInt(8)));
-            medMissedWaitEdit_->setText(QString::number(body.value("med_missed_wait_min").toInt(10)));
+            medMissedWaitEdit_->setText(QString::number(body.value("med_missed_wait_sec").toInt(600)));
             medReannounceEdit_->setText(QString::number(body.value("med_reannounce_count").toInt(2)));
         }
         reply->deleteLater();
@@ -1212,7 +1212,7 @@ QJsonObject collectThresholdBody(QLineEdit* batteryAttention, QLineEdit* battery
         {"battery_attention_pct", batteryAttention->text().trimmed().toInt()},
         {"battery_return_pct", batteryReturn->text().trimmed().toInt()},
         {"voice_wait_sec", voiceWait->text().trimmed().toInt()},
-        {"med_missed_wait_min", medMissedWait->text().trimmed().toInt()},
+        {"med_missed_wait_sec", medMissedWait->text().trimmed().toInt()},
         {"med_reannounce_count", medReannounce->text().trimmed().toInt()},
     };
 }
