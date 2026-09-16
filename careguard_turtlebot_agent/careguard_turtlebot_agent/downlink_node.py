@@ -38,6 +38,7 @@ import json
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from std_msgs.msg import String
 
 from . import ws_config
 from .nav2_manager import Nav2Manager
@@ -57,12 +58,24 @@ class DownlinkNode(Node):
             logger=self.get_logger())
         self._nav2 = Nav2Manager(self, on_status=self._send_nav_status)
         self._voice = VoiceAnnouncer(self.get_logger())
-        self._patrol = PatrolController(self._nav2, self._voice, self._link.send, self.get_logger())
+        # perception/video_recorder.py(PATROL_RECORDING_TOPIC)가 구독 — 순찰 중에도
+        # 영상이 찍히게 하려면 PatrolController가 순찰 시작/종료 시점에 이걸 쏴줘야
+        # 한다. PatrolController 자신은 rclpy.Node가 아니라서(순수 상태 기계) 여기
+        # downlink_node가 퍼블리셔를 만들어 콜백으로 주입한다 — send(WS)를 주입하는
+        # 것과 같은 패턴.
+        self._patrol_recording_pub = self.create_publisher(
+            String, '/careguard/perception/patrol_recording', 10)
+        self._patrol = PatrolController(
+            self._nav2, self._voice, self._link.send, self.get_logger(),
+            publish_recording=self._publish_patrol_recording)
 
         self._link.start()
 
     def _send_nav_status(self, running: bool):
         self._link.send({'type': 'nav_status', 'running': running})
+
+    def _publish_patrol_recording(self, payload: dict):
+        self._patrol_recording_pub.publish(String(data=json.dumps(payload)))
 
     def _handle_command(self, raw: str):
         try:
