@@ -49,7 +49,7 @@ import uuid
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from . import config
 
@@ -61,7 +61,12 @@ class AudioPlayer(Node):
     def __init__(self):
         super().__init__('audio_player')
         self._player_cmd = self._detect_player()
+        self._call_active = False
         self.create_subscription(String, config.VOICE_TOPIC, self._on_announce, 10)
+        # 통화 중에는 이 노드도 같은 스피커 장치를 쓰는 audio_downlink_player.py와
+        # 출력이 겹치면 안 된다 — TTS는 겹칠 바엔 스킵한다(재생 큐를 새로 만들기보다
+        # 최소 침습적인 선택, config.CALL_STATE_TOPIC 주석 참고).
+        self.create_subscription(Bool, config.CALL_STATE_TOPIC, self._on_call_state, 10)
         self.get_logger().info(
             f'audio_player 시작: model={config.PIPER_MODEL_PATH} '
             f'player={self._player_cmd} topic={config.VOICE_TOPIC}'
@@ -82,7 +87,13 @@ class AudioPlayer(Node):
                 return candidate
         return _PLAYER_CANDIDATES[0]  # 못 찾아도 일단 시도 — 실패하면 _speak()가 로그로 알려줌
 
+    def _on_call_state(self, msg: Bool):
+        self._call_active = msg.data
+
     def _on_announce(self, msg: String):
+        if self._call_active:
+            self.get_logger().info('통화 중이라 음성 안내를 건너뜁니다')
+            return
         try:
             payload = json.loads(msg.data) if msg.data else {}
         except ValueError:

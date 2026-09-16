@@ -25,7 +25,7 @@ import yaml
 from geometry_msgs.msg import Twist
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from careguard_msgs.action import Patrol
 from careguard_msgs.msg import Waypoint as WaypointMsg
@@ -81,6 +81,12 @@ VOICE_TOPIC = '/careguard/voice/announce'
 # 녹화를 켜도록 이 토픽으로 신호를 보낸다.
 RECORD_TRIGGER_TOPIC = '/careguard/perception/record_trigger'
 
+# careguard_hmi/config.py의 CALL_STATE_TOPIC과 같은 문자열(같은 관례) — 서버가
+# call_start/call_end를 보내면 이 노드가 대신 True/False로 바꿔 발행하고,
+# audio_capture_node.py/audio_downlink_player.py(캡처·재생 시작/종료)와
+# audio_player.py(통화 중 TTS 안내 스킵)가 구독한다.
+CALL_STATE_TOPIC = '/careguard/call/state'
+
 
 class DownlinkNode(Node):
     def __init__(self):
@@ -116,6 +122,12 @@ class DownlinkNode(Node):
         # audio_player(careguard_hmi)도 video_recorder와 같은 이유로 map_id에
         # 안 묶인다 — 한 번 뜨면 계속 재사용한다.
         self._voice_announcer_process = None
+        # 통화 기능(audio_capture_node.py/audio_downlink_player.py)도 같은 이유로
+        # map_id에 안 묶이고 한 번 뜨면 계속 재사용한다. 실제 마이크 캡처/스피커
+        # 재생은 CALL_STATE_TOPIC이 True일 때만 시작되므로, 통화 중이 아닐 땐
+        # 그냥 토픽 구독만 하고 대기한다.
+        self._audio_capture_process = None
+        self._audio_downlink_player_process = None
         # patrol_intruder_watch_node(careguard_perception)는 video_recorder/audio_player와
         # 달리 이 노드 기동 즉시(__init__) 띄우지 않는다 — YOLO x2/FaceNet/adapter를
         # 메모리에 올리는 무거운 노드라, P6 페이지를 열어보기만 하거나(_prepare_navigation)
@@ -129,6 +141,7 @@ class DownlinkNode(Node):
         # SOS 호출 버튼 등 care_event_id가 실린 patrol_start를 받았을 때
         # video_recorder.py에 이벤트 클립 녹화를 켜라고 알리는 용도(_start_patrol 참고).
         self._record_trigger_pub = self.create_publisher(String, RECORD_TRIGGER_TOPIC, 10)
+        self._call_state_pub = self.create_publisher(Bool, CALL_STATE_TOPIC, 10)
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
@@ -144,6 +157,8 @@ class DownlinkNode(Node):
         # 서버 웹소켓 연결(위 _thread)은 별도 스레드라 이 대기와 무관하게 계속 진행된다.
         self._ensure_video_recorder_running()
         self._ensure_voice_announcer_running()
+        self._ensure_audio_capture_running()
+        self._ensure_audio_downlink_player_running()
 
     def _run_ws_loop(self):
         asyncio.set_event_loop(self._loop)
@@ -214,6 +229,10 @@ class DownlinkNode(Node):
             self._set_initial_pose(message)
         elif msg_type == 'shutdown_all':
             self._shutdown_everything(message)
+        elif msg_type == 'call_start':
+            self._call_state_pub.publish(Bool(data=True))
+        elif msg_type == 'call_end':
+            self._call_state_pub.publish(Bool(data=False))
 
     def _handle_cmd_vel(self, message: dict):
         twist = Twist()
@@ -619,6 +638,13 @@ class DownlinkNode(Node):
         if self._voice_announcer_process is not None and self._voice_announcer_process.poll() is None:
             self._terminate_process_group(self._voice_announcer_process, 'audio_player')
             self._voice_announcer_process = None
+        if self._audio_capture_process is not None and self._audio_capture_process.poll() is None:
+            self._terminate_process_group(self._audio_capture_process, 'audio_capture_node')
+            self._audio_capture_process = None
+        if (self._audio_downlink_player_process is not None
+                and self._audio_downlink_player_process.poll() is None):
+            self._terminate_process_group(self._audio_downlink_player_process, 'audio_downlink_player')
+            self._audio_downlink_player_process = None
         if (self._patrol_intruder_watch_process is not None
                 and self._patrol_intruder_watch_process.poll() is None):
             self._terminate_process_group(self._patrol_intruder_watch_process, 'patrol_intruder_watch_node')
@@ -857,6 +883,36 @@ class DownlinkNode(Node):
             f'{VOICE_ANNOUNCER_READY_TIMEOUT_SEC:.0f}초 안에 audio_player가 안내 토픽을 '
             '구독하지 않았습니다 — 순찰은 계속 진행하지만 음성 안내가 안 나올 수 있습니다')
         return False
+
+    def _ensure_audio_capture_running(self) -> bool:
+        """audio_capture_node(careguard_hmi, 통화용 마이크 캡처)가 이미 떠있는지
+        확인하고, 아니면 새로 띄운다. _ensure_voice_announcer_running과 같은
+        패턴이지만, 여러 노드가 같은 CALL_STATE_TOPIC을 구독해 count_subscribers로는
+        "이 노드가 구독했는지"를 구분할 수 없다 — 실제 캡처는 사람이 한참 뒤에
+        "통화 시작"을 눌러야 시작되니, video_recorder처럼 즉시 publish되는 메시지와
+        경쟁할 일이 없어 프로세스만 띄우고 바로 반환해도 안전하다.
+        """
+        if self._audio_capture_process is not None and self._audio_capture_process.poll() is None:
+            return True  # 이미 떠있다 — 재사용
+
+        self._kill_external_process_group('careguard_hmi audio_capture_node', '(정리) 이전 audio_capture_node')
+        self._audio_capture_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_hmi', 'audio_capture_node'], start_new_session=True)
+        return True
+
+    def _ensure_audio_downlink_player_running(self) -> bool:
+        """audio_downlink_player(careguard_hmi, 통화용 스피커 재생)가 이미 떠있는지
+        확인하고, 아니면 새로 띄운다. _ensure_audio_capture_running과 같은 이유로
+        구독 확인 없이 프로세스만 띄운다."""
+        if (self._audio_downlink_player_process is not None
+                and self._audio_downlink_player_process.poll() is None):
+            return True  # 이미 떠있다 — 재사용
+
+        self._kill_external_process_group(
+            'careguard_hmi audio_downlink_player', '(정리) 이전 audio_downlink_player')
+        self._audio_downlink_player_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_hmi', 'audio_downlink_player'], start_new_session=True)
+        return True
 
     def _ensure_patrol_intruder_watch_running(self) -> bool:
         """patrol_intruder_watch_node(careguard_perception)가 이미 떠있는지 확인하고,

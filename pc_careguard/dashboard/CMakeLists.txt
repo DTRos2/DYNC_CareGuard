@@ -10,6 +10,13 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets SvgWidgets Multimedia MultimediaWidgets Network WebSockets)
 
+# 통화 기능(call_audio_client)의 Opus 인코딩/디코딩용 — LIMO(careguard_hmi/
+# audio_capture_node.py, audio_downlink_player.py)와 같은 코덱을 써야 서로 재생할 수
+# 있다. 빌드 전에 `sudo apt install libopus-dev`가 필요하다(런타임 libopus0만으로는
+# 헤더/링크 대상이 없어 컴파일이 안 된다).
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET opus)
+
 add_executable(careguard_dashboard
     src/main.cpp
     src/windows/mainwindow.h
@@ -22,6 +29,8 @@ add_executable(careguard_dashboard
     src/net/ws_client.cpp
     src/net/server_config.h
     src/net/server_config.cpp
+    src/audio/call_audio_client.h
+    src/audio/call_audio_client.cpp
     src/theme/tokens.h
     src/theme/calendar_style.h
     src/widgets/simple_icons.h
@@ -106,7 +115,7 @@ add_executable(careguard_dashboard
 )
 
 target_include_directories(careguard_dashboard PRIVATE src)
-target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network Qt6::WebSockets)
+target_link_libraries(careguard_dashboard PRIVATE Qt6::Widgets Qt6::SvgWidgets Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Network Qt6::WebSockets PkgConfig::OPUS)
 
 # 대시보드 실행 시 FastAPI 서버를 자동 기동하기 위한 기본 경로.
 # 환경변수 CAREGUARD_SERVER_DIR로 재정의 가능 (main.cpp 참고).
