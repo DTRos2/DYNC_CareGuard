@@ -76,6 +76,7 @@ base_link 기준으로 옮길 때, tf2로 구한 camera_frame->base_link 회전�
 
 빌드/실행 미검증.
 """
+import base64
 import json
 import math
 import sys
@@ -292,6 +293,11 @@ class PatrolIntruderWatchNode(Node):
 
         self.bridge = CvBridge()
         self.frame_count = 0
+        # 침입자 확정 시점(_finalize_decision)에 캡처용으로 쓴다 — on_frame 콜백과
+        # _finalize_decision 호출이 대부분 같은 프레임 처리 흐름 안에서 동기적으로
+        # 이어지므로(접근 도착 후 재판별 타임아웃 경로만 약간의 시차가 있을 수 있음)
+        # "직전 프레임"이면 증거 사진으로 충분하다.
+        self._last_frame = None
         self.sub = self.create_subscription(
             CompressedImage, camera_topic, self.on_frame, qos_profile_sensor_data
         )
@@ -425,6 +431,7 @@ class PatrolIntruderWatchNode(Node):
             return
 
         image = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
+        self._last_frame = image
         self.frame_count += 1
         detections = self._detect(image)
 
@@ -685,13 +692,46 @@ class PatrolIntruderWatchNode(Node):
             "nearest_dist": round(dist, 4) if dist is not None else None,
             "run_id": self._current_run_id,
         }
+        image_b64 = self._capture_intruder_image(det)
+        if image_b64 is not None:
+            payload["image_base64"] = image_b64
         out = String()
         out.data = json.dumps(payload)
         self._intruder_pub.publish(out)
         self.get_logger().warn(
             f"[침입자 감지] track_id={track_id} verified={verified} — 등록 대상자와 불일치, "
-            "care_event 신고 발행"
+            f"care_event 신고 발행{'' if image_b64 is not None else ' (사진 없음)'}"
         )
+
+    def _capture_intruder_image(self, det):
+        """침입자로 확정되는 순간의 얼굴 캡처를 JPEG+base64로 인코딩해 반환한다.
+
+        WS/HTTP 왕복 없이 intruder_detected 메시지 자체에 이미지를 실어 보낸다 —
+        care_event가 서버에서 만들어지기 전엔 entity_id로 쓸 care_event.id를 아직
+        몰라서, 파일부터 올리고 나중에 연결하는 map_image 방식(placeholder entity_id
+        재연결)을 쓰려면 레이스 컨디션을 감수해야 한다. 대신 이 메시지 안에 이미지를
+        같이 실으면 서버가 care_event를 만든 "직후" 이미 알고 있는 그 id로 바로
+        files 행을 만들 수 있다 — 재연결 단계 자체가 필요 없다.
+
+        실패해도(프레임이 아직 없거나 인코딩 오류) None을 반환해 침입자 신고 자체는
+        사진 없이 계속 진행되게 한다 — 증거 사진은 있으면 좋은 것이지 신고를 막을
+        이유는 아니다.
+        """
+        if self._last_frame is None:
+            return None
+        try:
+            image = self._last_frame
+            box = det.get("box") if det is not None else None
+            crop = crop_with_margin(image, box) if box is not None else image
+            if crop.size == 0:
+                crop = image
+            ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ok:
+                return None
+            return base64.b64encode(buf.tobytes()).decode("ascii")
+        except Exception:
+            self.get_logger().warn("[침입자 캡처] 이미지 인코딩 실패 — 사진 없이 신고만 진행합니다")
+            return None
 
     def _prune_stale_track_state(self):
         live_ids = set(self._track_manager.tracks.keys())
