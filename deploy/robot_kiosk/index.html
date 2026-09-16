@@ -281,6 +281,10 @@
     ws.onopen = function () {
       state.wsConnected = true;
       render();
+      // 끊겨있던 동안 순찰 시작/종료 이벤트(patrol_run_updated 등)를 놓쳤을 수
+      // 있다 — WS엔 그런 이벤트에 대한 재전송/hydration이 없어서, (재)연결될
+      // 때마다 현재 순찰 상태를 REST로 다시 맞춰준다(첫 로드 때와 동일한 방식).
+      loadPatrolState();
     };
 
     ws.onmessage = function (ev) {
