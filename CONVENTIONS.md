@@ -118,7 +118,7 @@
 | `pc_careguard/` | FastAPI 서버, Qt 대시보드, DB 스키마 | 관제 PC |
 | `shared/api_contract/` | OpenAPI 스펙, 이벤트 코드 정의 | 양쪽이 참조만 함 |
 | `docs/` | 시나리오서, 와이어프레임, 상세 설계 문서 | - |
-| `deploy/` | `docker-compose.yml`, `sync_to_limo.sh` | 관제 PC에서 실행 |
+| `deploy/` | `docker-compose.yml`, `sync_to_limo.sh`, `robot_kiosk/`(로봇 후면 모니터용 정적 HTML) | 관제 PC에서 실행 (`robot_kiosk/`만 예외로 LIMO 로봇에서 파일 열람) |
 
 **최상위 신설 금지**: 새 산출물이 생기면 위 다섯 개 중 가장 맞는 폴더 하위에 넣는다. 최상위를 늘리면 이 표가 실제 리포와 어긋난다.
 
