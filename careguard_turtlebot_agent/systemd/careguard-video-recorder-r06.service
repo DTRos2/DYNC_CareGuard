@@ -1,0 +1,18 @@
+[Unit]
+Description=CareGuard R-06 video_recorder (이벤트 pre/post 클립 + 순찰 연속 녹화)
+After=careguard-camera-r06.service network-online.target
+Wants=network-online.target
+BindsTo=careguard-camera-r06.service
+
+[Service]
+Type=simple
+User=yeyu
+Environment=ROS_DOMAIN_ID=40
+Environment=CAREGUARD_ROBOT_CODE=R-06
+ExecStartPre=/bin/sleep 1
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/careguard_turtlebot_agent_ws/install/setup.bash && exec ros2 run careguard_turtlebot_agent video_recorder'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

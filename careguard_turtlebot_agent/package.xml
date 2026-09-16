@@ -11,6 +11,9 @@
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
+  <!-- perception/photo_identify_node.py(person_detected), perception/video_recorder.py,
+       downlink_node.py(patrol_recording)의 std_msgs/String·Bool 토픽용 -->
+  <depend>std_msgs</depend>
   <!-- P6 라이다 스캔 오버레이(uplink_node.py::_send_scan_overlay)용 map->스캔
        프레임 TF 조회 -->
   <depend>tf2_ros</depend>
