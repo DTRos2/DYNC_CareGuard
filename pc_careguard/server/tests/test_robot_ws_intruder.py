@@ -1,5 +1,7 @@
+import base64
 import uuid
 
+from app.api.v1.media import resolve_storage_path
 from app.core import db
 
 
@@ -53,6 +55,56 @@ def test_intruder_detected_creates_care_event(client, cleanup_robot):
         assert events[0]["status"] == "open"
     finally:
         _cleanup_care_events(robot_id)
+
+
+def test_intruder_detected_with_image_creates_capture_file(client, cleanup_robot):
+    """image_base64가 실려 오면 files(entity_type='intruder_capture')를 만들고
+    care_event.evidence.capture_file_id로 연결해야 한다(robot_ws.py::
+    _handle_intruder_detected + media.py::save_intruder_capture)."""
+    code = _unique_code()
+    cleanup_robot.append(code)
+    robot_id = client.post("/robots", json={"code": code, "name": "침입자 캡처 테스트"}).json()["id"]
+
+    fake_jpeg = base64.b64encode(b"not a real jpeg, just bytes for the test").decode("ascii")
+    file_id = None
+    try:
+        with client.websocket_connect(f"/ws/robot?robot_code={code}") as ws:
+            ws.send_json({
+                "type": "intruder_detected",
+                "track_id": 7,
+                "nearest_dist": 1.2,
+                "run_id": 1,
+                "image_base64": fake_jpeg,
+            })
+
+        with db.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, evidence FROM care_event WHERE robot_id = %s", (robot_id,)
+            )
+            event = cur.fetchone()
+        assert event is not None
+        file_id = event["evidence"].get("capture_file_id")
+        assert file_id is not None
+
+        with db.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT entity_type, entity_id, storage_path FROM files WHERE id = %s", (file_id,)
+            )
+            file_row = cur.fetchone()
+        assert file_row["entity_type"] == "intruder_capture"
+        assert file_row["entity_id"] == str(event["id"])
+        stored_path = resolve_storage_path(file_row["storage_path"])
+        assert stored_path.read_bytes() == base64.b64decode(fake_jpeg)
+    finally:
+        _cleanup_care_events(robot_id)
+        if file_id is not None:
+            with db.get_connection() as conn, conn.cursor() as cur:
+                cur.execute("SELECT storage_path FROM files WHERE id = %s", (file_id,))
+                row = cur.fetchone()
+                if row is not None:
+                    resolve_storage_path(row["storage_path"]).unlink(missing_ok=True)
+                cur.execute("DELETE FROM files WHERE id = %s", (file_id,))
+                conn.commit()
 
 
 def test_intruder_detected_uses_running_patrol_run(client, cleanup_robot):

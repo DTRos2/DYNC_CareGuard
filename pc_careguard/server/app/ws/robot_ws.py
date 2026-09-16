@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import math
 import time
@@ -553,11 +554,30 @@ def _handle_intruder_detected(robot_code: str, message: dict) -> Optional[dict]:
             INSERT INTO care_event (event_uid, recipient_id, robot_id, patrol_run_id, trigger_path,
                 event_type, severity, summary, evidence, pos_x, pos_y, occurred_at)
             VALUES (%s, NULL, %s, %s, 'B', 'INTRUDER', 'emergency', %s, %s, %s, %s, NOW())
-            RETURNING occurred_at
+            RETURNING id, occurred_at
             """,
             (event_uid, robot_id, patrol_run_id, summary, json.dumps(evidence), pos_x, pos_y),
         )
-        occurred_at = cur.fetchone()["occurred_at"]
+        row = cur.fetchone()
+        event_id, occurred_at = row["id"], row["occurred_at"]
+
+        # patrol_intruder_watch_node.py가 확정 순간의 얼굴 캡처를 base64로 같이
+        # 실어 보낸다(files 테이블 코멘트에 명시된 "침입자 캡처" 용도). 캡처 저장이
+        # 실패해도(인코딩 오류, 디스크 문제 등) 이벤트 자체는 이미 커밋 대상이라
+        # 그대로 살려둔다 — 사진은 있으면 좋은 것이지 신고를 막을 이유는 아니다.
+        image_b64 = message.get("image_base64")
+        if image_b64:
+            try:
+                image_bytes = base64.b64decode(image_b64)
+                file_id = media.save_intruder_capture(robot_code, event_id, image_bytes)
+                evidence["capture_file_id"] = file_id
+                cur.execute(
+                    "UPDATE care_event SET evidence = %s WHERE id = %s",
+                    (json.dumps(evidence), event_id),
+                )
+            except Exception:
+                pass
+
         conn.commit()
 
     return {

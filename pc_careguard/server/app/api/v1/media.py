@@ -30,6 +30,7 @@ video_events_router = APIRouter(prefix="/video-events", tags=["video-events"])
 
 VIDEO_DIR = config.STORAGE_DIR / "videos"
 MAP_DIR = config.STORAGE_DIR / "maps"
+INTRUDER_CAPTURE_DIR = config.STORAGE_DIR / "intruder_captures"
 
 
 def _relative_storage_path(absolute_path: Path) -> str:
@@ -107,6 +108,39 @@ DEFAULT_TAG = ("순찰", "neutral")
 # 사건과 무관한 일반 영상(순찰 스냅샷 등, care_event_id 없음)은 7일 보관 후 자동 삭제 대상이 된다.
 RETENTION_DAYS_EVENT_CLIP = 30
 RETENTION_DAYS_PATROL_SNAPSHOT = 7
+RETENTION_DAYS_INTRUDER_CAPTURE = 30
+
+
+def save_intruder_capture(robot_code: str, care_event_id: int, image_bytes: bytes) -> int:
+    """patrol_intruder_watch_node.py가 침입자 확정(intruder_detected WS 메시지)과
+    함께 보낸 얼굴 캡처(JPEG bytes)를 저장하고 files.id를 반환한다.
+
+    upload-map처럼 나중에 entity_id를 재연결할 필요가 없다 — 이 함수는 ws/robot_ws.py
+    ::_handle_intruder_detected가 care_event INSERT ... RETURNING id로 이미 event id를
+    받은 "직후"에만 불러서, 처음부터 진짜 entity_id(care_event.id)로 저장한다.
+    """
+    robot_dir = INTRUDER_CAPTURE_DIR / robot_code
+    robot_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{uuid.uuid4().hex}.jpg"
+    storage_path = robot_dir / filename
+    storage_path.write_bytes(image_bytes)
+
+    retention_until = datetime.now(timezone.utc) + timedelta(days=RETENTION_DAYS_INTRUDER_CAPTURE)
+
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO files (entity_type, entity_id, storage_path, original_filename, retention_until)
+            VALUES ('intruder_capture', %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (str(care_event_id), _relative_storage_path(storage_path), filename, retention_until),
+        )
+        file_id = cur.fetchone()["id"]
+        conn.commit()
+
+    return file_id
 
 
 @router.post("/upload", response_model=MediaUploadResponse)
