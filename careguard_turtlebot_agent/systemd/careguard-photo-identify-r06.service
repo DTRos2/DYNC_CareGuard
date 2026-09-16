@@ -1,0 +1,21 @@
+[Unit]
+Description=CareGuard R-06 photo_identify_node (사진 1장 단발 대상자/침입자 판정)
+After=careguard-camera-r06.service network-online.target
+Wants=network-online.target
+BindsTo=careguard-camera-r06.service
+
+[Service]
+Type=simple
+User=yeyu
+Environment=ROS_DOMAIN_ID=40
+# R-06 카메라(imx219)가 물리적으로 뒤집혀 마운트돼 있음 — face_capture_node.py와
+# 동일 조건(모듈 docstring 참고). 빼먹으면 Haar cascade가 얼굴을 못 찾아 계속
+# no_face만 나온다.
+Environment=CAREGUARD_CAMERA_FLIP_VERTICAL=1
+ExecStartPre=/bin/sleep 1
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/careguard_turtlebot_agent_ws/install/setup.bash && exec ros2 run careguard_turtlebot_agent photo_identify_node --ros-args -p identity_threshold:=0.4'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

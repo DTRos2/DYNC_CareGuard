@@ -20,11 +20,15 @@ from .waypoints import fetch_charge_waypoint
 
 
 class PatrolController:
-    def __init__(self, nav2: Nav2Manager, voice: VoiceAnnouncer, send: Callable[[dict], None], logger):
+    def __init__(self, nav2: Nav2Manager, voice: VoiceAnnouncer, send: Callable[[dict], None], logger,
+                 publish_recording: Optional[Callable[[dict], None]] = None):
         self._nav2 = nav2
         self._voice = voice
         self._send = send
         self._logger = logger
+        # perception/video_recorder.py의 PATROL_RECORDING_TOPIC 발행 콜백(downlink_node.py가
+        # 주입) — None이면(video_recorder 미배포 등) 조용히 건너뛴다.
+        self._publish_recording = publish_recording or (lambda payload: None)
         self._active = False
         self._cancel_requested = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -102,6 +106,7 @@ class PatrolController:
                      charge_x: float, charge_y: float, charge_yaw: float):
         try:
             self._voice.speak('주행을 시작합니다')
+            self._publish_recording({'action': 'start', 'run_id': run_id})
             waypoints_done = 0
             for wp in waypoints:
                 if self._cancel_requested.is_set():
@@ -141,4 +146,7 @@ class PatrolController:
             self._send({'type': 'patrol_done', 'run_id': run_id, 'status': 'completed'})
             self._logger.info(f'순찰 완료: run_id={run_id}')
         finally:
+            # 성공/실패/취소 어느 경로로 빠져나가든(위쪽 return 지점마다 각자 안 챙겨도)
+            # 여기서 한 번만 stop을 쏘면 video_recorder.py가 반드시 녹화를 마무리한다.
+            self._publish_recording({'action': 'stop', 'run_id': run_id})
             self._active = False
