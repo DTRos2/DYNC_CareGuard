@@ -22,6 +22,7 @@ setup(
             'video_recorder = careguard_perception.video_recorder:main',
             'auto_face_capture_node = careguard_perception.auto_face_capture_node:main',
             'face_identify_test_node = careguard_perception.face_identify_test_node:main',
+            'patrol_intruder_watch_node = careguard_perception.patrol_intruder_watch_node:main',
         ],
     },
 )

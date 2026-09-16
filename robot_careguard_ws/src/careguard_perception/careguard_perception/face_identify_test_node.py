@@ -180,7 +180,6 @@ import csv
 import os
 import sys
 import time
-from collections import Counter, deque
 from pathlib import Path
 
 import cv2
@@ -199,6 +198,10 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import CAMERA_TOPIC  # noqa: E402  (재사용 — 새로 안 짬)
 from face_embedding_adapter_model import ResidualAdapter  # noqa: E402  (재사용)
+# crop/트래킹/다수결 핵심 로직은 patrol_intruder_watch_node.py(프로덕션)와 공유한다
+# (face_pipeline_common.py 모듈 docstring 참고) — 두 노드가 같은 얼굴을 다르게
+# 판단하는 drift를 막기 위함.
+from face_pipeline_common import FaceTrackManager, crop_with_margin, face_in_any_person_box  # noqa: E402
 
 # ── identity 판단 threshold: 코사인 거리가 이 값 이하면 등록된 사람으로 인정, 넘으면
 # unknown. 나중에 조정하기 쉽게 상수로 뺴둠(기본값) — 실행 중엔 identity_threshold
@@ -301,109 +304,6 @@ RAW_SCORE_CSV_HEADER = [
 ]
 
 
-def crop_with_margin(image_bgr, box, margin=CROP_MARGIN):
-    x1, y1, x2, y2 = box
-    w, h = x2 - x1, y2 - y1
-    x1 = max(0, int(x1 - w * margin / 2))
-    y1 = max(0, int(y1 - h * margin / 2))
-    x2 = min(image_bgr.shape[1], int(x2 + w * margin / 2))
-    y2 = min(image_bgr.shape[0], int(y2 + h * margin / 2))
-    return image_bgr[y1:y2, x1:x2]
-
-
-def _center_dist(a, b):
-    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-
-
-def face_in_any_person_box(face_box, person_boxes, mode=DEFAULT_PERSON_GATE_MODE,
-                            overlap_ratio_threshold=DEFAULT_PERSON_GATE_OVERLAP_RATIO):
-    """완화③(사람 전신 게이트): face_box가 person_boxes 중 하나에 "포함"되는지 판단.
-
-    - mode="center"(기본): face_box 중심점이 어떤 person box 안에 있으면 포함.
-      단순·강건 — 얼굴이 몸통 bbox 안쪽에 있는 일반적인 경우를 잘 잡는다.
-    - mode="overlap_ratio": 표준 IoU(교집합/합집합)를 안 쓴다 — 얼굴은 몸통 전체
-      bbox 면적의 일부(보통 5~15%)라서 대칭 IoU로는 실제 포함된 경우도 항상 작게
-      나온다. 대신 "얼굴 bbox 면적 대비 person bbox와 겹치는 면적의 비율"(비대칭)을
-      써서 overlap_ratio_threshold 이상이면 포함으로 본다.
-    """
-    x1, y1, x2, y2 = face_box
-    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-    face_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-
-    for px1, py1, px2, py2 in person_boxes:
-        if mode == "center":
-            if px1 <= cx <= px2 and py1 <= cy <= py2:
-                return True
-        else:
-            ix1, iy1 = max(x1, px1), max(y1, py1)
-            ix2, iy2 = min(x2, px2), min(y2, py2)
-            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-            if face_area > 0 and (inter / face_area) >= overlap_ratio_threshold:
-                return True
-    return False
-
-
-def compute_stable_label(window, current_state, enter_threshold, exit_threshold):
-    """Sliding-window 다수결 + hysteresis로 안정화된 라벨을 계산.
-
-    매 프레임 호출 시 window(최근 N개 raw 판정이 들어있는 deque) 전체를 처음부터 다시
-    집계한다 — 한 번 결정되면 고정되는 방식이 아니라 계속 재평가됨(deque가 꽉 차면
-    오래된 프레임은 자동으로 밀려나므로 "최근 N개"가 항상 유지됨).
-
-    - current_state가 "unknown"일 때: 특정 인물로 "진입"하려면 그 인물 비율이
-      enter_threshold 이상이어야 함(예: 70%).
-    - current_state가 특정 인물일 때: 비율이 exit_threshold 이하로 떨어져야만
-      "unknown"으로 이탈함(예: 40%). 진입/이탈 기준을 다르게 둬서 두 기준 사이
-      구간에서는 이전 상태를 유지 — 경계선 근처 미세한 흔들림(오인식 한두 프레임)이
-      상태를 뒤집지 못하게 흡수하는 hysteresis 역할.
-    - 단, 현재 인물이 아닌 다른 특정 인물이 즉시 enter_threshold 이상으로 지배적이면
-      (진짜 다른 사람이 나타난 경우) hysteresis를 거치지 않고 곧바로 그 인물로 전환.
-
-    Returns: (stable_label, 그 라벨의 윈도우 내 비율)
-    """
-    if not window:
-        return "unknown", 0.0
-
-    total = len(window)
-    counts = Counter(window)
-    best_label, best_count = counts.most_common(1)[0]
-    best_frac = best_count / total
-
-    if current_state == "unknown":
-        if best_label != "unknown" and best_frac >= enter_threshold:
-            return best_label, best_frac
-        return "unknown", counts.get("unknown", 0) / total
-
-    if best_label != current_state and best_label != "unknown" and best_frac >= enter_threshold:
-        return best_label, best_frac
-
-    current_frac = counts.get(current_state, 0) / total
-    if current_frac <= exit_threshold:
-        return "unknown", counts.get("unknown", 0) / total
-
-    return current_state, current_frac
-
-
-class FaceTrack:
-    """프레임 간 같은 얼굴을 잇기 위한 최소한의 상태 — 정식 트래커가 아니라
-    bbox 중심 거리로 매칭하는 단순 구현(테스트/디버깅 도구 스코프에 맞춤)."""
-
-    __slots__ = ("track_id", "center", "window", "stable_label", "stable_frac",
-                 "missed_frames", "track_age_frames")
-
-    def __init__(self, track_id, center, window_size):
-        self.track_id = track_id
-        self.center = center
-        self.window = deque(maxlen=window_size)
-        self.stable_label = DECIDING_LABEL  # 완화① — 갓 생긴 트랙은 아직 아무 판정도 안 함
-        self.stable_frac = 0.0
-        self.missed_frames = 0
-        # ── 2026-09-15 추가: 이 트랙이 처음 감지된 뒤 몇 프레임째인지(감지된 프레임만
-        # 카운트, 안 보인 프레임은 제외) — "등장 초반" vs "안정화 이후" 구간을 raw score
-        # CSV에서 나중에 구분해서 비교하기 위함.
-        self.track_age_frames = 0
-
-
 class FaceIdentifyTestNode(Node):
     def __init__(self):
         super().__init__("face_identify_test_node")
@@ -453,12 +353,15 @@ class FaceIdentifyTestNode(Node):
         self.exit_threshold = float(self.get_parameter("exit_threshold").value)
         self.track_match_max_dist = float(self.get_parameter("track_match_max_dist").value)
         self.track_max_missed_frames = int(self.get_parameter("track_max_missed_frames").value)
-        self.tracks = {}
-        self._next_track_id = 0
 
         self.min_window_fill_ratio = float(self.get_parameter("min_window_fill_ratio").value)
         self.min_window_fill = max(1, round(self.window_size * self.min_window_fill_ratio))
         self.min_yolo_confidence = float(self.get_parameter("min_yolo_confidence").value)
+        self._track_manager = FaceTrackManager(
+            window_size=self.window_size, enter_threshold=self.enter_threshold,
+            exit_threshold=self.exit_threshold, track_match_max_dist=self.track_match_max_dist,
+            track_max_missed_frames=self.track_max_missed_frames, min_window_fill=self.min_window_fill,
+        )
 
         person_yolo_weights = self.get_parameter("person_yolo_weights").value
         self.person_min_confidence = float(self.get_parameter("person_min_confidence").value)
@@ -747,74 +650,20 @@ class FaceIdentifyTestNode(Node):
         return final_label, adapter_dist, adapter_dists, adapter_label, zs_label, zs_dist, zs_dists
 
     def _update_tracks(self, detections):
-        """detections(이번 프레임의 raw 판정들)를 기존 track에 bbox 중심 거리로
-        매칭하고, 매칭된 track의 sliding window에 raw_label을 넣어 매 프레임
-        다시 집계한다. detections의 각 dict에 "track"을 채워 넣어 반환한다.
-
-        완화②(YOLO confidence 하한선)로 인해 raw_label이 None인 검출(det["low_conf"]
-        True)은 이번 프레임의 위치 추적(중심좌표 갱신, missed_frames 리셋)에는
-        반영하되, window에는 아무것도 넣지 않고 track.stable_label/stable_frac도
-        건드리지 않는다 — 신뢰 못 할 프레임 하나 때문에 기존에 쌓인 판정이 흔들리거나
-        트랙이 끊기지 않게 하기 위함."""
-        unmatched_track_ids = set(self.tracks.keys())
-
-        for det in detections:
-            best_id, best_dist = None, None
-            for track_id in unmatched_track_ids:
-                d = _center_dist(det["center"], self.tracks[track_id].center)
-                if d <= self.track_match_max_dist and (best_dist is None or d < best_dist):
-                    best_id, best_dist = track_id, d
-
-            if best_id is not None:
-                track = self.tracks[best_id]
-                unmatched_track_ids.discard(best_id)
-            else:
-                new_track_id = self._next_track_id
-                track = FaceTrack(new_track_id, det["center"], self.window_size)
-                self.tracks[new_track_id] = track
-                self._next_track_id += 1
-                x1, y1, x2, y2 = det["box"]
-                # ── 사람이 화면에 처음 등장하는 순간(새 트랙 생성 시점)을 로그로 남김 —
-                # 이 시각/프레임 번호를 raw score CSV의 track_age_frames=1 행과
-                # 맞춰보면 "등장 초반" 구간을 정확히 찾을 수 있다.
-                self.get_logger().info(
-                    f"[신규 감지] track_id={new_track_id} 최초 등장 (frame#{self.frame_count}) — "
-                    f"bbox={x2 - x1:.0f}x{y2 - y1:.0f}px  yolo_conf={det['conf']:.2f}"
-                    + ("  (⚠️ confidence 미달로 식별 파이프라인엔 안 들어감)" if det["low_conf"] else "")
-                )
-
-            track.center = det["center"]
-            track.missed_frames = 0
-            track.track_age_frames += 1
-
-            if det["raw_label"] is not None:
-                track.window.append(det["raw_label"])
-                # ── 완화① 콜드스타트 게이팅: window가 min_window_fill개 미만으로 쌓였으면
-                # 기존 다수결(compute_stable_label)을 아예 호출하지 않고 DECIDING_LABEL로
-                # 고정한다 — 기존 다수결/hysteresis 로직 자체는 변경하지 않음, 그 앞에
-                # 게이트만 하나 추가하는 것.
-                if len(track.window) < self.min_window_fill:
-                    track.stable_label = DECIDING_LABEL
-                    track.stable_frac = len(track.window) / self.window_size
-                else:
-                    # DECIDING_LABEL에서 막 벗어나는 시점엔 compute_stable_label이 모르는
-                    # 상태이므로 "unknown"에서 시작한 것처럼 취급(진입 기준 enter_threshold부터
-                    # 정상 적용됨 — 곧바로 A/B로 확정되려면 그때도 enter_threshold를 넘어야 함).
-                    current_state = track.stable_label if track.stable_label != DECIDING_LABEL else "unknown"
-                    track.stable_label, track.stable_frac = compute_stable_label(
-                        track.window, current_state, self.enter_threshold, self.exit_threshold
-                    )
-
-            det["track"] = track
-
-        # 이번 프레임에 매칭 안 된 track은 "안 보임"이지 "unknown으로 확인됨"이 아니라서
-        # window에는 아무것도 넣지 않고 missed_frames만 늘림 — 오래 안 보이면 트랙 제거.
-        for track_id in unmatched_track_ids:
-            self.tracks[track_id].missed_frames += 1
-
-        self.tracks = {
-            tid: t for tid, t in self.tracks.items() if t.missed_frames <= self.track_max_missed_frames
-        }
+        """트랙 매칭/sliding-window 갱신 자체는 face_pipeline_common.FaceTrackManager가
+        담당한다(patrol_intruder_watch_node.py와 완전히 동일한 로직 공유 — 모듈
+        docstring 참고). 이 노드는 새 트랙이 생기는 순간의 로그만 자체적으로 남긴다."""
+        new_tracks = self._track_manager.update(detections)
+        for new in new_tracks:
+            x1, y1, x2, y2 = new["box"]
+            # ── 사람이 화면에 처음 등장하는 순간(새 트랙 생성 시점)을 로그로 남김 —
+            # 이 시각/프레임 번호를 raw score CSV의 track_age_frames=1 행과
+            # 맞춰보면 "등장 초반" 구간을 정확히 찾을 수 있다.
+            self.get_logger().info(
+                f"[신규 감지] track_id={new['track_id']} 최초 등장 (frame#{self.frame_count}) — "
+                f"bbox={x2 - x1:.0f}x{y2 - y1:.0f}px  yolo_conf={new['conf']:.2f}"
+                + ("  (⚠️ confidence 미달로 식별 파이프라인엔 안 들어감)" if new["low_conf"] else "")
+            )
 
     def on_frame(self, msg: CompressedImage):
         frame_start = time.perf_counter()  # ── enable_display/log_raw_scores 부하 비교용 계측
