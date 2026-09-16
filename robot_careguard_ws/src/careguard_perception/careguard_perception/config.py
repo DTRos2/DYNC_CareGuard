@@ -38,6 +38,20 @@ VOICE_TOPIC = '/careguard/voice/announce'
 # uplink_node.py에도 하드코딩 — PATROL_RECORDING_TOPIC 주석과 같은 기존 방식).
 INTRUDER_STATUS_TOPIC = '/careguard/perception/intruder_status'
 
+# 대상자로 확정된 순간(2단계 서보모터 트리거) — careguard_hw 쪽 아두이노 브리지 노드가
+# 이 토픽만 구독해서 서보를 움직인다. 서버/대시보드는 전혀 관여하지 않는 로봇 로컬
+# 전용 토픽이라 uplink_node.py로 relay하지 않는다 — 팀원 제공 스펙(person.png)대로
+# std_msgs/Bool, data:true만 발행하고 끝(false는 안 보냄, 상태 토픽이 아니라 순간
+# 트리거 신호).
+PERSON_DETECTED_TOPIC = '/careguard/perception/person_detected'
+
+# 대상자로 확정된 순간의 얼굴 캡처(증거 사진) — INTRUDER_STATUS_TOPIC과 같은 이유·
+# 같은 방식으로 uplink_node.py가 relay해서 서버가 files에 저장한다(다만 care_event는
+# 안 만든다 — 알림이 아니라 인식 기록이라서). PERSON_DETECTED_TOPIC(서보 트리거)과는
+# 완전히 별개 토픽이다 — 서보 쪽엔 이미지가 필요 없고, 순수 Bool 신호만 최대한
+# 가볍고 지연 없이 전달돼야 하기 때문.
+PERSON_RECOGNIZED_TOPIC = '/careguard/perception/person_recognized'
+
 # 정지→접근→재판별(2026-09-15 추가) — patrol_intruder_watch_node.py <-> patrol_task.py
 # 로컬 통신용 토픽. 서버는 이 왕복에 전혀 관여하지 않는다(로봇이 실시간으로 계산한
 # 좌표라 서버가 검증/보관할 이유가 없음 — 최종 판정 결과만 INTRUDER_STATUS_TOPIC으로
