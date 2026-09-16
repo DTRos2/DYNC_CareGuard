@@ -16,7 +16,7 @@ MAX_ENTRIES = 300
 # (robot_ws.py::_handle_battery_state)만 이 테이블에 쓰고 있다.
 EVENT_TYPE_LABELS: Dict[str, str] = {
     "battery_attention": "배터리 주의",
-    "battery_return_needed": "배터리 복귀 필요",
+    "battery_return_needed": "충전소 복귀",
     "battery_recovered": "배터리 정상 회복",
 }
 
