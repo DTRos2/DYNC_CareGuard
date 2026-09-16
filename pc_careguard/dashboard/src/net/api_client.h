@@ -355,6 +355,19 @@ public:
     // 실패"가 아니라 "로봇엔 못 갔지만 DB는 정리됨" — 정상 결과 중 하나).
     void cancelPatrolRun(const QString& robotCode, SimpleCallback callback);
 
+    // 통화 시작/종료 결과 콜백 — robotConnected는 서버가 실제로 로봇 다운링크에
+    // call_start/call_end를 전달할 수 있었는지(응답 body의 robot_connected)다. ok는
+    // HTTP 요청 자체의 성공 여부라 둘을 구분해서 넘긴다(cancelPatrolRun과 같은 이유 —
+    // 로봇이 오프라인이어도 요청 자체는 200으로 끝날 수 있다).
+    using CallCallback = std::function<void(bool ok, bool robotConnected, const QString& errorDetail)>;
+
+    // POST /calls/start, POST /calls/end — 이벤트 상세 모달 "스피커 통화" 버튼. 실제
+    // 오디오 바이트는 이 REST 왕복과 무관하게 CallAudioClient가 별도 WebSocket으로
+    // 주고받는다(audio_relay.py 참고) — 이 두 메서드는 로봇에 call_start/call_end
+    // 신호만 전달한다.
+    void startCall(const QString& robotCode, CallCallback callback);
+    void endCall(const QString& robotCode, CallCallback callback);
+
     // POST /patrol-runs/prepare-navigation — 실제 순찰/이동 목표 없이 Nav2만 미리
     // 준비시킨다(P6 페이지를 열거나 다른 로봇의 맵으로 전환할 때 호출). 로봇이 아직
     // 안 켜져 있어도 에러가 아니라 그냥 robot_connected:false로 조용히 알려줄

@@ -20,6 +20,8 @@ setup(
     entry_points={
         'console_scripts': [
             'audio_player = careguard_hmi.audio_player:main',
+            'audio_capture_node = careguard_hmi.audio_capture_node:main',
+            'audio_downlink_player = careguard_hmi.audio_downlink_player:main',
         ],
     },
 )

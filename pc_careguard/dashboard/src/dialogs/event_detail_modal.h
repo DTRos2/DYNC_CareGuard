@@ -7,6 +7,8 @@ class QWidget;
 class QLabel;
 class QTextEdit;
 class QPushButton;
+class ApiClient;
+class CallAudioClient;
 
 // P2 이벤트 상세 모달 — gui/wireframe/v1/p2_event_detail_modal_wireframe.html 대응.
 // 이벤트 API가 아직 없어 EventTableModel::EventRow 스냅샷만으로 화면을 구성한다
@@ -38,6 +40,8 @@ private:
     void showComingSoon(const QString& feature);
     void updateResolveButtonState();
     void handleResolveClicked();
+    void handleSpeakerCallClicked();
+    void resetSpeakerCallButton();
 
     EventTableModel::EventRow row_;
     int currentStep_ = 0;   // 0=감지 1=출동 2=음성확인 3=조치 4=완료
@@ -45,4 +49,11 @@ private:
 
     QTextEdit* resolveNoteEdit_ = nullptr;
     QPushButton* resolveBtn_ = nullptr;
+
+    // "스피커 통화" — REST(ApiClient::startCall/endCall)로 로봇에 신호를 보내고,
+    // 실제 오디오 바이트는 CallAudioClient가 별도 WebSocket으로 주고받는다.
+    QPushButton* speakerBtn_ = nullptr;
+    ApiClient* apiClient_ = nullptr;
+    CallAudioClient* callAudio_ = nullptr;
+    bool callActive_ = false;
 };
