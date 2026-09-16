@@ -227,6 +227,11 @@ def update_patrol_schedule(schedule_id: int, payload: PatrolScheduleUpdate):
         sets.append("deregistered_at = NULL" if enabled else "deregistered_at = NOW()")
     if not sets:
         raise HTTPException(status_code=400, detail="변경할 내용이 없습니다")
+    # scheduler.py::_tick()이 "마지막 수정 이후에 이미 돌았는지"로 오늘 재트리거 여부를
+    # 판정한다 — 이걸 안 갱신하면 run_time을 바꿔도 "오늘 이미 돌았다" 판정이 그대로 남아
+    # 새 시각에 다시 트리거되지 않는다(실사용 중 발견: 23분에 정상 실행된 뒤 26분으로
+    # 바꿔도 patrol_run이 전혀 안 생겼던 사고).
+    sets.append("updated_at = NOW()")
 
     params.append(schedule_id)
     with db.get_connection() as conn, conn.cursor() as cur:

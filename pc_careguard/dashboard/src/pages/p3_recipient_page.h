@@ -67,6 +67,35 @@ struct OperatorOption {
     QString name;
 };
 
+// 대상자 등록/상세 모달의 "담당 로봇" 콤보 후보 1대 — ApiClient::RobotInfo의 화면 모델
+// 버전(OperatorOption과 같은 이유). deregistered_at IS NULL인(등록 해제 안 된) 로봇 전부가
+// 대상이다 — 예전엔 이 목록 자체가 없어 R-01~R-04만 하드코딩돼 있었다("R-05 이상은 콤보에
+// 안 보인다" 리포트, 2026-09-15).
+struct RobotOption {
+    int id = 0;
+    QString code;
+    // 이 로봇을 이미 담당 중인 다른 대상자 이름. 미배정이면 빈 문자열 — P3RecipientPage가
+    // recipients_(로드된 카드 목록)를 훑어 채운다. 상세 모달에서는 "지금 수정 중인 그 대상자
+    // 자신의 로봇"은 재배정이 아니므로 빈 문자열로 둔다(요청: 이미 배정된 로봇/맵을 콤보에서
+    // 표시하고, 고르면 "기존 대상자 배정이 초기화된다"는 확인 모달을 띄워달라, 2026-09-15).
+    QString assignedRecipientName;
+};
+
+// 대상자 등록/상세 모달의 "담당 맵" 콤보 후보 1개 — ApiClient::MapInfo 중 화면에 필요한
+// 필드만 남긴 버전. GET /maps/active가 내려주는 "로봇에 배정된 활성 맵"만 대상이라, 로봇이
+// 정해지면 이 목록에서 robotCode가 같은 항목을 찾아 자동으로 맞춰줄 수 있다(반대 방향도
+// 마찬가지 — 로봇을 몰라도 맵 이름으로 먼저 고르면 robotCombo_가 따라간다, 2026-09-15 요청).
+// 실제로 서버에 저장되는 값은 robotCode뿐이라(RecipientCreateParams 참고), 이 맵 선택은
+// "그 로봇이 맞는지 눈으로 확인하는" 용도지 별도로 서버에 보내는 필드가 아니다.
+struct MapOption {
+    int id = 0;
+    QString robotCode;
+    QString name;
+    // ApiClient::MapInfo::recipientName 그대로 — RobotOption::assignedRecipientName과 같은
+    // 이유·같은 자기 자신 제외 규칙(2026-09-15).
+    QString assignedRecipientName;
+};
+
 // 와이어프레임 그대로의 mock 데이터. 실 연동 전까지 GUI 검증용으로만 사용한다.
 QVector<RecipientCard> mockRecipients();
 

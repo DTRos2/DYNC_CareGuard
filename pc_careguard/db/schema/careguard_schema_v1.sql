@@ -298,6 +298,10 @@ CREATE TABLE patrol_schedule (
     medication_schedule_id  INTEGER,
     created_by              INTEGER,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- 생성 시 created_at과 동일하게 시작, 수정할 때마다 NOW()로 갱신(update_patrol_schedule).
+    -- scheduler.py가 "마지막 수정 이후에 이미 돌았는지"를 판정하는 기준 — 없으면 run_time을
+    -- 바꿔도 "오늘 이미 돌았다" 판정이 안 풀려 새 시각에 다시 트리거되지 않는다.
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deregistered_at         TIMESTAMPTZ
 );
 

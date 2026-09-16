@@ -255,6 +255,9 @@ def create_recipient(payload: RecipientCreate):
             if robot is None:
                 raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
             robot_id = robot["id"]
+            # 로봇 한 대를 여러 대상자가 같이 담당할 수 있다(예: 한 집에 두 분) — robots.py의
+            # assign_robot_recipient(로봇 수정 모달의 "담당 대상자" 단일 선택 전용)와 달리 여기는
+            # 기존 담당자를 밀어내지 않는다("한 로봇=한 대상자" 불변식은 없음, 2026-09-15 정정).
 
         operator_id = _resolve_operator_id(cur, payload.operator_id)
         code = _next_code(cur)
@@ -331,6 +334,8 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
             if robot is None:
                 raise HTTPException(status_code=404, detail="로봇을 찾을 수 없습니다")
             robot_id = robot["id"]
+            # create_recipient와 같은 이유 — 로봇 한 대를 여러 대상자가 같이 담당할 수 있어
+            # 기존 담당자를 밀어내지 않는다(2026-09-15 정정).
 
         operator_id = _resolve_operator_id(cur, payload.operator_id)
 

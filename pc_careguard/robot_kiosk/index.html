@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>CareGuard 로봇 상태</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --green: #22c55e;
+    --green-dim: #16a34a;
+    --red: #ef4444;
+    --red-dim: #dc2626;
+    --bg: #0b1210;
+    --fg: #eef2f0;
+    --fg-dim: #9aa8a3;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, "Segoe UI", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+  }
+
+  #app {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 3vh 4vw;
+    padding-top: calc(3vh + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(3vh + env(safe-area-inset-bottom, 0px));
+    transition: background 0.4s ease;
+  }
+
+  /* 평소: 초록 계열 */
+  #app.normal { background: radial-gradient(ellipse at center, #10231a 0%, var(--bg) 70%); }
+  /* 배터리 부족: 빨간 계열 */
+  #app.warning { background: radial-gradient(ellipse at center, #2a1212 0%, var(--bg) 70%); }
+
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: clamp(16px, 3vw, 28px);
+    color: var(--fg-dim);
+    letter-spacing: 0.05em;
+  }
+
+  .topbar .robot-code {
+    font-weight: 700;
+    color: var(--fg);
+  }
+
+  .center {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2vh;
+  }
+
+  .battery {
+    font-size: clamp(60px, 22vw, 220px);
+    font-weight: 800;
+    line-height: 1;
+    color: var(--green);
+    transition: color 0.4s ease;
+    font-variant-numeric: tabular-nums;
+  }
+  #app.warning .battery { color: var(--red); }
+  #app.unknown .battery { color: var(--fg-dim); }
+
+  .badge {
+    padding: 1.6vh 4vw;
+    border-radius: 999px;
+    font-size: clamp(20px, 5vw, 48px);
+    font-weight: 700;
+    background: rgba(34, 197, 94, 0.18);
+    color: var(--green);
+    border: 2px solid var(--green-dim);
+    transition: all 0.4s ease;
+    text-align: center;
+  }
+  #app.warning .badge {
+    background: rgba(239, 68, 68, 0.18);
+    color: var(--red);
+    border-color: var(--red-dim);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  #app.unknown .badge {
+    background: rgba(255,255,255,0.06);
+    color: var(--fg-dim);
+    border-color: rgba(255,255,255,0.15);
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+  }
+
+  .bottombar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1.2vw;
+    font-size: clamp(16px, 3vw, 26px);
+    color: var(--fg-dim);
+  }
+
+  .dot {
+    width: clamp(12px, 2vw, 18px);
+    height: clamp(12px, 2vw, 18px);
+    border-radius: 50%;
+    background: var(--fg-dim);
+    flex-shrink: 0;
+  }
+  .dot.online { background: var(--green); }
+  .dot.offline { background: var(--red); }
+
+  .clock {
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<div id="app" class="unknown">
+  <div class="topbar">
+    <span class="robot-code" id="robotCode">-</span>
+    <span class="clock" id="clock">--:--</span>
+  </div>
+
+  <div class="center">
+    <div class="battery" id="battery">--%</div>
+    <div class="badge" id="badge">연결 확인 중</div>
+  </div>
+
+  <div class="bottombar">
+    <span class="dot" id="dot"></span>
+    <span id="onlineText">연결 확인 중</span>
+  </div>
+</div>
+
+<script>
+(function () {
+  // ---------------------------------------------------------------------
+  // 설정: 쿼리 파라미터로 덮어쓸 수 있다. 예)
+  // index.html?robot=R-01&robot_id=1&server=http://192.168.230.13:8000
+  // ---------------------------------------------------------------------
+  var params = new URLSearchParams(location.search);
+  var CONFIG = {
+    // 서버(uvicorn)가 떠 있는 PC 주소. dashboard/.env의 CAREGUARD_SERVER_URL과 같은 값.
+    serverBase: params.get('server') || 'http://192.168.230.13:8000',
+    // dashboard_ws가 broadcast하는 메시지의 robot_code와 매칭할 값 (예: R-01)
+    robotCode: params.get('robot') || 'R-01',
+    // GET /robots/{robot_id}/thresholds, GET /patrol-runs?robot_id= 에 쓸 숫자 DB id
+    robotId: params.get('robot_id') || '1'
+    // 2026-09-15: 세션 토큰(Bearer) 인증 방식은 채택 안 하기로 결정됨(role은 로그인
+    // 정보 기준으로 대시보드 화면만 다르게 구성) — 이 브랜치의 두 엔드포인트 모두
+    // core/auth.py 자체가 없어 인증이 전혀 필요 없다. 따라서 token 파라미터/헤더 없음.
+  };
+
+  var DEFAULT_ATTENTION_PCT = 30; // schemas.py RobotThresholds.battery_attention_pct 기본값과 동일
+  var RECONNECT_MS = 3000; // dashboard의 WsClient::kReconnectIntervalMs와 동일 간격
+
+  var state = {
+    online: null,        // robot_status 기반 (로봇 <-> 서버)
+    wsConnected: false,   // 이 키오스크 화면 <-> 서버
+    battery: null,        // battery_state 기반 정수 %
+    patrolRunning: false,
+    attentionPct: DEFAULT_ATTENTION_PCT
+  };
+
+  var appEl = document.getElementById('app');
+  var batteryEl = document.getElementById('battery');
+  var badgeEl = document.getElementById('badge');
+  var dotEl = document.getElementById('dot');
+  var onlineTextEl = document.getElementById('onlineText');
+  var clockEl = document.getElementById('clock');
+  var robotCodeEl = document.getElementById('robotCode');
+
+  robotCodeEl.textContent = CONFIG.robotCode;
+
+  // -------------------------- 렌더링 --------------------------
+  function render() {
+    var lowBattery = state.battery !== null && state.battery <= state.attentionPct;
+
+    appEl.className = state.battery === null ? 'unknown' : (lowBattery ? 'warning' : 'normal');
+
+    batteryEl.textContent = state.battery === null ? '--%' : (state.battery + '%');
+
+    if (lowBattery) {
+      badgeEl.textContent = '충전 필요 · 복귀 중';
+    } else if (state.battery === null) {
+      badgeEl.textContent = '연결 확인 중';
+    } else if (state.patrolRunning) {
+      badgeEl.textContent = '순찰 중';
+    } else {
+      badgeEl.textContent = '대기 중';
+    }
+
+    // 화면 자체가 서버와 끊기면(wsConnected=false) "online" 값을 더 이상 신뢰할 수
+    // 없으므로, 마지막으로 알던 online 값과 상관없이 무조건 "연결 끊김"으로 보여준다.
+    // (요구사항 5: 재연결 전까지 온라인 표시가 부정확하게 남아있으면 안 됨)
+    if (!state.wsConnected) {
+      dotEl.className = 'dot';
+      onlineTextEl.textContent = '서버 연결 끊김 · 재연결 중';
+    } else if (state.online === null) {
+      dotEl.className = 'dot';
+      onlineTextEl.textContent = '온라인 상태 확인 중';
+    } else if (state.online) {
+      dotEl.className = 'dot online';
+      onlineTextEl.textContent = '온라인';
+    } else {
+      dotEl.className = 'dot offline';
+      onlineTextEl.textContent = '오프라인';
+    }
+  }
+
+  function tickClock() {
+    var now = new Date();
+    var hh = String(now.getHours()).padStart(2, '0');
+    var mm = String(now.getMinutes()).padStart(2, '0');
+    clockEl.textContent = hh + ':' + mm;
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  // -------------------------- 초기 상태 REST 조회 --------------------------
+  // 기존 엔드포인트만 사용 (새 백엔드 없음):
+  //  - GET /robots/{robot_id}/thresholds  → battery_attention_pct
+  //  - GET /patrol-runs?robot_id=&status=running → 이미 순찰 중인지 (P6가 새로고침 시
+  //    쓰는 것과 동일한 rehydration 경로. WS엔 patrol_run 시작/종료를 알리는 hydration이
+  //    없어서, 화면을 새로 켰을 때 "지금 순찰 중"인지 이걸로만 알 수 있다.)
+  function loadThresholds() {
+    fetch(CONFIG.serverBase + '/robots/' + CONFIG.robotId + '/thresholds')
+      .then(function (res) { if (!res.ok) throw new Error(res.status); return res.json(); })
+      .then(function (data) {
+        if (typeof data.battery_attention_pct === 'number') {
+          state.attentionPct = data.battery_attention_pct;
+          render();
+        }
+      })
+      .catch(function () {
+        // 서버가 아직 안 떴을 수 있다 — 기본값(30%)으로 계속 동작하고, 5초 뒤
+        // 한 번만 더 시도한다(키오스크가 서버보다 먼저 켜지는 경우 대비).
+        setTimeout(loadThresholds, 5000);
+      });
+  }
+
+  function loadPatrolState() {
+    var url = CONFIG.serverBase + '/patrol-runs?robot_id=' + CONFIG.robotId + '&status=running';
+    fetch(url)
+      .then(function (res) { if (!res.ok) throw new Error(res.status); return res.json(); })
+      .then(function (rows) {
+        state.patrolRunning = Array.isArray(rows) && rows.length > 0;
+        render();
+      })
+      .catch(function () { /* 서버가 아직 안 떴으면 WS 이벤트만으로 따라간다 */ });
+  }
+
+  loadThresholds();
+  loadPatrolState();
+
+  // -------------------------- WebSocket --------------------------
+  function wsUrl() {
+    return CONFIG.serverBase.replace(/^http/, 'ws') + '/ws/dashboard';
+  }
+
+  var ws = null;
+
+  function connect() {
+    ws = new WebSocket(wsUrl());
+
+    ws.onopen = function () {
+      state.wsConnected = true;
+      render();
+    };
+
+    ws.onmessage = function (ev) {
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (!msg || msg.robot_code !== CONFIG.robotCode) {
+        return; // 다른 로봇 메시지는 무시 — 이 화면은 CONFIG.robotCode 한 대만 본다
+      }
+
+      switch (msg.type) {
+        case 'robot_status':
+          state.online = !!msg.online;
+          render();
+          break;
+
+        case 'battery_state':
+          if (typeof msg.percentage === 'number') {
+            state.battery = msg.percentage;
+            render();
+          }
+          break;
+
+        case 'patrol_progress':
+          // 순찰 중에만 오는 메시지 → 진행 중
+          state.patrolRunning = true;
+          render();
+          break;
+
+        case 'patrol_done':
+          // 순찰 종료(완료/중단/실패 모두 포함, patrol.py 참고)
+          state.patrolRunning = false;
+          render();
+          break;
+
+        case 'patrol_run_updated':
+          // 2026-09-15 확인: 이 이벤트는 취소(cancel_patrol_run) 때만이 아니라 순찰
+          // "시작" 시점(_start_patrol_run)과 SOS가 기존 순찰을 paused로 미룰 때도
+          // 똑같이 broadcast된다 — 방향(시작인지 정지인지)을 이 메시지만으로는 알 수
+          // 없다. 그래서 값을 추측하지 않고, 다른 대시보드 페이지들과 같은 패턴으로
+          // /patrol-runs를 다시 조회해 실제 상태를 가져온다(같은 REST 엔드포인트
+          // 재사용 — 새 엔드포인트 아님).
+          loadPatrolState();
+          break;
+      }
+    };
+
+    ws.onclose = function () {
+      state.wsConnected = false;
+      render();
+      setTimeout(connect, RECONNECT_MS);
+    };
+
+    ws.onerror = function () {
+      ws.close();
+    };
+  }
+
+  render();
+  connect();
+})();
+</script>
+</body>
+</html>

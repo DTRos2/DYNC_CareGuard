@@ -17,6 +17,12 @@ Environment=CAREGUARD_SERVER_URL=http://100.107.185.97:8000
 # 아직 구버전 "/" 이름으로 등록돼 있어 planner_server가 FATAL로 죽는 문제가 있었다
 # (config/nav2_burger_params.yaml 헤더 주석 참고) — 그 수정본을 가리키도록 지정한다.
 Environment=CAREGUARD_NAV2_PARAMS_FILE=/home/yeyu/careguard_turtlebot_agent_ws/install/careguard_turtlebot_agent/share/careguard_turtlebot_agent/config/nav2_burger_params.yaml
+# 2026-09-15: 음성 안내(_speak, Piper+paplay) 추가 후 systemd 서비스에서만 재생이
+# 안 됨 — R-07(LIMO)이 같은 날 겪은 것과 동일한 원인(docs/TroubleShooting/
+# 2026-09-15-r07-tts-onnxruntime-pulseaudio.md 2번 항목 참고): systemd 서비스가
+# 로그인 세션과 분리돼 있어 PulseAudio 세션 소켓 위치(XDG_RUNTIME_DIR)를 몰라
+# paplay가 "Connection refused"로 조용히 실패한다. yeyu의 UID(1000)로 고정.
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 ExecStartPre=/bin/sleep 1
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source ~/turtlebot3_ws/install/setup.bash && source ~/careguard_turtlebot_agent_ws/install/setup.bash && exec ros2 run careguard_turtlebot_agent downlink_node'
 Restart=on-failure
