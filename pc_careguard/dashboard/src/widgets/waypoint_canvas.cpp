@@ -40,7 +40,6 @@ WaypointCanvas::WaypointCanvas(QWidget* parent)
     : QFrame(parent),
       routeEditMode_(false),
       dragging_(false),
-      dragMoved_(false),
       dragIndex_(-1),
       addAiming_(false),
       zoomScale_(1.0),
@@ -94,8 +93,17 @@ void WaypointCanvas::setAddWaypointMode(bool on) {
     update();
 }
 
+void WaypointCanvas::setWaypointCaptureMode(const QString& waypointId) {
+    if (waypointCaptureId_ == waypointId) return;
+    waypointCaptureId_ = waypointId;
+    poseCaptureMode_ = !waypointId.isEmpty();
+    poseCapturing_ = false;
+    update();
+}
+
 void WaypointCanvas::setPoseCaptureMode(bool on) {
     poseCaptureMode_ = on;
+    waypointCaptureId_.clear();  // AMCL 보정과 웨이포인트 편집 캡처는 서로 배타적이다.
     if (!on) poseCapturing_ = false;
     update();
 }
@@ -349,10 +357,15 @@ void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
         if (event->button() == Qt::RightButton) {
             // 드래그 시작 전 우클릭 = 취소. 이미 드래그 중이면(눌러서 시작한 뒤
             // 오른쪽 버튼도 같이 누르는 것은 일반적이지 않으므로) 여기서 다루지 않는다.
-            poseCaptureMode_ = false;
-            poseCapturing_ = false;
-            update();
-            emit initialPoseCaptureCancelled();
+            // 웨이포인트 편집 캡처(waypointCaptureId_ 있음)는 편집 모드가 끝날 때까지
+            // 계속 무장돼 있어야 하는 반복 가능한 조작이라 — 단발성 AMCL 보정과 달리
+            // 우클릭으로 꺼버리지 않는다(그냥 이번 시도만 무시).
+            if (waypointCaptureId_.isEmpty()) {
+                poseCaptureMode_ = false;
+                poseCapturing_ = false;
+                update();
+                emit initialPoseCaptureCancelled();
+            }
             return;
         }
         if (event->button() != Qt::LeftButton) return;
@@ -389,13 +402,11 @@ void WaypointCanvas::mousePressEvent(QMouseEvent* event) {
     }
 
     if (idx >= 0) {
-        // 마커를 누른 경우 — 뗄 때까지 추적한다. 실제로 옮기는 동작은 mouseMoveEvent가
-        // 허용한다. dragStartPos_는 드래그 방향(headingDeg)을 "시작->끝"으로 계산하는
-        // 데 쓴다.
+        // 마커를 누른 경우 — 뗄 때까지 추적만 한다(위치는 안 바뀐다). 뗄 때 항상
+        // 편집 팝오버를 연다(mouseReleaseEvent). 위치/방향 편집은 그 팝오버가 여는
+        // setWaypointCaptureMode로만 한다.
         dragging_ = true;
-        dragMoved_ = false;
         dragIndex_ = idx;
-        dragStartPos_ = waypoints_[idx].pos;
         return;
     }
 
@@ -432,9 +443,10 @@ void WaypointCanvas::mouseMoveEvent(QMouseEvent* event) {
     }
 
     if (dragging_ && dragIndex_ >= 0) {
-        dragMoved_ = true;
-        waypoints_[dragIndex_].pos = toWorld(screenPt);
-        update();
+        // 마커 자체를 드래그해서 옮기는 기능은 없앴다(요청 사양: 위치/방향 편집은
+        // "초기 위치 설정"과 같은 클릭+드래그 방식(setWaypointCaptureMode)으로만) —
+        // 여기서는 아무 것도 하지 않고 release에서 항상 "클릭"(편집 팝오버 열기)으로
+        // 처리되게 둔다.
         return;
     }
 
@@ -451,16 +463,39 @@ void WaypointCanvas::mouseReleaseEvent(QMouseEvent* event) {
 
     if (poseCapturing_) {
         poseCapturing_ = false;
-        poseCaptureMode_ = false;  // 단발성 — 한 번 확정하면 모드에서 빠진다.
+        const QString capturedWaypointId = waypointCaptureId_;
+        if (capturedWaypointId.isEmpty()) {
+            poseCaptureMode_ = false;  // AMCL: 단발성 — 한 번 확정하면 모드에서 빠진다.
+        }
+        // 웨이포인트 편집 캡처는 poseCaptureMode_를 계속 켜둔다 — 편집 중엔 몇 번이든
+        // 다시 클릭+드래그할 수 있어야 한다(setWaypointCaptureMode 주석 참고).
         const QPointF delta = poseCaptureCurrent_ - poseCaptureAnchor_;
-        // 드래그 거리가 너무 짧으면(거의 클릭만) 방향을 신뢰할 수 없으니 0도로 둔다 —
-        // ApiClient::driveToPoint 등 다른 경로도 yaw 기본값을 0으로 두는 것과 동일한 규약.
-        const qreal headingDeg = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_)
-            ? 0.0
-            : std::atan2(delta.y(), delta.x()) * 180.0 / M_PI;
-        const QPointF anchor = poseCaptureAnchor_;
+        const bool tooShort = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_);
+        qreal headingDeg;
+        if (!tooShort) {
+            headingDeg = std::atan2(delta.y(), delta.x()) * 180.0 / M_PI;
+        } else if (capturedWaypointId.isEmpty()) {
+            // 드래그 거리가 너무 짧으면(거의 클릭만) 방향을 신뢰할 수 없으니 0도로
+            // 둔다 — ApiClient::driveToPoint 등 다른 경로도 yaw 기본값을 0으로 두는
+            // 것과 동일한 규약.
+            headingDeg = 0.0;
+        } else {
+            // 웨이포인트 편집은 예전 마커 드래그가 쓰던 규칙과 같게: 방향을 못 믿을
+            // 만큼 짧은 드래그(거의 클릭)면 그 웨이포인트의 기존 yaw를 그대로 둔다.
+            const Waypoint* wp = findWaypoint(capturedWaypointId);
+            headingDeg = wp ? wp->yawDeg : 0.0;
+        }
+        // 벽 위에 놓았으면 가장 가까운 자유 공간으로 스냅한다 — 예전 마커 드래그가
+        // 하던 것과 같다. AMCL 초기 위치 보정은 예전부터 이 스냅을 하지 않았으므로
+        // (로봇의 실제 현재 위치를 그대로 믿어야 하니) 그대로 유지한다.
+        const QPointF anchor =
+            capturedWaypointId.isEmpty() ? poseCaptureAnchor_ : nearestFreePoint(poseCaptureAnchor_);
         update();
-        emit initialPoseCaptureFinished(anchor, headingDeg);
+        if (capturedWaypointId.isEmpty()) {
+            emit initialPoseCaptureFinished(anchor, headingDeg);
+        } else {
+            emit waypointPoseCaptured(capturedWaypointId, anchor, headingDeg);
+        }
         return;
     }
 
@@ -479,28 +514,13 @@ void WaypointCanvas::mouseReleaseEvent(QMouseEvent* event) {
     }
 
     if (dragging_ && dragIndex_ >= 0) {
+        // 마커를 눌렀다 뗐다 — 움직였든 안 움직였든 항상 편집 팝오버를 연다(마커
+        // 자체를 드래그해서 옮기는 기능은 없앴다). 그 팝오버의 "경로 이동" 버튼이
+        // 실제 주행 요청을 담당한다(WaypointPopover::driveRequested).
         const QString id = waypoints_[dragIndex_].id;
-        if (dragMoved_) {
-            // 벽 위에 놓았으면 가장 가까운 자유 공간으로 스냅해서 확정한다.
-            const QPointF freePos = nearestFreePoint(waypoints_[dragIndex_].pos);
-            waypoints_[dragIndex_].pos = freePos;
-            // 드래그 방향(시작->끝)을 그대로 새 yaw로 쓴다 — "위치 보정"과 같은 발상
-            // (드래그 한 번으로 위치+방향을 같이 정한다). 너무 짧은 드래그(미세한
-            // 떨림 등)는 방향을 신뢰할 수 없으니 기존 yaw를 그대로 둔다.
-            const QPointF delta = freePos - dragStartPos_;
-            const qreal headingDeg = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_)
-                ? waypoints_[dragIndex_].yawDeg
-                : std::atan2(delta.y(), delta.x()) * 180.0 / M_PI;
-            waypoints_[dragIndex_].yawDeg = headingDeg;
-            emit waypointMoved(id, freePos, headingDeg);
-        } else {
-            // 드래그 없이 그냥 클릭 = 편집 팝오버. 그 팝오버의 "경로 이동" 버튼이
-            // 실제 주행 요청을 담당한다(WaypointPopover::driveRequested).
-            emit waypointEditRequested(id);
-        }
         dragging_ = false;
-        dragMoved_ = false;
         dragIndex_ = -1;
+        emit waypointEditRequested(id);
         return;
     }
 
@@ -716,6 +736,15 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         const qreal r = kMarkerRadius;
         p.drawEllipse(QPointF(0, 0), r, r);
 
+        // 지금 편집 팝오버가 "편집" 모드로 위치 캡처(setWaypointCaptureMode)를 열어둔
+        // 웨이포인트만 점선 원으로 표시한다 — 지도를 클릭+드래그하면 이 마커가
+        // 그 자리로 옮겨간다는 걸 한눈에 알 수 있게.
+        if (!waypointCaptureId_.isEmpty() && w.id == waypointCaptureId_) {
+            p.setPen(QPen(Tokens::ACCENT, 1.5, Qt::DashLine, Qt::RoundCap));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(QPointF(0, 0), r + 5, r + 5);
+        }
+
         // 방향(yaw) 표시 — 원 테두리 밖으로 짧은 화살표를 그려 이 웨이포인트가 어느
         // 방향을 보고 도착할지 한눈에 보이게 한다("동그라미만 봐서는 방향을 모르겠다"
         // 는 요청으로 추가). 충전 스테이션도 초기 위치의 방향을 나타내므로 똑같이 그린다.
@@ -802,6 +831,8 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
     // 위치 보정 중 드래그 미리보기 — 로봇 다이얼 마커와 구분되도록 경고색(다른
     // 팔레트)을 쓰고, 화살표가 곧 "지금 잡고 있는 방향"임을 분명히 보이도록 halo 없이
     // 두꺼운 화살표만 그린다. 웨이포인트 마커와 같은 이유로 화면상 크기를 고정한다.
+    // 웨이포인트 편집 캡처(waypointCaptureId_)는 ACCENT색(위 점선 원과 같은 색)을
+    // 써서 "AMCL 초기 위치"와 다른 조작임을 구분한다.
     if (poseCapturing_) {
         p.save();
         p.translate(poseCaptureAnchor_);
@@ -811,9 +842,10 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         const qreal headingRad = std::hypot(delta.x(), delta.y()) < (5.0 / zoomScale_)
             ? 0.0
             : std::atan2(delta.y(), delta.x());
+        const QColor previewColor = waypointCaptureId_.isEmpty() ? Tokens::ATTENTION.main : Tokens::ACCENT;
 
         p.setPen(Qt::NoPen);
-        p.setBrush(Tokens::ATTENTION.main);
+        p.setBrush(previewColor);
         p.drawEllipse(QPointF(0, 0), 8, 8);
 
         QPainterPath arrow;
@@ -823,7 +855,7 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         arrow.lineTo(QPointF(std::cos(headingRad + wingAngle) * 10, std::sin(headingRad + wingAngle) * 10));
         arrow.lineTo(QPointF(std::cos(headingRad - wingAngle) * 10, std::sin(headingRad - wingAngle) * 10));
         arrow.closeSubpath();
-        p.setPen(QPen(Tokens::ATTENTION.main, 3.0));
+        p.setPen(QPen(previewColor, 3.0));
         p.drawLine(QPointF(0, 0), tip);
         p.setPen(Qt::NoPen);
         p.drawPath(arrow);
@@ -869,10 +901,12 @@ void WaypointCanvas::paintEvent(QPaintEvent* event) {
         p.setPen(Tokens::TEXT_MUTED);
         p.drawText(QRectF(bounds.left() + 4, bounds.bottom() - 16, bounds.width() - 8, 16),
                    Qt::AlignLeft | Qt::AlignVCenter,
-                   poseCaptureMode_
+                   !waypointCaptureId_.isEmpty()
+                       ? QStringLiteral("클릭한 채 드래그해 웨이포인트 위치·방향을 다시 지정 · 놓으면 확정")
+                   : poseCaptureMode_
                        ? QStringLiteral("로봇의 실제 위치를 클릭한 채 드래그해 방향까지 지정 · 놓으면 확정 · 우클릭 취소")
                    : addWaypointMode_
-                       ? QStringLiteral("드래그로 추가(방향 지정) · 마커 드래그로 이동+재조준 · 클릭하여 편집 · 우클릭 삭제 · 휠 버튼 드래그로 화면 이동")
-                       : QStringLiteral("마커 드래그로 이동+재조준 · 클릭하여 편집(이동은 편집창의 \"경로 이동\") · 우클릭 삭제 · 드래그로 화면 이동 · 새 웨이포인트는 목록의 \"+ 추가\""));
+                       ? QStringLiteral("드래그로 추가(방향 지정) · 클릭하여 편집 · 우클릭 삭제 · 휠 버튼 드래그로 화면 이동")
+                       : QStringLiteral("클릭하여 편집(이동·재조준은 편집창의 \"편집\") · 우클릭 삭제 · 드래그로 화면 이동 · 새 웨이포인트는 목록의 \"+ 추가\""));
     }
 }

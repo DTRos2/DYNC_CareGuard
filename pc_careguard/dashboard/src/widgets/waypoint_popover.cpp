@@ -4,8 +4,10 @@
 
 #include <QGraphicsDropShadowEffect>
 #include <QHBoxLayout>
+#include <QHideEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStyle>
@@ -37,6 +39,10 @@ WaypointPopover::WaypointPopover(QWidget* parent) : QFrame(parent), kind_(QStrin
 
     titleLabel_ = new QLabel(QStringLiteral("새 웨이포인트"), this);
     titleLabel_->setStyleSheet(QStringLiteral("font-size:11px; font-weight:500; color:#16202B;"));
+    // 제목 라벨 자체는 QWidget이라 클릭을 그냥 삼켜버려(부모로 안 올라옴) 이 프레임의
+    // mousePressEvent가 안 불린다 — 이벤트 필터로 가로채 같은 드래그 로직을 태운다.
+    titleLabel_->setCursor(Qt::SizeAllCursor);
+    titleLabel_->installEventFilter(this);
     layout->addWidget(titleLabel_);
     layout->addSpacing(4);
 
@@ -97,7 +103,7 @@ WaypointPopover::WaypointPopover(QWidget* parent) : QFrame(parent), kind_(QStrin
     btnRow->setSpacing(6);
     saveBtn_ = new QPushButton(QStringLiteral("저장"), this);
     saveBtn_->setProperty("variant", "primary");
-    connect(saveBtn_, &QPushButton::clicked, this, &WaypointPopover::emitSave);
+    connect(saveBtn_, &QPushButton::clicked, this, &WaypointPopover::handleSaveEditClick);
     btnRow->addWidget(saveBtn_, /*stretch=*/1);
     cancelBtn_ = new QPushButton(QStringLiteral("취소"), this);
     cancelBtn_->setProperty("variant", "secondary");
@@ -158,10 +164,15 @@ void WaypointPopover::setForNewWaypoint(QPointF canvasPos, QPointF meters, qreal
     yawSpin_->setValue(deg);
     driveBtn_->hide();
     deleteBtn_->hide();
+    // 신규 웨이포인트는 볼 게 아직 없으니(저장 전) "보기" 모드 자체가 의미 없다 —
+    // 처음부터 편집 가능 상태로 연다. editModeToggled는 내지 않는다(캔버스에 아직
+    // 이 id의 마커가 없어 draggable 처리가 의미 없다).
+    editModeActive_ = true;
+    applyEditModeState();
     adjustSize();
 }
 
-void WaypointPopover::setForEditWaypoint(const WaypointCanvas::Waypoint& wp) {
+void WaypointPopover::setForEditWaypoint(const WaypointCanvas::Waypoint& wp, bool preserveEditMode) {
     editingId_ = wp.id;
     canvasPos_ = wp.pos;
     titleLabel_->setText(QStringLiteral("웨이포인트 편집  %1").arg(wp.id));
@@ -180,6 +191,11 @@ void WaypointPopover::setForEditWaypoint(const WaypointCanvas::Waypoint& wp) {
     // "경로 이동"으로 잠깐이라도 잘못된("주행 취소") 텍스트가 보이지 않게만 초기화한다.
     drivingThis_ = false;
     driveBtn_->setText(QStringLiteral("경로 이동"));
+    // preserveEditMode=false(마커를 새로 클릭해서 여는 경우)는 항상 "보기" 모드로
+    // 되돌린다 — 편집 중이던 다른 웨이포인트를 닫지 않고 이 함수를 호출하는 경로는
+    // 없으므로(호출부가 항상 팝오버를 새로 열 때만 false를 쓴다) 안전하다.
+    if (!preserveEditMode) editModeActive_ = false;
+    applyEditModeState();
     adjustSize();
 }
 
@@ -212,4 +228,102 @@ void WaypointPopover::emitSave() {
     }
     hide();
     emit saveRequested(editingId_, name, kind_, yawSpin_->value(), canvasPos_);
+}
+
+void WaypointPopover::handleSaveEditClick() {
+    // 신규 웨이포인트는 editModeActive_가 항상 true라 여기선 항상 emitSave() 경로다 —
+    // "보기->편집" 토글은 기존 웨이포인트를 다시 열었을 때(기본 false)만 실제로 일어난다.
+    if (!editModeActive_) {
+        enterEditMode();
+        return;
+    }
+    emitSave();
+}
+
+void WaypointPopover::enterEditMode() {
+    editModeActive_ = true;
+    applyEditModeState();
+    emit editModeToggled(true);
+}
+
+void WaypointPopover::applyEditModeState() {
+    const bool editing = editModeActive_;
+    nameEdit_->setEnabled(editing);
+    typePatrolBtn_->setEnabled(editing);
+    typeChargingBtn_->setEnabled(editing);
+    typeEmergencyBtn_->setEnabled(editing);
+    yawDial_->setEnabled(editing);
+    yawSpin_->setEnabled(editing);
+
+    // "편집"(secondary, 중립색)과 "저장"(primary, 강조색)을 다른 색으로 구분해 지금
+    // 편집 가능한 상태인지 한눈에 보이게 한다(요청 사양).
+    saveBtn_->setText(editing ? QStringLiteral("저장") : QStringLiteral("편집"));
+    saveBtn_->setProperty("variant", editing ? "primary" : "secondary");
+    style()->unpolish(saveBtn_);
+    style()->polish(saveBtn_);
+}
+
+void WaypointPopover::hideEvent(QHideEvent* event) {
+    QFrame::hideEvent(event);
+    // 신규 웨이포인트(editingId_가 비어 있음)는 editModeToggled(true)를 낸 적이 없으니
+    // false도 낼 필요가 없다 — enterEditMode()가 그때만 신호를 낸다는 것과 짝을 이룬다.
+    if (editModeActive_ && !editingId_.isEmpty()) {
+        editModeActive_ = false;
+        emit editModeToggled(false);
+    }
+}
+
+bool WaypointPopover::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == titleLabel_) {
+        switch (event->type()) {
+            case QEvent::MouseButtonPress:
+                mousePressEvent(static_cast<QMouseEvent*>(event));
+                return true;
+            case QEvent::MouseMove:
+                mouseMoveEvent(static_cast<QMouseEvent*>(event));
+                return true;
+            case QEvent::MouseButtonRelease:
+                mouseReleaseEvent(static_cast<QMouseEvent*>(event));
+                return true;
+            default:
+                break;
+        }
+    }
+    return QFrame::eventFilter(watched, event);
+}
+
+void WaypointPopover::mousePressEvent(QMouseEvent* event) {
+    if (event->button() != Qt::LeftButton) {
+        QFrame::mousePressEvent(event);
+        return;
+    }
+    dragging_ = true;
+    dragStartMouseGlobalPos_ = event->globalPosition().toPoint();
+    dragStartFramePos_ = pos();
+    event->accept();
+}
+
+void WaypointPopover::mouseMoveEvent(QMouseEvent* event) {
+    if (!dragging_ || !(event->buttons() & Qt::LeftButton)) {
+        QFrame::mouseMoveEvent(event);
+        return;
+    }
+    const QPoint delta = event->globalPosition().toPoint() - dragStartMouseGlobalPos_;
+    QPoint newPos = dragStartFramePos_ + delta;
+    // 부모(P6PatrolPage) 영역 밖으로 완전히 나가버리면 다시 찾을 수 없으니 안에 가둔다.
+    if (QWidget* p = parentWidget()) {
+        newPos.setX(qBound(0, newPos.x(), qMax(0, p->width() - width())));
+        newPos.setY(qBound(0, newPos.y(), qMax(0, p->height() - height())));
+    }
+    move(newPos);
+    event->accept();
+}
+
+void WaypointPopover::mouseReleaseEvent(QMouseEvent* event) {
+    if (!dragging_) {
+        QFrame::mouseReleaseEvent(event);
+        return;
+    }
+    dragging_ = false;
+    event->accept();
 }

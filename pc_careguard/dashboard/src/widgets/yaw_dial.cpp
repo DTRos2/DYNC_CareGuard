@@ -46,6 +46,10 @@ void YawDial::mouseMoveEvent(QMouseEvent* event) {
 void YawDial::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    // 팝오버 "보기" 모드에서 이 다이얼도 함께 비활성화되는데(setEnabled(false)),
+    // 직접 QPainter로 그리는 위젯이라 그것만으로는 다른 QPushButton/QLineEdit처럼
+    // 스타일시트가 자동으로 회색으로 바꿔주지 않는다 — 흐리게 그려 같은 신호를 준다.
+    if (!isEnabled()) p.setOpacity(0.4);
 
     const QPointF center(width() / 2.0, height() / 2.0);
     const qreal r = qMin(width(), height()) / 2.0 - 2.0;
