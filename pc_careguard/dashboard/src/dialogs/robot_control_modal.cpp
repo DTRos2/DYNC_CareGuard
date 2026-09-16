@@ -425,9 +425,14 @@ QWidget* RobotControlModal::buildFooter() {
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
 
-    auto* estopBtn = new QPushButton(QStringLiteral("비상정지"), footer);
-    estopBtn->setProperty("variant", "danger");
-    layout->addWidget(estopBtn);
+    // 로봇 개별 비상정지(모터 즉시 정지) API가 서버/에이전트 어디에도 없어(2026-09-16
+    // 확인), P1OverviewPage 행의 "정지" 버튼과 같은 방식으로 순찰/이동 취소
+    // (cancelPatrolRun → patrol_stop, Nav2 goal 취소)를 대신 호출한다. 순찰 취소
+    // 버튼과 달리 카운트다운·충전소 복귀로 이어지지 않고 여기서 끝난다.
+    estopBtn_ = new QPushButton(QStringLiteral("비상정지"), footer);
+    estopBtn_->setProperty("variant", "danger");
+    connect(estopBtn_, &QPushButton::clicked, this, &RobotControlModal::handleEmergencyStopClicked);
+    layout->addWidget(estopBtn_);
 
     // 2026-09-12 확정 — "충전 복귀" 버튼은 따로 없다. 순찰 취소를 누르면 5초 뒤
     // 자동으로 충전소 웨이포인트까지 이동 명령이 나가므로 그 기능을 흡수했다.
@@ -525,6 +530,21 @@ void RobotControlModal::handleWsMessage(const QJsonObject& message) {
     }
 }
 
+void RobotControlModal::handleEmergencyStopClicked() {
+    estopBtn_->setEnabled(false);
+    estopBtn_->setText(QStringLiteral("정지 중..."));
+
+    apiClient_->cancelPatrolRun(data_.robotCode, [this](bool ok, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("비상정지 실패"),
+                                  err.isEmpty() ? QStringLiteral("로봇 연결을 확인해주세요.") : err);
+            resetEstopButton();
+            return;
+        }
+        resetEstopButton();
+    });
+}
+
 void RobotControlModal::handleCancelPatrolClicked() {
     cancelPatrolBtn_->setEnabled(false);
     cancelPatrolBtn_->setText(QStringLiteral("취소 중..."));
@@ -586,4 +606,9 @@ void RobotControlModal::sendReturnToCharge() {
 void RobotControlModal::resetCancelButton() {
     cancelPatrolBtn_->setEnabled(true);
     cancelPatrolBtn_->setText(QStringLiteral("순찰 취소"));
+}
+
+void RobotControlModal::resetEstopButton() {
+    estopBtn_->setEnabled(true);
+    estopBtn_->setText(QStringLiteral("비상정지"));
 }
