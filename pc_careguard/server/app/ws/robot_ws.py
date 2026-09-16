@@ -1,7 +1,12 @@
 import asyncio
+import base64
+import json
 import math
 import time
+import uuid
+from datetime import datetime
 from typing import Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import psycopg2.extras
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -9,6 +14,9 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from . import dashboard_ws
 from ..core import db
 from ..api.v1 import media
+from ..api.v1.event import EVENT_TYPE_LABELS
+
+KST = ZoneInfo("Asia/Seoul")
 
 router = APIRouter()
 
@@ -397,6 +405,35 @@ async def _handle_message(robot_code: str, message: dict) -> None:
         if resume_run_id is not None:
             await _resume_patrol_run(resume_run_id)
 
+    elif msg_type == "intruder_detected":
+        # careguard_perception/patrol_intruder_watch_node.py가 순찰 중 이 로봇에
+        # 배정된 대상자 누구와도 얼굴이 일치하지 않는 트랙을 쿨다운 간격으로 신고하면
+        # 온다(그 노드 모듈 docstring 참고). ESP32 호출 버튼(mqtt_listener.py)과 달리
+        # 이 이벤트는 로봇 스스로의 판단이라 recipient_id를 못 채운다(아무도 매치 안
+        # 됐다는 뜻 그 자체이므로 NULL이 맞음).
+        event_payload = _handle_intruder_detected(robot_code, message)
+        if event_payload is not None:
+            await dashboard_ws.broadcast(event_payload)
+
+    elif msg_type == "person_recognized":
+        # careguard_perception/patrol_intruder_watch_node.py가 등록된 대상자로 확정한
+        # 순간 보낸다 — intruder_detected와 달리 알림이 아니라 인식 기록이라 care_event를
+        # 만들지 않고 캡처 사진만 files에 저장한다(있으면). recipient_id가 없거나
+        # image_base64가 없으면 저장할 것도 없어 조용히 무시한다.
+        _handle_person_recognized(robot_code, message)
+
+
+def _handle_person_recognized(robot_code: str, message: dict) -> None:
+    recipient_id = message.get("recipient_id")
+    image_b64 = message.get("image_base64")
+    if recipient_id is None or not image_b64:
+        return
+    try:
+        image_bytes = base64.b64decode(image_b64)
+        media.save_recognition_capture(robot_code, recipient_id, image_bytes)
+    except Exception:
+        pass
+
 
 def _save_slam_result(message: dict) -> Optional[int]:
     """slam_job을 saved로 표시하고 map 행을 새로 만든다.
@@ -484,6 +521,96 @@ def _save_slam_result(message: dict) -> Optional[int]:
         media.write_map_yaml_sidecar(file_id, message.get("raw_yaml", {}))
 
     return map_id
+
+
+def _handle_intruder_detected(robot_code: str, message: dict) -> Optional[dict]:
+    """care_event(INTRUDER) 생성 — scheduler.py의 MED_MISSED 자동 생성과 같은 패턴
+    (event_uid 생성 -> INSERT -> P2 이벤트 큐가 기대하는 모양으로 dashboard_ws에
+    브로드캐스트). ESP32 호출 버튼(mqtt_listener.py)과 달리 MQTT가 아니라 이 로봇이
+    이미 맺어둔 uplink WS 연결로 오므로 새 브로커 구독을 안 만들고 여기서 바로
+    처리한다.
+
+    로봇이 등록 해제됐거나(이론상 메시지가 오는 사이 등록 해제된 경우) 아직 DB에
+    없는 코드라면 None을 반환해 호출부가 브로드캐스트를 건너뛰게 한다.
+    """
+    now = datetime.now(KST)
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM robot WHERE code = %s AND deregistered_at IS NULL", (robot_code,))
+        robot = cur.fetchone()
+        if robot is None:
+            return None
+        robot_id = robot["id"]
+
+        # 이 로봇이 지금 돌고 있는 순찰 회차에 이벤트를 묶어둔다(있으면) — perception
+        # 노드는 run_id를 문자 그대로는 몰라도(patrol_intruder_watch_node.py가 받은
+        # run_id를 evidence에만 참고용으로 싣는다) DB 쪽 patrol_run_id 연결은 여기서
+        # 정확하게 다시 조회해서 채운다.
+        cur.execute(
+            "SELECT id FROM patrol_run WHERE robot_id = %s AND status = 'running' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (robot_id,),
+        )
+        run = cur.fetchone()
+        patrol_run_id = run["id"] if run else None
+
+        position = _latest_positions.get(robot_code)
+        pos_x = position["x"] if position else None
+        pos_y = position["y"] if position else None
+
+        event_uid = f"EV-{robot_code}-{now:%y%m%d}-{uuid.uuid4().hex[:8]}"
+        summary = "순찰 중 미등록 인물이 감지되었습니다"
+        evidence = {
+            "track_id": message.get("track_id"),
+            # 정지→접근→재판별(patrol_intruder_watch_node.py)로 가까이서 다시 찍어
+            # 확인한 결과인지, 원거리 1회 판정을 그대로 쓴 것인지 — 담당자가 신뢰도를
+            # 가늠하는 데 참고할 수 있게 남긴다.
+            "verified_at_close_range": message.get("verified_at_close_range"),
+            "nearest_dist": message.get("nearest_dist"),
+            "perception_run_id": message.get("run_id"),
+        }
+        cur.execute(
+            """
+            INSERT INTO care_event (event_uid, recipient_id, robot_id, patrol_run_id, trigger_path,
+                event_type, severity, summary, evidence, pos_x, pos_y, occurred_at)
+            VALUES (%s, NULL, %s, %s, 'B', 'INTRUDER', 'emergency', %s, %s, %s, %s, NOW())
+            RETURNING id, occurred_at
+            """,
+            (event_uid, robot_id, patrol_run_id, summary, json.dumps(evidence), pos_x, pos_y),
+        )
+        row = cur.fetchone()
+        event_id, occurred_at = row["id"], row["occurred_at"]
+
+        # patrol_intruder_watch_node.py가 확정 순간의 얼굴 캡처를 base64로 같이
+        # 실어 보낸다(files 테이블 코멘트에 명시된 "침입자 캡처" 용도). 캡처 저장이
+        # 실패해도(인코딩 오류, 디스크 문제 등) 이벤트 자체는 이미 커밋 대상이라
+        # 그대로 살려둔다 — 사진은 있으면 좋은 것이지 신고를 막을 이유는 아니다.
+        image_b64 = message.get("image_base64")
+        if image_b64:
+            try:
+                image_bytes = base64.b64decode(image_b64)
+                file_id = media.save_intruder_capture(robot_code, event_id, image_bytes)
+                evidence["capture_file_id"] = file_id
+                cur.execute(
+                    "UPDATE care_event SET evidence = %s WHERE id = %s",
+                    (json.dumps(evidence), event_id),
+                )
+            except Exception:
+                pass
+
+        conn.commit()
+
+    return {
+        "type": "event_created",
+        "event_uid": event_uid,
+        "severity": "emergency",
+        "event_type": "INTRUDER",
+        "event_type_label": EVENT_TYPE_LABELS["INTRUDER"],
+        "summary": summary,
+        "occurred_at": occurred_at.isoformat(),
+        "resolved": False,
+        "robot_code": robot_code,
+        "recipient_name": None,
+    }
 
 
 def _handle_battery_state(robot_code: str, percentage: float) -> Optional[int]:

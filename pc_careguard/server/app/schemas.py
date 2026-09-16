@@ -302,6 +302,16 @@ class DriveToPointResponse(BaseModel):
     robot_connected: bool
 
 
+class CallRequest(BaseModel):
+    # 로봇 상세 모달 "통화 시작/종료" — 오디오 바이트 자체는 audio_relay.py의 별도
+    # WebSocket으로 흐르고, 이 요청은 로봇에 call_start/call_end를 알리는 신호일 뿐이다.
+    robot_code: str
+
+
+class CallResponse(BaseModel):
+    robot_connected: bool
+
+
 class CancelPatrolRunRequest(BaseModel):
     # P6 웨이포인트 팝오버 "주행 취소" — patrol_run.id를 모른 채로도(P6 "이동"은
     # run_id=0이라 애초에 patrol_run 행이 없다) "이 로봇이 지금 하고 있는 걸 멈춰라"를
@@ -424,7 +434,7 @@ class RobotThresholds(BaseModel):
     battery_return_pct: int = Field(default=28, ge=0, le=100)
     voice_wait_sec: int = Field(default=8, ge=1, le=120)
     reconnect_retry_sec: int = Field(default=30, ge=1, le=600)
-    med_missed_wait_min: int = Field(default=10, ge=1, le=1440)
+    med_missed_wait_sec: int = Field(default=600, ge=1, le=86400)
     med_reannounce_count: int = Field(default=2, ge=0, le=20)
 
 

@@ -169,6 +169,19 @@ class UplinkNode(Node):
         self.create_subscription(Path, '/plan', self._on_global_plan, 10)
         self.create_subscription(String, '/careguard/patrol_status', self._on_status_topic, 10)
         self.create_subscription(String, '/careguard/slam_status', self._on_status_topic, 10)
+        # careguard_perception/patrol_intruder_watch_node.py가 순찰 중 미등록 인물을
+        # 감지하면 발행한다(같은 문자열을 careguard_perception/config.py::
+        # INTRUDER_STATUS_TOPIC에도 하드코딩 — PATROL_RECORDING_TOPIC과 같은 기존
+        # 방식). 이미 {"type": "intruder_detected", ...} 형태로 만들어 보내므로
+        # _on_status_topic이 그대로 relay하면 서버 robot_ws.py가 care_event를 만든다.
+        self.create_subscription(String, '/careguard/perception/intruder_status', self._on_status_topic, 10)
+        # patrol_intruder_watch_node.py가 대상자로 확정한 순간 발행(같은 문자열을
+        # careguard_perception/config.py::PERSON_RECOGNIZED_TOPIC에도 하드코딩) —
+        # {"type": "person_recognized", ...}라 intruder_status와 같은 방식으로 그대로
+        # relay하면 서버 robot_ws.py가 files에 인식 캡처를 저장한다(care_event는 안
+        # 만듦 — 알림이 아니라 인식 기록). 서보모터 트리거 자체(PERSON_DETECTED_TOPIC,
+        # std_msgs/Bool)는 로봇 로컬(careguard_hw)에서만 쓰여 여기서 구독하지 않는다.
+        self.create_subscription(String, '/careguard/perception/person_recognized', self._on_status_topic, 10)
         # orbbec_camera가 발행하는 압축(JPEG) 이미지 — 재인코딩 없이 그대로 relay하면
         # 되므로 cv_bridge/OpenCV 의존성이 필요 없다. 카메라 드라이버도 센서 QoS로
         # 퍼블리시하는 경우가 많아(ydlidar /scan과 같은 이유) sensor QoS로 구독한다.

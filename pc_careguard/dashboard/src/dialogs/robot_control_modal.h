@@ -66,11 +66,13 @@ private:
 
     void loadChargeWaypoint();
     void handleWsMessage(const QJsonObject& message);
+    void handleEmergencyStopClicked();
     void handleCancelPatrolClicked();
     void beginReturnToChargeCountdown();
     void tickCountdown();
     void sendReturnToCharge();
     void resetCancelButton();
+    void resetEstopButton();
 
     Data data_;
     ApiClient* apiClient_;
@@ -78,6 +80,7 @@ private:
 
     MiniMapView* mapView_ = nullptr;
     QLabel* positionLabel_ = nullptr;
+    QPushButton* estopBtn_ = nullptr;
     QPushButton* cancelPatrolBtn_ = nullptr;
 
     int mapId_ = 0;

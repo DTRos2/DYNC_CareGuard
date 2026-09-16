@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 
 from .core import db
 from .core.accounts import router as accounts_router
+from .api.v1 import call as call_api
 from .api.v1 import event as event_api
 from .api.v1 import map as map_api
 from .api.v1 import mission as mission_api
@@ -19,10 +20,12 @@ from .api.v1.robots import router as robots_router
 from .schemas import LoginRequest, LoginResponse
 from .services.mqtt_listener import start_mqtt_listener
 from .services.scheduler import run_scheduler_loop
-from .ws import dashboard_ws, robot_ws
+from .ws import audio_relay, dashboard_ws, robot_ws
 
 app = FastAPI(title="CareGuard Server")
 app.include_router(media_router)
+app.include_router(call_api.router)
+app.include_router(audio_relay.router)
 app.include_router(video_events_router)
 app.include_router(accounts_router)
 app.include_router(map_api.router)

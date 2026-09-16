@@ -25,7 +25,7 @@ import yaml
 from geometry_msgs.msg import Twist
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from careguard_msgs.action import Patrol
 from careguard_msgs.msg import Waypoint as WaypointMsg
@@ -63,6 +63,12 @@ PATROL_RECORDING_TOPIC = '/careguard/perception/patrol_recording'
 # 기다리는 최대 시간.
 VOICE_ANNOUNCER_READY_TIMEOUT_SEC = 10.0
 
+# patrol_intruder_watch_node(careguard_perception)가 떠서 patrol_recording 토픽
+# 구독을 advertise할 때까지 기다리는 최대 시간. video_recorder/audio_player보다
+# 훨씬 길게 잡는다 — YOLO 얼굴검출 x2(완화③ 사람 전신 게이트 포함) + FaceNet +
+# adapter를 순서대로 로딩하는 무거운 노드라 몇 초 안에는 안 뜬다.
+PATROL_INTRUDER_WATCH_READY_TIMEOUT_SEC = 30.0
+
 # careguard_hmi/config.py의 VOICE_TOPIC과 같은 문자열 — PATROL_RECORDING_TOPIC과
 # 같은 이유·같은 방식으로 audio_player가 이 토픽을 구독하기 시작했는지
 # 확인하는 용도로만 쓴다(이 노드가 직접 publish하지는 않음, patrol_task.py가 한다).
@@ -74,6 +80,12 @@ VOICE_TOPIC = '/careguard/voice/announce'
 # patrol_start(_start_patrol 참고)를 받으면, video_recorder.py가 이벤트 클립
 # 녹화를 켜도록 이 토픽으로 신호를 보낸다.
 RECORD_TRIGGER_TOPIC = '/careguard/perception/record_trigger'
+
+# careguard_hmi/config.py의 CALL_STATE_TOPIC과 같은 문자열(같은 관례) — 서버가
+# call_start/call_end를 보내면 이 노드가 대신 True/False로 바꿔 발행하고,
+# audio_capture_node.py/audio_downlink_player.py(캡처·재생 시작/종료)와
+# audio_player.py(통화 중 TTS 안내 스킵)가 구독한다.
+CALL_STATE_TOPIC = '/careguard/call/state'
 
 
 class DownlinkNode(Node):
@@ -110,6 +122,18 @@ class DownlinkNode(Node):
         # audio_player(careguard_hmi)도 video_recorder와 같은 이유로 map_id에
         # 안 묶인다 — 한 번 뜨면 계속 재사용한다.
         self._voice_announcer_process = None
+        # 통화 기능(audio_capture_node.py/audio_downlink_player.py)도 같은 이유로
+        # map_id에 안 묶이고 한 번 뜨면 계속 재사용한다. 실제 마이크 캡처/스피커
+        # 재생은 CALL_STATE_TOPIC이 True일 때만 시작되므로, 통화 중이 아닐 땐
+        # 그냥 토픽 구독만 하고 대기한다.
+        self._audio_capture_process = None
+        self._audio_downlink_player_process = None
+        # patrol_intruder_watch_node(careguard_perception)는 video_recorder/audio_player와
+        # 달리 이 노드 기동 즉시(__init__) 띄우지 않는다 — YOLO x2/FaceNet/adapter를
+        # 메모리에 올리는 무거운 노드라, P6 페이지를 열어보기만 하거나(_prepare_navigation)
+        # SLAM만 하는 상황에서도 매번 로딩되면 불필요한 자원 낭비다. 실제 순찰이 시작될
+        # 때(_start_patrol)만 띄운다 — _ensure_patrol_intruder_watch_running 참고.
+        self._patrol_intruder_watch_process = None
         self._ws = None
         # P5 방향키 패널 -> 실제 구동. limo_base(/limo/limo_base)가 이미 /cmd_vel을
         # 구독하고 있다(실 로봇에서 topic info로 확인됨) — 네임스페이스 없이 그대로 쓴다.
@@ -117,6 +141,7 @@ class DownlinkNode(Node):
         # SOS 호출 버튼 등 care_event_id가 실린 patrol_start를 받았을 때
         # video_recorder.py에 이벤트 클립 녹화를 켜라고 알리는 용도(_start_patrol 참고).
         self._record_trigger_pub = self.create_publisher(String, RECORD_TRIGGER_TOPIC, 10)
+        self._call_state_pub = self.create_publisher(Bool, CALL_STATE_TOPIC, 10)
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
@@ -132,6 +157,8 @@ class DownlinkNode(Node):
         # 서버 웹소켓 연결(위 _thread)은 별도 스레드라 이 대기와 무관하게 계속 진행된다.
         self._ensure_video_recorder_running()
         self._ensure_voice_announcer_running()
+        self._ensure_audio_capture_running()
+        self._ensure_audio_downlink_player_running()
 
     def _run_ws_loop(self):
         asyncio.set_event_loop(self._loop)
@@ -202,6 +229,10 @@ class DownlinkNode(Node):
             self._set_initial_pose(message)
         elif msg_type == 'shutdown_all':
             self._shutdown_everything(message)
+        elif msg_type == 'call_start':
+            self._call_state_pub.publish(Bool(data=True))
+        elif msg_type == 'call_end':
+            self._call_state_pub.publish(Bool(data=False))
 
     def _handle_cmd_vel(self, message: dict):
         twist = Twist()
@@ -304,6 +335,10 @@ class DownlinkNode(Node):
         self._ensure_video_recorder_running()
         # 같은 이유로 audio_player도 patrol_task보다 먼저 떠 있어야 한다.
         self._ensure_voice_announcer_running()
+        # patrol_intruder_watch_node도 같은 이유로 patrol_task보다 먼저 떠서
+        # patrol_recording 구독을 시작해둬야 순찰 시작 신호를 놓치지 않는다 — 실제
+        # 순찰이 시작될 때만 띄운다(_ensure_patrol_intruder_watch_running 문서 참고).
+        self._ensure_patrol_intruder_watch_running()
 
         # patrol_task도 Nav2처럼 map_id 기준으로 (재)기동을 보장한다 — 아래 이유 참고.
         if map_id > 0:
@@ -603,6 +638,17 @@ class DownlinkNode(Node):
         if self._voice_announcer_process is not None and self._voice_announcer_process.poll() is None:
             self._terminate_process_group(self._voice_announcer_process, 'audio_player')
             self._voice_announcer_process = None
+        if self._audio_capture_process is not None and self._audio_capture_process.poll() is None:
+            self._terminate_process_group(self._audio_capture_process, 'audio_capture_node')
+            self._audio_capture_process = None
+        if (self._audio_downlink_player_process is not None
+                and self._audio_downlink_player_process.poll() is None):
+            self._terminate_process_group(self._audio_downlink_player_process, 'audio_downlink_player')
+            self._audio_downlink_player_process = None
+        if (self._patrol_intruder_watch_process is not None
+                and self._patrol_intruder_watch_process.poll() is None):
+            self._terminate_process_group(self._patrol_intruder_watch_process, 'patrol_intruder_watch_node')
+            self._patrol_intruder_watch_process = None
 
         self._kill_external_process_group('careguard_bringup teleop_launch.py', '베이스 구동')
         self._kill_external_process_group('careguard_agent uplink_node', '업링크')
@@ -836,6 +882,81 @@ class DownlinkNode(Node):
         self.get_logger().warn(
             f'{VOICE_ANNOUNCER_READY_TIMEOUT_SEC:.0f}초 안에 audio_player가 안내 토픽을 '
             '구독하지 않았습니다 — 순찰은 계속 진행하지만 음성 안내가 안 나올 수 있습니다')
+        return False
+
+    def _ensure_audio_capture_running(self) -> bool:
+        """audio_capture_node(careguard_hmi, 통화용 마이크 캡처)가 이미 떠있는지
+        확인하고, 아니면 새로 띄운다. _ensure_voice_announcer_running과 같은
+        패턴이지만, 여러 노드가 같은 CALL_STATE_TOPIC을 구독해 count_subscribers로는
+        "이 노드가 구독했는지"를 구분할 수 없다 — 실제 캡처는 사람이 한참 뒤에
+        "통화 시작"을 눌러야 시작되니, video_recorder처럼 즉시 publish되는 메시지와
+        경쟁할 일이 없어 프로세스만 띄우고 바로 반환해도 안전하다.
+        """
+        if self._audio_capture_process is not None and self._audio_capture_process.poll() is None:
+            return True  # 이미 떠있다 — 재사용
+
+        self._kill_external_process_group('careguard_hmi audio_capture_node', '(정리) 이전 audio_capture_node')
+        self._audio_capture_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_hmi', 'audio_capture_node'], start_new_session=True)
+        return True
+
+    def _ensure_audio_downlink_player_running(self) -> bool:
+        """audio_downlink_player(careguard_hmi, 통화용 스피커 재생)가 이미 떠있는지
+        확인하고, 아니면 새로 띄운다. _ensure_audio_capture_running과 같은 이유로
+        구독 확인 없이 프로세스만 띄운다."""
+        if (self._audio_downlink_player_process is not None
+                and self._audio_downlink_player_process.poll() is None):
+            return True  # 이미 떠있다 — 재사용
+
+        self._kill_external_process_group(
+            'careguard_hmi audio_downlink_player', '(정리) 이전 audio_downlink_player')
+        self._audio_downlink_player_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_hmi', 'audio_downlink_player'], start_new_session=True)
+        return True
+
+    def _ensure_patrol_intruder_watch_running(self) -> bool:
+        """patrol_intruder_watch_node(careguard_perception)가 이미 떠있는지 확인하고,
+        아니면 새로 띄운다. _ensure_video_recorder_running과 같은 패턴이지만 map_id에는
+        안 묶인다(video_recorder와 같은 이유 — 카메라 프레임 처리에 특정 맵 지식이
+        필요 없다).
+
+        이게 없으면 patrol_task가 순찰 시작 신호를 patrol_recording 토픽으로 잘 보내도
+        구독하는 인식 노드가 없어 대상자/침입자 판별이 아예 안 됐다 — video_recorder를
+        이 노드가 대신 띄우는 것과 같은 이유·같은 패턴이다.
+
+        video_recorder/audio_player와 달리 __init__ 시점(상시 대기)이 아니라 여기
+        (_start_patrol, 실제 순찰 시작 직전)에서만 부른다 — 클래스 docstring의
+        _patrol_intruder_watch_process 주석 참고.
+
+        준비 확인은 video_recorder와 같은 PATROL_RECORDING_TOPIC 구독 여부로 하되,
+        video_recorder도 같은 토픽을 구독하므로 절대 개수(>0)가 아니라 "이 함수
+        호출 직전 대비 늘었는지"(기준선 대비 증가)로 판단한다 — 안 그러면 이미
+        떠있는 video_recorder의 구독만 보고 patrol_intruder_watch_node가 뜨기도
+        전에 "준비됨"으로 잘못 판단할 수 있다.
+
+        실패해도(GPU 메모리 부족 등으로 모델 로딩이 오래 걸리거나 실패할 수 있다)
+        순찰 자체를 막지는 않는다.
+        """
+        if (self._patrol_intruder_watch_process is not None
+                and self._patrol_intruder_watch_process.poll() is None):
+            return True  # 이미 떠있다 — 재사용
+
+        self._kill_external_process_group(
+            'careguard_perception patrol_intruder_watch_node', '(정리) 이전 patrol_intruder_watch_node')
+
+        baseline = self.count_subscribers(PATROL_RECORDING_TOPIC)
+        self._patrol_intruder_watch_process = subprocess.Popen(
+            ['ros2', 'run', 'careguard_perception', 'patrol_intruder_watch_node'], start_new_session=True)
+
+        deadline = time.monotonic() + PATROL_INTRUDER_WATCH_READY_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            if self.count_subscribers(PATROL_RECORDING_TOPIC) > baseline:
+                return True
+            time.sleep(0.3)
+        self.get_logger().warn(
+            f'{PATROL_INTRUDER_WATCH_READY_TIMEOUT_SEC:.0f}초 안에 patrol_intruder_watch_node가 '
+            'patrol_recording 토픽을 구독하지 않았습니다 — 순찰은 계속 진행하지만 대상자/침입자 '
+            '판별이 안 될 수 있습니다')
         return False
 
     def _download_map(self, map_id: int) -> Tuple[str, bool]:
