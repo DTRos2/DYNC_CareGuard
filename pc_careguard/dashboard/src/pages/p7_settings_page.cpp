@@ -161,7 +161,7 @@ void P7SettingsPage::setCurrentUserRole(const QString& role) {
     // 남은 임계값·알림 탭은 operator에게 조회 전용 — 입력·수정이 아예 안 되게 막고,
     // 입력칸처럼 보이지 않게 테두리도 없애 그냥 텍스트로 보이게 한다(요청 사양).
     for (QLineEdit* edit : {batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
-                             reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_}) {
+                             medMissedWaitEdit_, medReannounceEdit_}) {
         if (edit == nullptr) continue;
         edit->setReadOnly(operatorRole);
         edit->setFocusPolicy(operatorRole ? Qt::NoFocus : Qt::StrongFocus);
@@ -259,59 +259,6 @@ QWidget* P7SettingsPage::buildRobotTab() {
     }
     layout->addWidget(robotTable_, /*stretch=*/1);
 
-    auto* bottomRow = new QWidget(tab);
-    auto* bottomLayout = new QHBoxLayout(bottomRow);
-    bottomLayout->setContentsMargins(0, 0, 0, 0);
-    bottomLayout->setSpacing(Tokens::Layout::CARD_GAP);
-
-    // 통신 단절 관리
-    auto* discCard = card(bottomRow);
-    auto* discLayout = new QVBoxLayout(discCard);
-    discLayout->setContentsMargins(Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING,
-                                    Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
-    discLayout->setSpacing(8);
-
-    auto* discTitle = new QLabel(QStringLiteral("통신 단절 관리"), discCard);
-    discTitle->setProperty("role", "label");
-    discLayout->addWidget(discTitle);
-
-    auto* banner = new QFrame(discCard);
-    banner->setObjectName("banner");
-    banner->setProperty("level", Tokens::Prop::ATTENTION);
-    auto* bannerLayout = new QHBoxLayout(banner);
-    bannerLayout->setContentsMargins(9, 7, 9, 7);
-    bannerLayout->setSpacing(8);
-
-    auto* bannerIcon = new QLabel(banner);
-    bannerIcon->setPixmap(SimpleIcons::plugOff(Tokens::ATTENTION.main, 14).pixmap(14, 14));
-    bannerLayout->addWidget(bannerIcon);
-
-    auto* bannerTextCol = new QWidget(banner);
-    auto* bannerTextLayout = new QVBoxLayout(bannerTextCol);
-    bannerTextLayout->setContentsMargins(0, 0, 0, 0);
-    bannerTextLayout->setSpacing(2);
-    auto* bannerLine1 = new QLabel(QStringLiteral("R-04 · 마지막 동기화 13:58"), bannerTextCol);
-    QFont line1Font = bannerLine1->font();
-    line1Font.setWeight(QFont::DemiBold);
-    bannerLine1->setFont(line1Font);
-    bannerTextLayout->addWidget(bannerLine1);
-    auto* bannerLine2 = new QLabel(QStringLiteral("로컬 큐 이벤트 7건 대기 · 30초 주기 재시도 중"), bannerTextCol);
-    bannerLine2->setProperty("role", "secondary");
-    bannerTextLayout->addWidget(bannerLine2);
-    bannerLayout->addWidget(bannerTextCol, /*stretch=*/1);
-
-    discLayout->addWidget(banner);
-
-    auto* syncBtn = new QPushButton(SimpleIcons::refresh(Tokens::TEXT_PRIMARY, 12),
-                                     QStringLiteral("재연결 후 일괄 동기화"), discCard);
-    syncBtn->setProperty("variant", "secondary");
-    syncBtn->setIconSize(QSize(12, 12));
-    discLayout->addWidget(syncBtn);
-    discLayout->addStretch();
-
-    bottomLayout->addWidget(discCard, /*stretch=*/1);
-
-    layout->addWidget(bottomRow, /*stretch=*/1);
     return tab;
 }
 
@@ -421,9 +368,6 @@ QWidget* P7SettingsPage::buildThresholdTab() {
     voiceWaitEdit_ = thresholdField("8");
     robotLayout->addWidget(
         thresholdRow(QStringLiteral("음성 응답 대기"), voiceWaitEdit_, QStringLiteral("초")));
-    reconnectRetryEdit_ = thresholdField("30");
-    robotLayout->addWidget(
-        thresholdRow(QStringLiteral("재연결 재시도 주기"), reconnectRetryEdit_, QStringLiteral("초")));
     cardsLayout->addWidget(robotCard, 1);
 
     // 복약 공통
@@ -433,9 +377,9 @@ QWidget* P7SettingsPage::buildThresholdTab() {
                                    Tokens::Layout::CARD_PADDING, Tokens::Layout::CARD_PADDING);
     medLayout->setSpacing(8);
     medLayout->addWidget(sectionLabel(QStringLiteral("복약 공통")));
-    medMissedWaitEdit_ = thresholdField("10");
+    medMissedWaitEdit_ = thresholdField("600");
     medLayout->addWidget(
-        thresholdRow(QStringLiteral("미수령 판정 시간"), medMissedWaitEdit_, QStringLiteral("분")));
+        thresholdRow(QStringLiteral("미수령 판정 시간"), medMissedWaitEdit_, QStringLiteral("초")));
     medReannounceEdit_ = thresholdField("2");
     medLayout->addWidget(
         thresholdRow(QStringLiteral("재안내 횟수"), medReannounceEdit_, QStringLiteral("회")));
@@ -1254,8 +1198,7 @@ void P7SettingsPage::fetchRobotThresholds(int robotDbId) {
             batteryAttentionEdit_->setText(QString::number(body.value("battery_attention_pct").toInt(30)));
             batteryReturnEdit_->setText(QString::number(body.value("battery_return_pct").toInt(28)));
             voiceWaitEdit_->setText(QString::number(body.value("voice_wait_sec").toInt(8)));
-            reconnectRetryEdit_->setText(QString::number(body.value("reconnect_retry_sec").toInt(30)));
-            medMissedWaitEdit_->setText(QString::number(body.value("med_missed_wait_min").toInt(10)));
+            medMissedWaitEdit_->setText(QString::number(body.value("med_missed_wait_sec").toInt(600)));
             medReannounceEdit_->setText(QString::number(body.value("med_reannounce_count").toInt(2)));
         }
         reply->deleteLater();
@@ -1264,13 +1207,12 @@ void P7SettingsPage::fetchRobotThresholds(int robotDbId) {
 
 namespace {
 QJsonObject collectThresholdBody(QLineEdit* batteryAttention, QLineEdit* batteryReturn, QLineEdit* voiceWait,
-                                  QLineEdit* reconnectRetry, QLineEdit* medMissedWait, QLineEdit* medReannounce) {
+                                  QLineEdit* medMissedWait, QLineEdit* medReannounce) {
     return QJsonObject{
         {"battery_attention_pct", batteryAttention->text().trimmed().toInt()},
         {"battery_return_pct", batteryReturn->text().trimmed().toInt()},
         {"voice_wait_sec", voiceWait->text().trimmed().toInt()},
-        {"reconnect_retry_sec", reconnectRetry->text().trimmed().toInt()},
-        {"med_missed_wait_min", medMissedWait->text().trimmed().toInt()},
+        {"med_missed_wait_sec", medMissedWait->text().trimmed().toInt()},
         {"med_reannounce_count", medReannounce->text().trimmed().toInt()},
     };
 }
@@ -1280,7 +1222,7 @@ void P7SettingsPage::saveThresholdsForCurrentRobot() {
     if (thresholdRobotCombo_->count() == 0) return;
     const int robotDbId = thresholdRobotCombo_->currentData().toInt();
     const QJsonObject body = collectThresholdBody(batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
-                                                   reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_);
+                                                   medMissedWaitEdit_, medReannounceEdit_);
     QNetworkRequest request(QUrl(QStringLiteral("%1/robots/%2/thresholds").arg(serverUrl_).arg(robotDbId)));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());
@@ -1295,7 +1237,7 @@ void P7SettingsPage::saveThresholdsForCurrentRobot() {
 
 void P7SettingsPage::applyThresholdsToAllRobots() {
     const QJsonObject body = collectThresholdBody(batteryAttentionEdit_, batteryReturnEdit_, voiceWaitEdit_,
-                                                   reconnectRetryEdit_, medMissedWaitEdit_, medReannounceEdit_);
+                                                   medMissedWaitEdit_, medReannounceEdit_);
     QNetworkRequest request(QUrl(serverUrl_ + QStringLiteral("/robots/thresholds/apply-all")));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkReply* reply = netManager_->put(request, QJsonDocument(body).toJson());

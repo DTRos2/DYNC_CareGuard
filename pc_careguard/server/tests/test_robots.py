@@ -228,7 +228,7 @@ def test_get_robot_thresholds_returns_defaults_when_never_saved(client, cleanup_
         "battery_return_pct": 28,
         "voice_wait_sec": 8,
         "reconnect_retry_sec": 30,
-        "med_missed_wait_min": 10,
+        "med_missed_wait_sec": 600,
         "med_reannounce_count": 2,
     }
 
@@ -244,7 +244,7 @@ def test_set_robot_thresholds_persists_and_is_returned(client, cleanup_robot):
             "battery_return_pct": 25,
             "voice_wait_sec": 12,
             "reconnect_retry_sec": 15,
-            "med_missed_wait_min": 20,
+            "med_missed_wait_sec": 20,
             "med_reannounce_count": 3,
         }
         put_response = client.put(f"/robots/{robot_id}/thresholds", json=custom)
@@ -269,7 +269,7 @@ def test_apply_thresholds_to_all_robots_upserts_every_registered_robot(client, c
             "battery_return_pct": 15,
             "voice_wait_sec": 10,
             "reconnect_retry_sec": 20,
-            "med_missed_wait_min": 5,
+            "med_missed_wait_sec": 5,
             "med_reannounce_count": 1,
         }
         response = client.put("/robots/thresholds/apply-all", json=custom)

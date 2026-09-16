@@ -105,7 +105,7 @@ CREATE TABLE robot_threshold (
     battery_return_pct    SMALLINT NOT NULL DEFAULT 28,
     voice_wait_sec        SMALLINT NOT NULL DEFAULT 8,
     reconnect_retry_sec   SMALLINT NOT NULL DEFAULT 30,
-    med_missed_wait_min   SMALLINT NOT NULL DEFAULT 10,
+    med_missed_wait_sec   INTEGER NOT NULL DEFAULT 600,
     med_reannounce_count  SMALLINT NOT NULL DEFAULT 2,
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -116,7 +116,7 @@ COMMENT ON COLUMN robot_threshold.battery_attention_pct IS '배터리 주의 알
 COMMENT ON COLUMN robot_threshold.battery_return_pct IS '배터리 자동 복귀 기준 (%)';
 COMMENT ON COLUMN robot_threshold.voice_wait_sec IS '음성 응답 대기 시간 (초)';
 COMMENT ON COLUMN robot_threshold.reconnect_retry_sec IS '재연결 재시도 주기 (초)';
-COMMENT ON COLUMN robot_threshold.med_missed_wait_min IS '복약 미수령 판정까지 대기 시간 (분)';
+COMMENT ON COLUMN robot_threshold.med_missed_wait_sec IS '복약 미수령 판정까지 대기 시간 (초)';
 COMMENT ON COLUMN robot_threshold.med_reannounce_count IS '복약 재안내 횟수';
 COMMENT ON COLUMN robot_threshold.updated_at IS '마지막 저장 시간';
 
