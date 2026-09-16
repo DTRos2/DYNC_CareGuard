@@ -9,6 +9,9 @@
 #include <QTextEdit>
 #include <QVBoxLayout>
 
+#include "audio/call_audio_client.h"
+#include "net/api_client.h"
+#include "net/server_config.h"
 #include "theme/tokens.h"
 #include "widgets/simple_icons.h"
 
@@ -77,6 +80,24 @@ EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, QWidget
     } else {
         currentStep_ = 1;  // 감지 완료, 출동 진행 중
     }
+
+    apiClient_ = new ApiClient(this);
+    callAudio_ = new CallAudioClient(this);
+    // 통화 중 오디오 소켓이 끊기면(로봇 다운링크 재기동, 네트워크 단절 등) 버튼을
+    // "통화 종료"로 남겨두지 않고 "스피커 통화"로 되돌린다 — 서버에는 이미 없는
+    // 연결을 사람이 계속 "통화 중"으로 오해하지 않게 하기 위함.
+    connect(callAudio_, &CallAudioClient::audioDisconnected, this, [this] {
+        callActive_ = false;
+        resetSpeakerCallButton();
+    });
+    // 통화 중에 모달을 닫아도(X 버튼 등) 통화가 계속 열려있으면 안 된다 — 로봇 쪽
+    // 스피커/마이크가 계속 켜진 채로 남는 것을 막는다.
+    connect(this, &QDialog::finished, this, [this](int) {
+        if (!callActive_) return;
+        callActive_ = false;
+        callAudio_->stop();
+        apiClient_->endCall(row_.robotId, [](bool, bool, const QString&) {});
+    });
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -362,13 +383,12 @@ QWidget* EventDetailModal::buildActionGrid() {
     auto* grid = new QGridLayout();
     grid->setSpacing(6);
 
-    auto* speakerBtn =
+    speakerBtn_ =
         new QPushButton(SimpleIcons::speakerphone(Tokens::TEXT_INVERSE, 12), QStringLiteral("스피커 통화"), wrap);
-    speakerBtn->setProperty("variant", "primary");
-    speakerBtn->setProperty("size", "s");
-    connect(speakerBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("스피커 통화")); });
-    grid->addWidget(speakerBtn, 0, 0);
+    speakerBtn_->setProperty("variant", "primary");
+    speakerBtn_->setProperty("size", "s");
+    connect(speakerBtn_, &QPushButton::clicked, this, &EventDetailModal::handleSpeakerCallClicked);
+    grid->addWidget(speakerBtn_, 0, 0);
 
     auto* callBtn =
         new QPushButton(SimpleIcons::phone(Tokens::TEXT_PRIMARY, 12), QStringLiteral("대상자 전화"), wrap);
@@ -503,4 +523,39 @@ void EventDetailModal::handleResolveClicked() {
 void EventDetailModal::showComingSoon(const QString& feature) {
     QMessageBox::information(this, QStringLiteral("CareGuard"),
                               QStringLiteral("추후 구현: %1").arg(feature));
+}
+
+void EventDetailModal::handleSpeakerCallClicked() {
+    speakerBtn_->setEnabled(false);
+
+    if (callActive_) {
+        apiClient_->endCall(row_.robotId, [this](bool ok, bool, const QString& err) {
+            callActive_ = false;
+            callAudio_->stop();
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("통화 종료 실패"),
+                                      err.isEmpty() ? QStringLiteral("서버 연결을 확인해주세요.") : err);
+            }
+            resetSpeakerCallButton();
+        });
+        return;
+    }
+
+    apiClient_->startCall(row_.robotId, [this](bool ok, bool robotConnected, const QString& err) {
+        if (!ok || !robotConnected) {
+            QMessageBox::warning(this, QStringLiteral("통화 연결 실패"),
+                                  !ok && !err.isEmpty() ? err : QStringLiteral("로봇 연결을 확인해주세요."));
+            resetSpeakerCallButton();
+            return;
+        }
+        callActive_ = true;
+        callAudio_->start(ServerConfig::resolveServerUrl(), row_.robotId);
+        speakerBtn_->setText(QStringLiteral("통화 종료"));
+        speakerBtn_->setEnabled(true);
+    });
+}
+
+void EventDetailModal::resetSpeakerCallButton() {
+    speakerBtn_->setText(QStringLiteral("스피커 통화"));
+    speakerBtn_->setEnabled(true);
 }

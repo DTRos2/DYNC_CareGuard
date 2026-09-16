@@ -701,6 +701,26 @@ void ApiClient::cancelPatrolRun(const QString& robotCode, SimpleCallback callbac
              [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
 }
 
+void ApiClient::startCall(const QString& robotCode, CallCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}};
+    postJson(QStringLiteral("/calls/start"), body,
+             [callback](bool ok, const QByteArray& respBody, const QString& err) {
+                 const bool robotConnected =
+                     ok && QJsonDocument::fromJson(respBody).object().value("robot_connected").toBool();
+                 callback(ok, robotConnected, err);
+             });
+}
+
+void ApiClient::endCall(const QString& robotCode, CallCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}};
+    postJson(QStringLiteral("/calls/end"), body,
+             [callback](bool ok, const QByteArray& respBody, const QString& err) {
+                 const bool robotConnected =
+                     ok && QJsonDocument::fromJson(respBody).object().value("robot_connected").toBool();
+                 callback(ok, robotConnected, err);
+             });
+}
+
 void ApiClient::prepareNavigation(const QString& robotCode, int mapId) {
     QJsonObject body{{"robot_code", robotCode}, {"map_id", mapId}};
     postJson(QStringLiteral("/patrol-runs/prepare-navigation"), body,

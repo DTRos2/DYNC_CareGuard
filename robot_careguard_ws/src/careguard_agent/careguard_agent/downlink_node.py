@@ -25,7 +25,7 @@ import yaml
 from geometry_msgs.msg import Twist
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from careguard_msgs.action import Patrol
 from careguard_msgs.msg import Waypoint as WaypointMsg
@@ -75,6 +75,12 @@ VOICE_TOPIC = '/careguard/voice/announce'
 # 녹화를 켜도록 이 토픽으로 신호를 보낸다.
 RECORD_TRIGGER_TOPIC = '/careguard/perception/record_trigger'
 
+# careguard_hmi/config.py의 CALL_STATE_TOPIC과 같은 문자열(같은 관례) — 서버가
+# call_start/call_end를 보내면 이 노드가 대신 True/False로 바꿔 발행하고,
+# audio_capture_node.py/audio_downlink_player.py(캡처·재생 시작/종료)와
+# audio_player.py(통화 중 TTS 안내 스킵)가 구독한다.
+CALL_STATE_TOPIC = '/careguard/call/state'
+
 
 class DownlinkNode(Node):
     def __init__(self):
@@ -117,6 +123,7 @@ class DownlinkNode(Node):
         # SOS 호출 버튼 등 care_event_id가 실린 patrol_start를 받았을 때
         # video_recorder.py에 이벤트 클립 녹화를 켜라고 알리는 용도(_start_patrol 참고).
         self._record_trigger_pub = self.create_publisher(String, RECORD_TRIGGER_TOPIC, 10)
+        self._call_state_pub = self.create_publisher(Bool, CALL_STATE_TOPIC, 10)
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_ws_loop, daemon=True)
@@ -202,6 +209,10 @@ class DownlinkNode(Node):
             self._set_initial_pose(message)
         elif msg_type == 'shutdown_all':
             self._shutdown_everything(message)
+        elif msg_type == 'call_start':
+            self._call_state_pub.publish(Bool(data=True))
+        elif msg_type == 'call_end':
+            self._call_state_pub.publish(Bool(data=False))
 
     def _handle_cmd_vel(self, message: dict):
         twist = Twist()
