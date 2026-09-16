@@ -152,7 +152,7 @@ async def _medication_tick() -> None:
         for s in due:
             cur.execute(
                 """
-                SELECT result, created_at FROM medication_log
+                SELECT result, created_at, care_event_id FROM medication_log
                 WHERE schedule_id = %s AND created_at::date = %s
                 ORDER BY created_at DESC
                 """,
@@ -161,6 +161,16 @@ async def _medication_tick() -> None:
             logs = cur.fetchall()
             if any(log["result"] == "delivered" for log in logs):
                 continue  # 이미 정상 수령 — 미수령 아님
+            if any(log["care_event_id"] is not None for log in logs):
+                # robot_ws.py::_handle_medication_done의 실시간 경로가 오늘 이
+                # 스케줄을 이미 처리(성공이든 'jammed' 실패든)해서 care_event까지
+                # 만들어뒀다는 뜻 — 그 함수가 만드는 'missed' 로그는 여기서 만드는
+                # 것과 달리 항상 care_event_id를 채워서 저장하므로 이걸로 구분한다.
+                # 이 반응형 체크가 또 겹쳐 돌면 같은 스케줄에 이중으로 경보가
+                # 쌓인다(2026-09-16 확인) — 로봇이 이미 손댄 스케줄이면 시간 기반
+                # 반응형 체크는 건너뛰고, "로봇이 아예 접근을 안 한" 경우의 안전망
+                # 역할만 그대로 유지한다(아래 재안내 로직은 그 경우에만 동작).
+                continue
 
             missed_logs = [log for log in logs if log["result"] == "missed"]
             if len(missed_logs) >= s["reannounce_count"]:

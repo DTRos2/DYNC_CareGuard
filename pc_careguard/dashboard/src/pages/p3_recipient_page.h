@@ -207,7 +207,9 @@ private:
     void deactivateRecipient(int recipientId);
     // ATTENTION 카드 "복약 재안내" 클릭. POST /missions로 실제 mission을 만들고 로봇에
     // 다운링크를 보낸다 — medication_scheduler가 없어 스케줄을 거치지 않는 즉시 실행.
-    void requestMedicationReannounce(const QString& robotCode, const QString& recipientName);
+    // slotNo는 makeCardActions가 RecipientCard::meds에서 찾은 "미수령" 슬롯(1~3) —
+    // 못 찾으면(이론상 Attention인데 meds에 Missed가 없는 경우) 0으로 온다.
+    void requestMedicationReannounce(const QString& robotCode, const QString& recipientName, int slotNo);
     // /ws/dashboard가 push하는 robot_status(로봇 연결/해제)·recipient_changed(대상자 정보
     // 저장)를 받아 OFFLINE 카드/카드 목록을 자동으로 갱신한다 — "재연결 시도" 버튼 없이
     // 로봇이 실제로 재연결되거나, 다른 PC가 대상자 정보를 저장하면 카드가 저절로 바뀐다.

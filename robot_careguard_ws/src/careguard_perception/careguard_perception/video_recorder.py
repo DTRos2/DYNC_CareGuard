@@ -186,7 +186,13 @@ class VideoRecorder(Node):
             )
             return
 
-        self._announce_severity(payload.get('severity'))
+        # skip_announce: downlink_node.py::_handle_medication_alert(2026-09-16)처럼
+        # 호출부가 이미 더 구체적인 문구(예: "약을 N번 복용하지 않았습니다")를 직접
+        # 발행해둔 경우, 여기서 또 일반 문구("주의/긴급 이벤트 발생! 영상 녹화를
+        # 시작합니다")까지 안내하면 두 문구가 몇 초 간격으로 겹쳐 나온다 — 그런
+        # 호출부만 이 플래그로 일반 안내를 끄고, SOS 등 기존 호출부는 그대로 켜둔다.
+        if not payload.get('skip_announce'):
+            self._announce_severity(payload.get('severity'))
         self._start_recording(care_event_id, post_event_sec)
 
     def _announce_severity(self, severity):
