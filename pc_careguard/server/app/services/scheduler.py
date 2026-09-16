@@ -126,7 +126,7 @@ async def _medication_tick() -> None:
             """
             SELECT ms.id AS schedule_id, ms.recipient_id, ms.slot_no, ms.drug_name, ms.dose_time,
                    rc.robot_id, rc.name AS recipient_name, rb.code AS robot_code,
-                   COALESCE(rt.med_missed_wait_min, 10) AS wait_min,
+                   COALESCE(rt.med_missed_wait_sec, 600) AS wait_sec,
                    COALESCE(rt.med_reannounce_count, 2) AS reannounce_count
             FROM medication_schedule ms
             JOIN recipient rc ON rc.id = ms.recipient_id
@@ -139,7 +139,7 @@ async def _medication_tick() -> None:
         )
         schedules = cur.fetchall()
 
-        due = [s for s in schedules if _med_is_due(s["dose_time"], now_time, s["wait_min"])]
+        due = [s for s in schedules if _med_is_due(s["dose_time"], now_time, s["wait_sec"])]
         if not due:
             return
 
@@ -165,7 +165,7 @@ async def _medication_tick() -> None:
             missed_logs = [log for log in logs if log["result"] == "missed"]
             if len(missed_logs) >= s["reannounce_count"]:
                 continue  # 재안내 횟수를 이미 다 써서 더 경보하지 않음
-            if missed_logs and (now - missed_logs[0]["created_at"]).total_seconds() < s["wait_min"] * 60:
+            if missed_logs and (now - missed_logs[0]["created_at"]).total_seconds() < s["wait_sec"]:
                 continue  # 마지막 경보 이후 재안내 간격이 아직 안 지남
 
             cur.execute(
@@ -215,10 +215,10 @@ async def _medication_tick() -> None:
         await dashboard_ws.broadcast(event)
 
 
-def _med_is_due(dose_time: time_cls, now_time: time_cls, wait_min: int) -> bool:
+def _med_is_due(dose_time: time_cls, now_time: time_cls, wait_sec: int) -> bool:
     """복약 시각 + 미수령 판정 대기시간이 지났으면 True. _is_due와 같은 "창을
     넓게" 원칙을 따른다 — 정확히 그 순간만 잡는 좁은 창은 서버가 잠깐 멈추면
     그날 영영 못 잡을 수 있다(scheduler.py _is_due 주석 참고)."""
     dose_sec = dose_time.hour * 3600 + dose_time.minute * 60 + dose_time.second
     now_sec = now_time.hour * 3600 + now_time.minute * 60 + now_time.second
-    return now_sec >= dose_sec + wait_min * 60
+    return now_sec >= dose_sec + wait_sec

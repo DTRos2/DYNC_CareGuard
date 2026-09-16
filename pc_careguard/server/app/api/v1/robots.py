@@ -191,7 +191,7 @@ THRESHOLD_COLUMNS = (
     "battery_return_pct",
     "voice_wait_sec",
     "reconnect_retry_sec",
-    "med_missed_wait_min",
+    "med_missed_wait_sec",
     "med_reannounce_count",
 )
 
@@ -200,14 +200,14 @@ def _upsert_threshold(cur, robot_id: int, t: RobotThresholds) -> None:
     cur.execute(
         """
         INSERT INTO robot_threshold (robot_id, battery_attention_pct, battery_return_pct,
-            voice_wait_sec, reconnect_retry_sec, med_missed_wait_min, med_reannounce_count, updated_at)
+            voice_wait_sec, reconnect_retry_sec, med_missed_wait_sec, med_reannounce_count, updated_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
         ON CONFLICT (robot_id) DO UPDATE SET
             battery_attention_pct = EXCLUDED.battery_attention_pct,
             battery_return_pct = EXCLUDED.battery_return_pct,
             voice_wait_sec = EXCLUDED.voice_wait_sec,
             reconnect_retry_sec = EXCLUDED.reconnect_retry_sec,
-            med_missed_wait_min = EXCLUDED.med_missed_wait_min,
+            med_missed_wait_sec = EXCLUDED.med_missed_wait_sec,
             med_reannounce_count = EXCLUDED.med_reannounce_count,
             updated_at = NOW()
         """,
@@ -217,7 +217,7 @@ def _upsert_threshold(cur, robot_id: int, t: RobotThresholds) -> None:
             t.battery_return_pct,
             t.voice_wait_sec,
             t.reconnect_retry_sec,
-            t.med_missed_wait_min,
+            t.med_missed_wait_sec,
             t.med_reannounce_count,
         ),
     )
