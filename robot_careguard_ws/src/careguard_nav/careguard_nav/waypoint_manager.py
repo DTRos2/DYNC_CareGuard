@@ -76,6 +76,13 @@ class WaypointManager:
         poses = [self._to_pose_xyz(w.pos_x, w.pos_y, w.yaw) for w in (self._waypoints.get(c) for c in codes) if w]
         return self._go_through(poses, cancel_check)
 
+    def navigate_to_point(self, x: float, y: float, yaw: float, cancel_check: Optional[Callable[[], bool]] = None):
+        """캐시(fetch)에 없는 임의의 단일 좌표로 바로 이동한다 — 서버 웨이포인트가
+        아니라 로봇이 실시간으로 계산한 좌표로 갈 때 쓴다(예: careguard_perception/
+        patrol_intruder_watch_node.py가 요청하는 얼굴 확인용 접근 좌표,
+        patrol_task.py::_run_approach 참고)."""
+        return self._go_through([self._to_pose_xyz(x, y, yaw)], cancel_check)
+
     def navigate_poses(self, waypoints: Sequence, cancel_check: Optional[Callable[[], bool]] = None):
         """이미 좌표를 알고 있는 웨이포인트 목록을 캐시와 무관하게 그대로 이동한다.
 

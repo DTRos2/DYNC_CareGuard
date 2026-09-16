@@ -29,7 +29,7 @@ def _set_battery_thresholds(client, robot_id, attention_pct, return_pct):
         "battery_return_pct": return_pct,
         "voice_wait_sec": 8,
         "reconnect_retry_sec": 30,
-        "med_missed_wait_min": 10,
+        "med_missed_wait_sec": 600,
         "med_reannounce_count": 2,
     })
 

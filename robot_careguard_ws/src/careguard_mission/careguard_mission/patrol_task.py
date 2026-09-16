@@ -36,6 +36,28 @@ audio_player.py가 그 문장을 그대로 TTS(Piper)로 합성해 스피커로 
 아무도 못 찾으면 배출을 시도하지 않고 그냥 순찰을 마친다 — _execute() 하단
 person_found 분기 참고).
 
+접근(approach) 끼어들기 — 2026-09-15 추가:
+careguard_perception/patrol_intruder_watch_node.py가 순찰 중 사람을 감지하면(먼
+거리라 인식 정확도가 낮을 수 있어), 더 가까이 가서 다시 확인하고 싶다는 요청을
+APPROACH_REQUEST_TOPIC으로 보낸다. 이 노드는 그 요청을 받으면 지금 실행 중인
+웨이포인트(또는 충전소 복귀) 이동을 "취소"가 아니라 "잠깐 다른 곳에 다녀오는 것"으로
+처리한다:
+  1. 지금 가던 목적지로의 Nav2 이동을 중단한다(cancel_check가 진짜 취소 요청과
+     접근 요청을 함께 감시 — _interrupt_requested 참고).
+  2. 접근 좌표로 이동한다(WaypointManager.navigate_to_point, 캐시 밖 임의 좌표).
+  3. 도착 여부를 APPROACH_ARRIVED_TOPIC으로 알린다.
+  4. 도착했으면, patrol_intruder_watch_node가 그 자리에서 다시 판정을 마치고
+     APPROACH_RELEASE_TOPIC으로 "이제 가도 됨" 신호를 줄 때까지 그 자리에서
+     기다린다(최대 APPROACH_RELEASE_WAIT_TIMEOUT_SEC — 응답이 안 와도 순찰이
+     영원히 멈추지 않게 하는 안전장치).
+  5. 원래 가던 목적지로 같은 웨이포인트를 다시 보낸다 — Nav2가 로봇의 지금(접근
+     이동 후) 위치에서 새로 경로를 계산하므로, 중간 지점을 따로 저장/복원할 필요
+     없이 "재개"가 자연스럽게 된다.
+
+접근 요청은 한 번에 하나만 처리한다(_approaching 플래그) — 처리 중에 새 요청이
+오면 무시한다(perception 쪽도 5분당 최대 2회로 스스로 제한하므로 정상 상황에서는
+겹칠 일이 거의 없다).
+
 빌드/실행 미검증.
 """
 import json
@@ -61,6 +83,18 @@ from .medication_client import MedicationClient
 # 없다(medication_task.py 상단 주석 참고) — 이 구독은 "언젠가 생길 발행자"를
 # 기다리는 자리다.
 PERSON_DETECTED_TOPIC = '/careguard/perception/person_detected'
+
+# careguard_perception/config.py의 APPROACH_REQUEST_TOPIC/APPROACH_ARRIVED_TOPIC/
+# APPROACH_RELEASE_TOPIC과 같은 문자열 — PATROL_RECORDING_TOPIC 등과 같은 기존
+# 방식(패키지 간 공유 없이 토픽명을 각자 하드코딩)을 그대로 따른다.
+APPROACH_REQUEST_TOPIC = '/careguard/perception/approach_request'
+APPROACH_ARRIVED_TOPIC = '/careguard/perception/approach_arrived'
+APPROACH_RELEASE_TOPIC = '/careguard/perception/approach_release'
+
+# 접근 후 재판별 완료(release) 신호를 이 시간 안에 못 받으면 그냥 순찰을 재개한다 —
+# perception 쪽이 죽거나 버그가 있어도 로봇이 그 자리에 영원히 멈춰있지 않게 하는
+# 안전장치.
+APPROACH_RELEASE_WAIT_TIMEOUT_SEC = 20.0
 
 
 class PatrolTask(Node):
@@ -110,6 +144,18 @@ class PatrolTask(Node):
         self._action_server = ActionServer(
             self, Patrol, 'patrol', self._execute, goal_callback=self._handle_goal_request,
             cancel_callback=self._handle_cancel_request)
+
+        # ── 접근(approach) 끼어들기 상태 — 클래스 docstring 참고. _pending_approach/
+        # _approaching은 구독 콜백(spin 스레드)과 _execute(액션 실행 스레드)가 함께
+        # 건드리므로 _approach_lock으로 보호한다.
+        self._approach_lock = threading.Lock()
+        self._pending_approach = None  # 아직 처리 시작 안 한 요청
+        self._approaching = False  # _run_approach 실행 중(이동+재판별 대기 포함)
+        self._pending_release_track_id = None
+        self._release_event = threading.Event()
+        self._approach_arrived_pub = self.create_publisher(String, APPROACH_ARRIVED_TOPIC, 10)
+        self.create_subscription(String, APPROACH_REQUEST_TOPIC, self._on_approach_request, 10)
+        self.create_subscription(String, APPROACH_RELEASE_TOPIC, self._on_approach_release, 10)
 
     def _handle_goal_request(self, goal_request):
         if self._executing:
@@ -182,6 +228,91 @@ class PatrolTask(Node):
             # 같은 "확실한 것만 안내한다" 원칙).
             self._publish_voice('약 전달에 실패했습니다. 담당자에게 알려드릴게요.')
 
+    # ---------- 접근(approach) 끼어들기 ----------
+
+    def _on_approach_request(self, msg: String):
+        if not self._executing:
+            self.get_logger().warn('순찰/이동 중이 아니라 접근 요청을 무시합니다')
+            return
+        try:
+            payload = json.loads(msg.data)
+        except ValueError:
+            self.get_logger().warn(f'접근 요청 JSON 파싱 실패, 무시합니다: {msg.data!r}')
+            return
+        with self._approach_lock:
+            if self._approaching or self._pending_approach is not None:
+                self.get_logger().warn('이미 접근 처리 중이라 새 요청을 무시합니다')
+                return
+            self._pending_approach = payload
+
+    def _on_approach_release(self, msg: String):
+        try:
+            payload = json.loads(msg.data)
+        except ValueError:
+            return
+        if payload.get('track_id') == self._pending_release_track_id:
+            self._release_event.set()
+
+    def _take_pending_approach(self):
+        with self._approach_lock:
+            approach = self._pending_approach
+            self._pending_approach = None
+            return approach
+
+    def _interrupt_requested(self, goal_handle) -> bool:
+        if goal_handle.is_cancel_requested:
+            return True
+        with self._approach_lock:
+            return self._pending_approach is not None
+
+    def _publish_approach_arrived(self, track_id, arrived: bool):
+        msg = String()
+        msg.data = json.dumps({'track_id': track_id, 'arrived': arrived})
+        self._approach_arrived_pub.publish(msg)
+
+    def _run_approach(self, approach: dict, goal_handle) -> None:
+        track_id = approach.get('track_id')
+        with self._approach_lock:
+            self._approaching = True
+        try:
+            self.get_logger().info(f'[접근] track_id={track_id} — 확인을 위해 접근합니다')
+            nav_result = self._waypoint_manager.navigate_to_point(
+                float(approach.get('x', 0.0)), float(approach.get('y', 0.0)),
+                float(approach.get('yaw', 0.0)),
+                cancel_check=lambda: goal_handle.is_cancel_requested,
+            )
+            arrived = nav_result == TaskResult.SUCCEEDED
+            self._publish_approach_arrived(track_id, arrived)
+            if not arrived:
+                self.get_logger().warn(
+                    f'[접근] track_id={track_id} — 접근 이동 실패/취소, 판정 없이 순찰을 재개합니다')
+                return
+
+            self.get_logger().info(f'[접근] track_id={track_id} 도착 — 재판별 대기 중')
+            self._pending_release_track_id = track_id
+            self._release_event.clear()
+            if not self._release_event.wait(timeout=APPROACH_RELEASE_WAIT_TIMEOUT_SEC):
+                self.get_logger().warn(f'[접근] track_id={track_id} 재판별 응답 타임아웃 — 순찰을 재개합니다')
+            self._pending_release_track_id = None
+        finally:
+            with self._approach_lock:
+                self._approaching = False
+
+    def _navigate_with_approach_support(self, goal_handle, nav_call):
+        """nav_call()을 실행하다가 접근 요청이 오면(_interrupt_requested) 먼저
+        _run_approach로 그 요청을 처리한 뒤 nav_call()을 처음부터 다시 부른다 —
+        Nav2가 로봇의 현재 위치에서 다시 경로를 계산하므로 중간 지점을 따로
+        기억해둘 필요 없이 "재개"가 된다. 진짜 취소 요청은 즉시 반환한다.
+        """
+        while True:
+            nav_result = nav_call()
+            if goal_handle.is_cancel_requested:
+                return nav_result
+            approach = self._take_pending_approach()
+            if approach is None:
+                return nav_result
+            self._run_approach(approach, goal_handle)
+
     def _execute(self, goal_handle):
         self._executing = True
         # P6 "이동"(단일 웨이포인트 주행, run_id=0)은 녹화 대상이 아니다 — 원래
@@ -207,15 +338,20 @@ class PatrolTask(Node):
 
             person_found = False
             for i, wp in enumerate(waypoints, start=1):
-                # is_medication_route일 때만 person_detected도 cancel_check에 같이
-                # 건다 — Nav2가 이 웨이포인트로 이동하는 도중에 사람을 찾으면(꼭 지점에
-                # "도착"할 때까지 기다리지 않고) 그 즉시 WaypointManager._go_through가
-                # cancelTask()로 이동을 멈춘다. 진짜 취소(goal_handle.is_cancel_requested)와
-                # 결과가 똑같이 SUCCEEDED가 아닌 상태로 돌아오므로, 아래에서 둘을
-                # 순서대로(취소 먼저) 구분해서 처리한다.
-                nav_result = self._waypoint_manager.navigate_poses(
-                    [wp], cancel_check=lambda: goal_handle.is_cancel_requested or (
-                        is_medication_route and self._person_detected.is_set()))
+                # 접근(approach) 요청이 오면 이 웨이포인트 이동을 잠깐 멈추고 다녀온 뒤
+                # 같은 웨이포인트로 다시 시도한다 — _navigate_with_approach_support 참고.
+                # is_medication_route일 때는 person_detected도 같이 cancel_check에
+                # 건다 — Nav2가 이동하는 도중에 사람을 찾으면(꼭 지점에 "도착"할 때까지
+                # 기다리지 않고) 그 즉시 멈춘다. _navigate_with_approach_support는 멈춘
+                # 이유가 "접근 요청"이면 다녀온 뒤 같은 웨이포인트를 다시 시도하고, 그 외
+                # (진짜 취소든 person_detected든)에는 바로 반환한다 — person_detected로
+                # 멈춘 경우는 아래 person_found 분기가 이어서 처리한다.
+                nav_result = self._navigate_with_approach_support(
+                    goal_handle,
+                    lambda wp=wp: self._waypoint_manager.navigate_poses(
+                        [wp], cancel_check=lambda: self._interrupt_requested(goal_handle) or (
+                            is_medication_route and self._person_detected.is_set())),
+                )
 
                 # WaypointManager._go_through가 cancel_check()에 걸려 중간에 cancelTask()로
                 # 내리면 None을 반환한다 — nav_result != SUCCEEDED로도 걸리긴 하지만, 그러면
@@ -287,8 +423,11 @@ class PatrolTask(Node):
                 # 안 남고 goal_handle.succeed()+'completed'로 끝났다("wp3에서 충전소로
                 # 복귀를 안 함" 리포트, 2026-09-08). charge 웨이포인트 자체가 없는
                 # 경우(None)와 실제 이동 실패(FAILED/CANCELED)를 구분해서 로그를 남긴다.
-                charge_result = return_to_charging(
-                    self._waypoint_manager, cancel_check=lambda: goal_handle.is_cancel_requested)
+                charge_result = self._navigate_with_approach_support(
+                    goal_handle,
+                    lambda: return_to_charging(
+                        self._waypoint_manager, cancel_check=lambda: self._interrupt_requested(goal_handle)),
+                )
                 if goal_handle.is_cancel_requested:
                     # charge_result도 취소되면 None이라 "충전 웨이포인트가 없음"과
                     # 구분이 안 된다 — 취소 여부를 먼저 확인해서 가린다.
@@ -331,6 +470,10 @@ class PatrolTask(Node):
             if is_patrol:
                 self._publish_patrol_recording('stop', run_id)
             self._executing = False
+            # 이 순찰이 끝나는 시점에 아직 소비 안 된 접근 요청이 남아있으면(막 끝나기
+            # 직전에 도착한 경우 등) 다음 순찰 시작 때 엉뚱하게 재사용되지 않게 비운다.
+            with self._approach_lock:
+                self._pending_approach = None
 
 
 def main(args=None):

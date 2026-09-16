@@ -22,6 +22,9 @@ setup(
         'console_scripts': [
             'uplink_node = careguard_turtlebot_agent.uplink_node:main',
             'downlink_node = careguard_turtlebot_agent.downlink_node:main',
+            'face_capture_node = careguard_turtlebot_agent.perception.face_capture_node:main',
+            'photo_identify_node = careguard_turtlebot_agent.perception.photo_identify_node:main',
+            'video_recorder = careguard_turtlebot_agent.perception.video_recorder:main',
         ],
     },
 )

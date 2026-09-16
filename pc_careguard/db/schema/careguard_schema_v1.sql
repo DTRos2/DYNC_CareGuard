@@ -105,7 +105,7 @@ CREATE TABLE robot_threshold (
     battery_return_pct    SMALLINT NOT NULL DEFAULT 28,
     voice_wait_sec        SMALLINT NOT NULL DEFAULT 8,
     reconnect_retry_sec   SMALLINT NOT NULL DEFAULT 30,
-    med_missed_wait_min   SMALLINT NOT NULL DEFAULT 10,
+    med_missed_wait_sec   INTEGER NOT NULL DEFAULT 600,
     med_reannounce_count  SMALLINT NOT NULL DEFAULT 2,
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -116,7 +116,7 @@ COMMENT ON COLUMN robot_threshold.battery_attention_pct IS '배터리 주의 알
 COMMENT ON COLUMN robot_threshold.battery_return_pct IS '배터리 자동 복귀 기준 (%)';
 COMMENT ON COLUMN robot_threshold.voice_wait_sec IS '음성 응답 대기 시간 (초)';
 COMMENT ON COLUMN robot_threshold.reconnect_retry_sec IS '재연결 재시도 주기 (초)';
-COMMENT ON COLUMN robot_threshold.med_missed_wait_min IS '복약 미수령 판정까지 대기 시간 (분)';
+COMMENT ON COLUMN robot_threshold.med_missed_wait_sec IS '복약 미수령 판정까지 대기 시간 (초)';
 COMMENT ON COLUMN robot_threshold.med_reannounce_count IS '복약 재안내 횟수';
 COMMENT ON COLUMN robot_threshold.updated_at IS '마지막 저장 시간';
 
@@ -146,7 +146,7 @@ CREATE INDEX idx_files_retention ON files (retention_until) WHERE deleted_at IS 
 
 COMMENT ON TABLE files IS '통합 파일 관리. 대상자 사진, 침입자 캡처, 이벤트·주행 녹화, 보호자 영상·음성 메시지, 맵 이미지를 모두 수용한다. 로컬 파일시스템만 사용';
 COMMENT ON COLUMN files.id IS '파일 PK, 자동 증가';
-COMMENT ON COLUMN files.entity_type IS '연결 대상 종류이자 파일 분류, 예: recipient_photo / intruder_capture / event_clip / driving_clip / guardian_message / map_image';
+COMMENT ON COLUMN files.entity_type IS '연결 대상 종류이자 파일 분류, 예: recipient_photo / recipient_face_sample / intruder_capture / event_clip / driving_clip / guardian_message / map_image';
 COMMENT ON COLUMN files.entity_id IS '연결 대상 id. 폴리모픽 연결이라 문자열 사용';
 COMMENT ON COLUMN files.storage_path IS '로컬 저장 경로. 확장자로 재생 형식을 판별한다';
 COMMENT ON COLUMN files.original_filename IS '원본 파일명';
@@ -366,7 +366,7 @@ COMMENT ON COLUMN recipient.home_lng IS '집 위치 경도 (문자 항목)';
 COMMENT ON COLUMN recipient.diseases IS '평소 지병 (문자 항목)';
 COMMENT ON COLUMN recipient.note IS '담당자 참고 메모';
 COMMENT ON COLUMN recipient.photo_file_id IS '프로필 사진 files.id';
-COMMENT ON COLUMN recipient.face_registered IS '얼굴 정보 등록 완료 여부. FALSE면 미등록 인물 대조가 동작하지 않는다';
+COMMENT ON COLUMN recipient.face_registered IS '얼굴 정보 등록 완료 여부. FALSE면 미등록 인물 대조가 동작하지 않는다. 실제 등록 사진은 files(entity_type=recipient_face_sample, entity_id=recipient.id)에 저장';
 COMMENT ON COLUMN recipient.created_at IS '대상자 등록 시간';
 COMMENT ON COLUMN recipient.deregistered_at IS '등록 해제 시간. NULL이면 사용 중';
 
