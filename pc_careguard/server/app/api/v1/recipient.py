@@ -76,9 +76,13 @@ def _weekday_bit(d: date) -> int:
 
 
 def _risk_by_recipient(cur, recipient_ids: Optional[List[int]] = None) -> dict:
-    """대상자별 "현재 위험도" — 열려있는(open/acknowledged) care_event 중 가장 심각한 것 하나.
-    severity='info'는 대시보드 Tokens::Level에 대응 값이 없어 위험도로 치지 않는다(media.py의
-    SEVERITY_TAGS와 같은 분류 — emergency/attention만 태그가 있고 info는 순찰과 같이 묶임).
+    """대상자별 "현재 위험도" — 오늘 발생한, 열려있는(open/acknowledged) care_event 중 가장
+    심각한 것 하나. severity='info'는 대시보드 Tokens::Level에 대응 값이 없어 위험도로 치지
+    않는다(media.py의 SEVERITY_TAGS와 같은 분류 — emergency/attention만 태그가 있고 info는
+    순찰과 같이 묶임). 날짜 제한이 없으면 아무도 완료 처리를 안 한 옛날 이벤트가 카드에
+    계속 남아서, 오늘 새로 생긴 이벤트가 있어도 옛날 것(예: 며칠 전 emergency)이 계속
+    우선하는 문제가 있었다(요청 사양: 카드는 "오늘 것 최신 것"만 보여준다) — occurred_at을
+    오늘 날짜로 제한한다.
     recipient_ids를 주면 그 목록만, None이면 전체 대상자를 계산한다(목록/상세 화면이 공유).
     """
     query = """
@@ -86,6 +90,7 @@ def _risk_by_recipient(cur, recipient_ids: Optional[List[int]] = None) -> dict:
         FROM care_event
         WHERE recipient_id IS NOT NULL AND status IN ('open', 'acknowledged')
           AND severity IN ('attention', 'emergency')
+          AND occurred_at::date = CURRENT_DATE
     """
     params: list = []
     if recipient_ids is not None:
