@@ -98,6 +98,13 @@ EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, QWidget
         callAudio_->stop();
         apiClient_->endCall(row_.robotId, [](bool, bool, const QString&) {});
     });
+    // 모의 신고 중에 모달을 닫아도(X 버튼 등) 키오스크에 "119 신고중"이 계속 남으면
+    // 안 된다 — callActive_와 같은 이유.
+    connect(this, &QDialog::finished, this, [this](int) {
+        if (!emergencyReportActive_) return;
+        emergencyReportActive_ = false;
+        apiClient_->endEmergencyReport(row_.robotId, [](bool, const QString&) {});
+    });
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -414,13 +421,12 @@ QWidget* EventDetailModal::buildActionGrid() {
             [this] { showComingSoon(QStringLiteral("보호자 문자")); });
     grid->addWidget(guardianMsgBtn, 1, 1);
 
-    auto* emergencyCallBtn = new QPushButton(SimpleIcons::phoneCall(Tokens::TEXT_INVERSE, 12),
-                                              QStringLiteral("119 모의 신고"), wrap);
-    emergencyCallBtn->setProperty("variant", "danger");
-    emergencyCallBtn->setProperty("size", "s");
-    connect(emergencyCallBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("119 모의 신고")); });
-    grid->addWidget(emergencyCallBtn, 2, 0, 1, 2);
+    emergencyBtn_ = new QPushButton(SimpleIcons::phoneCall(Tokens::TEXT_INVERSE, 12),
+                                     QStringLiteral("119 모의 신고"), wrap);
+    emergencyBtn_->setProperty("variant", "danger");
+    emergencyBtn_->setProperty("size", "s");
+    connect(emergencyBtn_, &QPushButton::clicked, this, &EventDetailModal::handleEmergencyReportClicked);
+    grid->addWidget(emergencyBtn_, 2, 0, 1, 2);
 
     auto* recheckBtn = new QPushButton(QStringLiteral("재확인 예약"), wrap);
     recheckBtn->setProperty("variant", "secondary");
@@ -541,7 +547,7 @@ void EventDetailModal::handleSpeakerCallClicked() {
         return;
     }
 
-    apiClient_->startCall(row_.robotId, [this](bool ok, bool robotConnected, const QString& err) {
+    apiClient_->startCall(row_.robotId, row_.recipientName, [this](bool ok, bool robotConnected, const QString& err) {
         if (!ok || !robotConnected) {
             QMessageBox::warning(this, QStringLiteral("통화 연결 실패"),
                                   !ok && !err.isEmpty() ? err : QStringLiteral("로봇 연결을 확인해주세요."));
@@ -558,4 +564,37 @@ void EventDetailModal::handleSpeakerCallClicked() {
 void EventDetailModal::resetSpeakerCallButton() {
     speakerBtn_->setText(QStringLiteral("스피커 통화"));
     speakerBtn_->setEnabled(true);
+}
+
+void EventDetailModal::handleEmergencyReportClicked() {
+    emergencyBtn_->setEnabled(false);
+
+    if (emergencyReportActive_) {
+        apiClient_->endEmergencyReport(row_.robotId, [this](bool ok, const QString& err) {
+            emergencyReportActive_ = false;
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("119 모의 신고 종료 실패"),
+                                      err.isEmpty() ? QStringLiteral("서버 연결을 확인해주세요.") : err);
+            }
+            resetEmergencyReportButton();
+        });
+        return;
+    }
+
+    apiClient_->startEmergencyReport(row_.robotId, row_.recipientName, [this](bool ok, const QString& err) {
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("119 모의 신고 실패"),
+                                  err.isEmpty() ? QStringLiteral("서버 연결을 확인해주세요.") : err);
+            resetEmergencyReportButton();
+            return;
+        }
+        emergencyReportActive_ = true;
+        emergencyBtn_->setText(QStringLiteral("119 신고 종료"));
+        emergencyBtn_->setEnabled(true);
+    });
+}
+
+void EventDetailModal::resetEmergencyReportButton() {
+    emergencyBtn_->setText(QStringLiteral("119 모의 신고"));
+    emergencyBtn_->setEnabled(true);
 }

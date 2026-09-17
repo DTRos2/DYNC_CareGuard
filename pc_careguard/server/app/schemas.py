@@ -306,10 +306,39 @@ class CallRequest(BaseModel):
     # 로봇 상세 모달 "통화 시작/종료" — 오디오 바이트 자체는 audio_relay.py의 별도
     # WebSocket으로 흐르고, 이 요청은 로봇에 call_start/call_end를 알리는 신호일 뿐이다.
     robot_code: str
+    # 통화 시작 시 로봇 후면 키오스크에 "OOO님과 통화중"으로 띄우기 위한 상대측 표시명
+    # (event_detail_modal의 row_.recipientName). end_call에는 필요 없어 기본값을 둔다.
+    caller_name: str = ""
 
 
 class CallResponse(BaseModel):
     robot_connected: bool
+
+
+class CallStatusResponse(BaseModel):
+    # GET /calls/status?robot_code= — 키오스크가 재연결 시 call_started/call_ended
+    # 브로드캐스트를 놓쳤을 수 있어(인메모리 상태라 조회용 REST가 없었음, 2026-09-17
+    # 발견) 순찰 상태(loadPatrolState)와 같은 패턴으로 재조회할 수 있게 추가.
+    active: bool
+    caller_name: str = ""
+
+
+class EmergencyReportRequest(BaseModel):
+    # 이벤트 상세 모달 "119 모의 신고" — 실제 소방/구급 연동이 아니라, 신고 중임을
+    # 로봇 후면 키오스크에 표시하기 위한 상태 토글이라 로봇에는 아무 신호도 보내지
+    # 않는다(call.py와 달리 robot_ws.send_command 없음).
+    robot_code: str
+    reporter_name: str = ""
+
+
+class EmergencyReportResponse(BaseModel):
+    active: bool
+
+
+class EmergencyReportStatusResponse(BaseModel):
+    # GET /emergency-reports/status?robot_code= — CallStatusResponse와 같은 이유.
+    active: bool
+    reporter_name: str = ""
 
 
 class CancelPatrolRunRequest(BaseModel):
