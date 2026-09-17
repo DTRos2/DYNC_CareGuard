@@ -18,7 +18,7 @@ router = APIRouter(prefix="/recipients", tags=["recipient"])
 
 _RECIPIENT_SELECT = """
     SELECT rc.id, rc.code, rc.name, rc.robot_id, r.code AS robot_code,
-           rc.gender, rc.birth_date, rc.home_address, rc.diseases, rc.note,
+           rc.gender, rc.birth_date, rc.phone, rc.home_address, rc.diseases, rc.note,
            rc.operator_id, op.display_name AS operator_name, rc.created_at
     FROM recipient rc
     LEFT JOIN robot r ON r.id = rc.robot_id
@@ -201,7 +201,7 @@ def get_recipient(recipient_id: int):
 
         cur.execute(
             """
-            SELECT id, name, phone, relation, priority, notify_enabled
+            SELECT id, name, phone, email, relation, priority, notify_enabled
             FROM guardian
             WHERE recipient_id = %s AND deregistered_at IS NULL
             ORDER BY priority
@@ -264,8 +264,8 @@ def create_recipient(payload: RecipientCreate):
 
         cur.execute(
             """
-            INSERT INTO recipient (code, robot_id, name, gender, birth_date, home_address, diseases, note, operator_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO recipient (code, robot_id, name, gender, birth_date, phone, home_address, diseases, note, operator_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -274,6 +274,7 @@ def create_recipient(payload: RecipientCreate):
                 payload.name,
                 payload.gender,
                 payload.birth_date,
+                payload.phone,
                 payload.home_address,
                 payload.diseases,
                 payload.note,
@@ -285,10 +286,10 @@ def create_recipient(payload: RecipientCreate):
         for g in payload.guardians:
             cur.execute(
                 """
-                INSERT INTO guardian (recipient_id, name, phone, relation, priority, notify_enabled)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO guardian (recipient_id, name, phone, email, relation, priority, notify_enabled)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled),
+                (recipient_id, g.name, g.phone, g.email, g.relation, g.priority, g.notify_enabled),
             )
 
         for s in payload.schedules:
@@ -342,7 +343,7 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
         cur.execute(
             """
             UPDATE recipient
-            SET robot_id = %s, name = %s, gender = %s, birth_date = %s,
+            SET robot_id = %s, name = %s, gender = %s, birth_date = %s, phone = %s,
                 home_address = %s, diseases = %s, note = %s, operator_id = %s
             WHERE id = %s
             """,
@@ -351,6 +352,7 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
                 payload.name,
                 payload.gender,
                 payload.birth_date,
+                payload.phone,
                 payload.home_address,
                 payload.diseases,
                 payload.note,
@@ -359,17 +361,41 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
             ),
         )
 
+        # id 기준으로 있는 건 그 자리에서 갱신하고 없는 건 새로 심는다(medication_schedule과
+        # 같은 slot_no 매칭 패턴을 guardian.id로 적용) — 예전엔 매번 전체 소프트삭제 후
+        # 재삽입해서, 이름 하나만 고쳐도 모든 보호자가 새 id를 받아 guardian.email 같은
+        # 컬럼이 안전하게 남아있을 근거가 없었다(2026-09-16 확인된 dedup 버그).
         cur.execute(
-            "UPDATE guardian SET deregistered_at = NOW() WHERE recipient_id = %s AND deregistered_at IS NULL",
+            "SELECT id FROM guardian WHERE recipient_id = %s AND deregistered_at IS NULL",
             (recipient_id,),
         )
+        existing_guardian_ids = {row["id"] for row in cur.fetchall()}
+        incoming_guardian_ids = {g.id for g in payload.guardians if g.id is not None}
+
         for g in payload.guardians:
+            if g.id is not None and g.id in existing_guardian_ids:
+                cur.execute(
+                    """
+                    UPDATE guardian
+                    SET name = %s, phone = %s, email = %s, relation = %s, priority = %s, notify_enabled = %s
+                    WHERE id = %s AND recipient_id = %s
+                    """,
+                    (g.name, g.phone, g.email, g.relation, g.priority, g.notify_enabled, g.id, recipient_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO guardian (recipient_id, name, phone, email, relation, priority, notify_enabled)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (recipient_id, g.name, g.phone, g.email, g.relation, g.priority, g.notify_enabled),
+                )
+
+        removed_guardian_ids = existing_guardian_ids - incoming_guardian_ids
+        if removed_guardian_ids:
             cur.execute(
-                """
-                INSERT INTO guardian (recipient_id, name, phone, relation, priority, notify_enabled)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled),
+                "UPDATE guardian SET deregistered_at = NOW() WHERE id = ANY(%s)",
+                (list(removed_guardian_ids),),
             )
 
         # 슬롯 번호(slot_no) 기준으로 있는 건 그 자리에서 갱신하고, 새 슬롯만 새로 심는다

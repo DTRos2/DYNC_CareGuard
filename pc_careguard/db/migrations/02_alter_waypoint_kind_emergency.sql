@@ -1,8 +1,9 @@
 -- waypoint.kind에 emergency(긴급 버튼 위치) 추가.
--- docker-entrypoint-initdb.d는 새 볼륨을 만들 때만 이 폴더를 실행하므로, 이미
--- 떠 있는 개발 DB에는 이 파일을 직접 psql로 실행해 반영해야 한다:
+-- migrations/ 폴더는 docker-entrypoint-initdb.d에 마운트되지 않는다(schema/ 폴더만
+-- 마운트됨) — 새 볼륨을 만들 때도 자동 실행되지 않으므로, 개발 DB에는 직접 psql로
+-- 실행해 반영해야 한다:
 --   docker exec -i careguard_postgres psql -U careguard -d careguard \
---     < pc_careguard/db/schema/01_alter_waypoint_kind_emergency.sql
+--     < pc_careguard/db/migrations/02_alter_waypoint_kind_emergency.sql
 --
 -- emergency는 charge와 달리 맵당 여러 개 등록할 수 있고(긴급 버튼이 여러 곳에
 -- 있을 수 있음) — 별도 유니크 인덱스는 추가하지 않는다(요청 사양). patrol_route.steps

@@ -557,6 +557,7 @@ ApiClient::RecipientDetailInfo ApiClient::parseRecipientDetail(const QJsonObject
         info.id = g.value(QStringLiteral("id")).toInt();
         info.name = g.value(QStringLiteral("name")).toString();
         info.phone = g.value(QStringLiteral("phone")).toString();
+        info.email = g.value(QStringLiteral("email")).toString();
         info.relation = g.value(QStringLiteral("relation")).toString();
         info.priority = g.value(QStringLiteral("priority")).toInt();
         info.notifyEnabled = g.value(QStringLiteral("notify_enabled")).toBool(true);
@@ -615,11 +616,17 @@ namespace {
 QJsonObject recipientBodyFromParams(const ApiClient::RecipientCreateParams& params) {
     QJsonArray guardians;
     for (const auto& g : params.guardians) {
-        guardians.append(QJsonObject{{"name", g.name},
-                                      {"phone", g.phone},
-                                      {"relation", g.relation},
-                                      {"priority", g.priority},
-                                      {"notify_enabled", g.notifyEnabled}});
+        QJsonObject gj{{"name", g.name},
+                        {"phone", g.phone},
+                        {"email", g.email},
+                        {"relation", g.relation},
+                        {"priority", g.priority},
+                        {"notify_enabled", g.notifyEnabled}};
+        // id가 있는(기존) 보호자만 실어 보낸다 — 서버는 id 없으면 신규로 INSERT한다
+        // (schemas.py::GuardianCreate.id, Optional). 신규 행에 0을 보내는 것보다
+        // 키 자체를 생략하는 쪽이 "새 보호자"라는 의미를 그대로 전달한다.
+        if (g.id > 0) gj.insert(QStringLiteral("id"), g.id);
+        guardians.append(gj);
     }
     QJsonArray schedules;
     for (const auto& s : params.schedules) {

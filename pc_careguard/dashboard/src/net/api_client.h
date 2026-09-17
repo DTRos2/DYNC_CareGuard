@@ -117,6 +117,7 @@ public:
         int id = 0;
         QString name;
         QString phone;
+        QString email;
         QString relation;
         int priority = 1;
         bool notifyEnabled = true;
@@ -301,8 +302,12 @@ public:
 
     // POST /recipients — "대상자 등록" 모달. server/app/schemas.py::RecipientCreate 대응.
     struct GuardianCreateParams {
+        // 기존 보호자 수정이면 서버 guardian.id를 그대로 실어 보낸다. 0(신규)이면
+        // 서버가 새 행으로 INSERT한다 — schemas.py::GuardianCreate.id 대응.
+        int id = 0;
         QString name;
         QString phone;
+        QString email;
         QString relation;
         int priority = 1;
         bool notifyEnabled = true;

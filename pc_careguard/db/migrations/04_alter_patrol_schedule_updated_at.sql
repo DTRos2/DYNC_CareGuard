@@ -1,9 +1,10 @@
 -- patrol_schedule.updated_at 추가 — 스케줄을 수정한 뒤에도 같은 날 다시 트리거될 수
 -- 있어야 한다.
--- docker-entrypoint-initdb.d는 새 볼륨을 만들 때만 이 폴더를 실행하므로, 이미 떠 있는
--- 개발 DB에는 이 파일을 직접 psql로 실행해 반영해야 한다:
+-- migrations/ 폴더는 docker-entrypoint-initdb.d에 마운트되지 않는다(schema/ 폴더만
+-- 마운트됨) — 새 볼륨을 만들 때도 자동 실행되지 않으므로, 개발 DB에는 직접 psql로
+-- 실행해 반영해야 한다:
 --   docker exec -i careguard_postgres psql -U careguard -d careguard \
---     < pc_careguard/db/schema/03_alter_patrol_schedule_updated_at.sql
+--     < pc_careguard/db/migrations/04_alter_patrol_schedule_updated_at.sql
 --
 -- 실사용 중 발견(2026-09-15): run_time=23분에 스케줄이 정상 트리거된 뒤, 같은 스케줄을
 -- run_time=26분으로 수정해도 26분이 지나도록 patrol_run이 전혀 안 생겼다 — 원인은

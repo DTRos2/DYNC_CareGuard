@@ -1,8 +1,9 @@
 -- robot_threshold.med_missed_wait_min(분 단위) -> med_missed_wait_sec(초 단위)로 단위 변경.
--- docker-entrypoint-initdb.d는 새 볼륨을 만들 때만 이 폴더를 실행하므로, 이미 떠 있는
--- 개발 DB에는 이 파일을 직접 psql로 실행해 반영해야 한다:
+-- migrations/ 폴더는 docker-entrypoint-initdb.d에 마운트되지 않는다(schema/ 폴더만
+-- 마운트됨) — 새 볼륨을 만들 때도 자동 실행되지 않으므로, 개발 DB에는 직접 psql로
+-- 실행해 반영해야 한다:
 --   docker exec -i careguard_postgres psql -U careguard -d careguard \
---     < pc_careguard/db/schema/04_alter_robot_threshold_med_missed_wait_sec.sql
+--     < pc_careguard/db/migrations/05_alter_robot_threshold_med_missed_wait_sec.sql
 --
 -- P7 "임계값 · 알림 > 복약 공통 > 미수령 판정 시간"이 분 단위로만 입력 가능해서, 초 단위로도
 -- 세밀하게 넣을 수 있게 해달라는 요청(2026-09-16)으로 컬럼 자체의 단위를 분에서 초로
