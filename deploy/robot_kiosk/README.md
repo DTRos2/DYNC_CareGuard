@@ -1,8 +1,10 @@
 # 로봇 후면 상태 화면 (kiosk)
 
 로봇 뒷면 7인치 모니터에 띄우는 최소 상태 화면. 빌드 없이 `index.html`을 브라우저로
-열면 끝 — 새 백엔드 없이 기존 `/ws/dashboard`, `GET /robots/{id}/thresholds`,
-`GET /patrol-runs`만 사용한다.
+열면 끝 — 기존 `/ws/dashboard`, `GET /robots/{id}/thresholds`, `GET /patrol-runs`에
+더해 통화/119 신고 상태 조회용 `GET /calls/status`, `GET /emergency-reports/status`
+(2026-09-17 추가, `caller_name`/`reporter_name` 인메모리 레지스트리 그대로 노출)를
+사용한다.
 
 ## 실제로 나오는 화면
 
@@ -12,6 +14,13 @@
 - 화면이 서버와 끊기면 배지 대신 "서버 연결 끊김 · 재연결 중"이 뜨고, 3초 간격으로
   자동 재접속을 시도한다(끊긴 동안 마지막 온라인/오프라인 상태를 그대로 보여주지
   않도록, 재연결 전까지는 "온라인"이라고 단정하지 않는다).
+- 대시보드 이벤트 상세 모달에서 "스피커 통화"를 시작하면(`call_started`, 파란 계열)
+  "OOO님과 통화중"으로, "119 모의 신고"를 시작하면(`emergency_report_started`, 빨간
+  계열·펄스) "보호자가 119 신고중"으로 배지가 바뀐다. 둘 다 배터리 상태보다 우선
+  표시되고, 종료 이벤트(`call_ended`/`emergency_report_ended`)를 받으면 원래 배지로
+  돌아간다. 순찰 상태(`loadPatrolState`)와 같은 패턴으로, 첫 로드 시와 WS 재연결 시
+  `GET /calls/status`·`GET /emergency-reports/status`를 다시 불러 재조회하므로
+  화면이 통화/신고 도중 끊겼다 재연결돼도 놓친 브로드캐스트를 따라잡는다.
 
 ## 요구사항 스펙과 실제 백엔드가 다른 부분 (백엔드 새로 안 만들기로 한 결과)
 

@@ -703,8 +703,8 @@ void ApiClient::cancelPatrolRun(const QString& robotCode, SimpleCallback callbac
              [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
 }
 
-void ApiClient::startCall(const QString& robotCode, CallCallback callback) {
-    QJsonObject body{{"robot_code", robotCode}};
+void ApiClient::startCall(const QString& robotCode, const QString& callerName, CallCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}, {"caller_name", callerName}};
     postJson(QStringLiteral("/calls/start"), body,
              [callback](bool ok, const QByteArray& respBody, const QString& err) {
                  const bool robotConnected =
@@ -721,6 +721,19 @@ void ApiClient::endCall(const QString& robotCode, CallCallback callback) {
                      ok && QJsonDocument::fromJson(respBody).object().value("robot_connected").toBool();
                  callback(ok, robotConnected, err);
              });
+}
+
+void ApiClient::startEmergencyReport(const QString& robotCode, const QString& reporterName,
+                                      EmergencyReportCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}, {"reporter_name", reporterName}};
+    postJson(QStringLiteral("/emergency-reports/start"), body,
+             [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
+}
+
+void ApiClient::endEmergencyReport(const QString& robotCode, EmergencyReportCallback callback) {
+    QJsonObject body{{"robot_code", robotCode}};
+    postJson(QStringLiteral("/emergency-reports/end"), body,
+             [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
 }
 
 void ApiClient::prepareNavigation(const QString& robotCode, int mapId) {

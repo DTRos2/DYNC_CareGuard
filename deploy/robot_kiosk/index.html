@@ -11,6 +11,8 @@
     --green-dim: #16a34a;
     --red: #ef4444;
     --red-dim: #dc2626;
+    --blue: #3b82f6;
+    --blue-dim: #2563eb;
     --bg: #0b1210;
     --fg: #eef2f0;
     --fg-dim: #9aa8a3;
@@ -42,6 +44,10 @@
   #app.normal { background: radial-gradient(ellipse at center, #10231a 0%, var(--bg) 70%); }
   /* 배터리 부족: 빨간 계열 */
   #app.warning { background: radial-gradient(ellipse at center, #2a1212 0%, var(--bg) 70%); }
+  /* 스피커 통화 중: 파란 계열 */
+  #app.calling { background: radial-gradient(ellipse at center, #10182a 0%, var(--bg) 70%); }
+  /* 119 모의 신고 중: 배터리 경고와 같은 빨간 계열(응급 상황으로 취급) */
+  #app.emergency { background: radial-gradient(ellipse at center, #2a1212 0%, var(--bg) 70%); }
 
   .topbar {
     display: flex;
@@ -76,6 +82,8 @@
   }
   #app.warning .battery { color: var(--red); }
   #app.unknown .battery { color: var(--fg-dim); }
+  #app.calling .battery { color: var(--blue); }
+  #app.emergency .battery { color: var(--red); }
 
   .badge {
     padding: 1.6vh 4vw;
@@ -98,6 +106,17 @@
     background: rgba(255,255,255,0.06);
     color: var(--fg-dim);
     border-color: rgba(255,255,255,0.15);
+  }
+  #app.calling .badge {
+    background: rgba(59, 130, 246, 0.18);
+    color: var(--blue);
+    border-color: var(--blue-dim);
+  }
+  #app.emergency .badge {
+    background: rgba(239, 68, 68, 0.18);
+    color: var(--red);
+    border-color: var(--red-dim);
+    animation: pulse 1.4s ease-in-out infinite;
   }
 
   @keyframes pulse {
@@ -174,7 +193,11 @@
     wsConnected: false,   // 이 키오스크 화면 <-> 서버
     battery: null,        // battery_state 기반 정수 %
     patrolRunning: false,
-    attentionPct: DEFAULT_ATTENTION_PCT
+    attentionPct: DEFAULT_ATTENTION_PCT,
+    callActive: false,    // call_started/call_ended (이벤트 상세 모달 "스피커 통화")
+    callerName: '',
+    emergencyActive: false, // emergency_report_started/ended (이벤트 상세 모달 "119 모의 신고")
+    reporterName: ''
   };
 
   var appEl = document.getElementById('app');
@@ -191,11 +214,24 @@
   function render() {
     var lowBattery = state.battery !== null && state.battery <= state.attentionPct;
 
-    appEl.className = state.battery === null ? 'unknown' : (lowBattery ? 'warning' : 'normal');
+    // 우선순위: 119 모의 신고(응급 상황) > 스피커 통화 > 배터리 경고 > 순찰/대기.
+    // 신고·통화는 배터리 상태와 무관하게 지금 이 로봇 앞에서 일어나는 일이라 항상
+    // 앞선다.
+    if (state.emergencyActive) {
+      appEl.className = 'emergency';
+    } else if (state.callActive) {
+      appEl.className = 'calling';
+    } else {
+      appEl.className = state.battery === null ? 'unknown' : (lowBattery ? 'warning' : 'normal');
+    }
 
     batteryEl.textContent = state.battery === null ? '--%' : (state.battery + '%');
 
-    if (lowBattery) {
+    if (state.emergencyActive) {
+      badgeEl.textContent = '보호자가 119 신고중';
+    } else if (state.callActive) {
+      badgeEl.textContent = (state.callerName ? state.callerName + '님과 ' : '') + '통화중';
+    } else if (lowBattery) {
       badgeEl.textContent = '충전 필요 · 복귀 중';
     } else if (state.battery === null) {
       badgeEl.textContent = '연결 확인 중';
@@ -265,8 +301,34 @@
       .catch(function () { /* 서버가 아직 안 떴으면 WS 이벤트만으로 따라간다 */ });
   }
 
+  function loadCallState() {
+    var url = CONFIG.serverBase + '/calls/status?robot_code=' + encodeURIComponent(CONFIG.robotCode);
+    fetch(url)
+      .then(function (res) { if (!res.ok) throw new Error(res.status); return res.json(); })
+      .then(function (data) {
+        state.callActive = !!data.active;
+        state.callerName = typeof data.caller_name === 'string' ? data.caller_name : '';
+        render();
+      })
+      .catch(function () { /* 서버가 아직 안 떴으면 WS 이벤트만으로 따라간다 */ });
+  }
+
+  function loadEmergencyReportState() {
+    var url = CONFIG.serverBase + '/emergency-reports/status?robot_code=' + encodeURIComponent(CONFIG.robotCode);
+    fetch(url)
+      .then(function (res) { if (!res.ok) throw new Error(res.status); return res.json(); })
+      .then(function (data) {
+        state.emergencyActive = !!data.active;
+        state.reporterName = typeof data.reporter_name === 'string' ? data.reporter_name : '';
+        render();
+      })
+      .catch(function () { /* 서버가 아직 안 떴으면 WS 이벤트만으로 따라간다 */ });
+  }
+
   loadThresholds();
   loadPatrolState();
+  loadCallState();
+  loadEmergencyReportState();
 
   // -------------------------- WebSocket --------------------------
   function wsUrl() {
@@ -281,10 +343,12 @@
     ws.onopen = function () {
       state.wsConnected = true;
       render();
-      // 끊겨있던 동안 순찰 시작/종료 이벤트(patrol_run_updated 등)를 놓쳤을 수
-      // 있다 — WS엔 그런 이벤트에 대한 재전송/hydration이 없어서, (재)연결될
-      // 때마다 현재 순찰 상태를 REST로 다시 맞춰준다(첫 로드 때와 동일한 방식).
+      // 끊겨있던 동안 순찰 시작/종료 이벤트(patrol_run_updated 등)나 통화/119 신고
+      // 시작·종료 이벤트를 놓쳤을 수 있다 — WS엔 재전송/hydration이 없어서, (재)연결될
+      // 때마다 현재 상태를 REST로 다시 맞춰준다(첫 로드 때와 동일한 방식).
       loadPatrolState();
+      loadCallState();
+      loadEmergencyReportState();
     };
 
     ws.onmessage = function (ev) {
@@ -316,6 +380,38 @@
         case 'patrol_done':
           // 순찰 종료(완료/중단/실패 모두 포함, patrol.py 참고)
           state.patrolRunning = false;
+          render();
+          break;
+
+        case 'call_started':
+          // event_detail_modal.cpp의 "스피커 통화" 버튼 — api/v1/call.py가 caller_name과
+          // 함께 broadcast한다. robot_connected===false면 서버의 CallSessionRegistry도
+          // "통화 중"으로 치지 않으므로(call.py::start_call, mark_started는 connected일
+          // 때만 호출) 이 화면도 같은 기준으로 맞춘다 — 대시보드 쪽도 이 경우 버튼을
+          // "스피커 통화"로 되돌리고 통화 상태에 들어가지 않는다(event_detail_modal.cpp
+          // handleSpeakerCallClicked 참고).
+          if (msg.robot_connected === false) break;
+          state.callActive = true;
+          state.callerName = typeof msg.caller_name === 'string' ? msg.caller_name : '';
+          render();
+          break;
+
+        case 'call_ended':
+          state.callActive = false;
+          state.callerName = '';
+          render();
+          break;
+
+        case 'emergency_report_started':
+          // event_detail_modal.cpp의 "119 모의 신고" 버튼 — api/v1/emergency_report.py.
+          state.emergencyActive = true;
+          state.reporterName = typeof msg.reporter_name === 'string' ? msg.reporter_name : '';
+          render();
+          break;
+
+        case 'emergency_report_ended':
+          state.emergencyActive = false;
+          state.reporterName = '';
           render();
           break;
 

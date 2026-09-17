@@ -42,6 +42,8 @@ private:
     void handleResolveClicked();
     void handleSpeakerCallClicked();
     void resetSpeakerCallButton();
+    void handleEmergencyReportClicked();
+    void resetEmergencyReportButton();
 
     EventTableModel::EventRow row_;
     int currentStep_ = 0;   // 0=감지 1=출동 2=음성확인 3=조치 4=완료
@@ -56,4 +58,9 @@ private:
     ApiClient* apiClient_ = nullptr;
     CallAudioClient* callAudio_ = nullptr;
     bool callActive_ = false;
+
+    // "119 모의 신고" — 실제 119 연동이 아니라, 로봇 후면 키오스크에 "보호자가 119
+    // 신고중" 상태를 띄우는 토글(스피커 통화와 같은 시작/종료 패턴).
+    QPushButton* emergencyBtn_ = nullptr;
+    bool emergencyReportActive_ = false;
 };

@@ -10,26 +10,30 @@ from typing import Dict
 
 from fastapi import APIRouter
 
-from ...schemas import CallRequest, CallResponse
+from ...schemas import CallRequest, CallResponse, CallStatusResponse
 from ...ws import dashboard_ws, robot_ws
 
 router = APIRouter(prefix="/calls", tags=["call"])
 
 
 class CallSessionRegistry:
-    """robot_code -> 통화 진행 여부. 실제 오디오 소켓 개수·상태는
+    """robot_code -> caller_name. 실제 오디오 소켓 개수·상태는
     audio_relay.py::AudioRoom이 이미 갖고 있으므로, 여기서는 "지금 이 로봇과 통화
-    중인가"라는 최소한의 플래그만 관리한다 — 중복 call_start 방지, P6/P1 등 다른
-    화면에 통화 중 배지를 보여줄 때 참조하는 용도."""
+    중인가 + 누구와"라는 최소한의 상태만 관리한다 — 중복 call_start 방지, GET /status로
+    키오스크 재연결 시 재조회하는 용도(call_started 브로드캐스트를 놓쳤을 때 대비,
+    2026-09-17 추가)."""
 
     def __init__(self) -> None:
-        self._active: Dict[str, bool] = {}
+        self._active: Dict[str, str] = {}
 
     def is_active(self, robot_code: str) -> bool:
-        return self._active.get(robot_code, False)
+        return robot_code in self._active
 
-    def mark_started(self, robot_code: str) -> None:
-        self._active[robot_code] = True
+    def caller_name(self, robot_code: str) -> str:
+        return self._active.get(robot_code, "")
+
+    def mark_started(self, robot_code: str, caller_name: str) -> None:
+        self._active[robot_code] = caller_name
 
     def mark_ended(self, robot_code: str) -> None:
         self._active.pop(robot_code, None)
@@ -47,9 +51,15 @@ async def start_call(payload: CallRequest):
     """
     connected = await robot_ws.send_command(payload.robot_code, {"type": "call_start"})
     if connected:
-        _sessions.mark_started(payload.robot_code)
+        _sessions.mark_started(payload.robot_code, payload.caller_name)
     await dashboard_ws.broadcast(
-        {"type": "call_started", "robot_code": payload.robot_code, "robot_connected": connected}
+        {
+            "type": "call_started",
+            "robot_code": payload.robot_code,
+            "robot_connected": connected,
+            # 로봇 후면 키오스크(deploy/robot_kiosk)가 "OOO님과 통화중"으로 표시하는 데 쓴다.
+            "caller_name": payload.caller_name,
+        }
     )
     return CallResponse(robot_connected=connected)
 
@@ -63,3 +73,12 @@ async def end_call(payload: CallRequest):
     _sessions.mark_ended(payload.robot_code)
     await dashboard_ws.broadcast({"type": "call_ended", "robot_code": payload.robot_code})
     return CallResponse(robot_connected=connected)
+
+
+@router.get("/status", response_model=CallStatusResponse)
+async def get_call_status(robot_code: str):
+    """키오스크(deploy/robot_kiosk)가 loadPatrolState와 같은 패턴으로 초기 로드·WS
+    재연결 시 호출한다 — call_started 브로드캐스트가 뜨는 그 순간 키오스크 쪽 연결이
+    끊겨 있었다면 WS만으로는 "지금 통화 중"이라는 걸 영영 알 방법이 없었다(2026-09-17
+    발견, README 참고)."""
+    return CallStatusResponse(active=_sessions.is_active(robot_code), caller_name=_sessions.caller_name(robot_code))

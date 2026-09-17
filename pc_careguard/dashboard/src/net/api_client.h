@@ -364,9 +364,18 @@ public:
     // POST /calls/start, POST /calls/end — 이벤트 상세 모달 "스피커 통화" 버튼. 실제
     // 오디오 바이트는 이 REST 왕복과 무관하게 CallAudioClient가 별도 WebSocket으로
     // 주고받는다(audio_relay.py 참고) — 이 두 메서드는 로봇에 call_start/call_end
-    // 신호만 전달한다.
-    void startCall(const QString& robotCode, CallCallback callback);
+    // 신호만 전달한다. callerName은 로봇 후면 키오스크가 "OOO님과 통화중"으로
+    // 표시하는 데 쓰는 상대측 표시명(event_detail_modal의 recipientName)이다.
+    void startCall(const QString& robotCode, const QString& callerName, CallCallback callback);
     void endCall(const QString& robotCode, CallCallback callback);
+
+    // POST /emergency-reports/start, POST /emergency-reports/end — 이벤트 상세 모달
+    // "119 모의 신고" 버튼. 실제 소방/구급 연동이 아니라 로봇 후면 키오스크에 "보호자가
+    // 119 신고중" 상태를 띄우는 용도라, call.py와 달리 로봇에는 아무 신호도 가지 않는다.
+    using EmergencyReportCallback = std::function<void(bool ok, const QString& errorDetail)>;
+    void startEmergencyReport(const QString& robotCode, const QString& reporterName,
+                               EmergencyReportCallback callback);
+    void endEmergencyReport(const QString& robotCode, EmergencyReportCallback callback);
 
     // POST /patrol-runs/prepare-navigation — 실제 순찰/이동 목표 없이 Nav2만 미리
     // 준비시킨다(P6 페이지를 열거나 다른 로봇의 맵으로 전환할 때 호출). 로봇이 아직
