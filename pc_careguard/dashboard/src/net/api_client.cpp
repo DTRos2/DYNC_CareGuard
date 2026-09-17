@@ -531,6 +531,7 @@ ApiClient::RecipientInfo ApiClient::parseRecipient(const QJsonObject& o) {
     r.robotCode = o.value(QStringLiteral("robot_code")).toString();
     r.gender = o.value(QStringLiteral("gender")).toString();
     r.birthDate = o.value(QStringLiteral("birth_date")).toString();
+    r.phone = o.value(QStringLiteral("phone")).toString();
     r.homeAddress = o.value(QStringLiteral("home_address")).toString();
     r.diseases = o.value(QStringLiteral("diseases")).toString();
     r.note = o.value(QStringLiteral("note")).toString();
@@ -638,6 +639,7 @@ QJsonObject recipientBodyFromParams(const ApiClient::RecipientCreateParams& para
 
     QJsonObject body{
         {"name", params.name},
+        {"phone", params.phone},
         {"home_address", params.homeAddress},
         {"diseases", params.diseases},
         {"note", params.note},

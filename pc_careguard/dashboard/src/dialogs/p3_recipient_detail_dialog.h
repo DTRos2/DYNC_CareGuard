@@ -87,6 +87,7 @@ private:
     QLineEdit* birthYearEdit_ = nullptr;
     QComboBox* genderCombo_ = nullptr;
     QLineEdit* addressEdit_ = nullptr;
+    QLineEdit* phoneEdit_ = nullptr;  // 대상자 본인 연락처(선택 입력, RecipientDetail::phone)
     QLineEdit* diseasesEdit_ = nullptr;
     QLineEdit* noteEdit_ = nullptr;
     QComboBox* robotCombo_ = nullptr;
