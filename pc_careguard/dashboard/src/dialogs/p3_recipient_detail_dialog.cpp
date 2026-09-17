@@ -284,6 +284,11 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     genderCombo_->addItems({QStringLiteral("남"), QStringLiteral("여")});
     if (detail_.gender == QStringLiteral("여")) genderCombo_->setCurrentIndex(1);
     row2->addWidget(makeFieldBlock(QStringLiteral("성별"), true, genderCombo_, tab), 1);
+
+    phoneEdit_ = new QLineEdit(detail_.phone, tab);
+    phoneEdit_->setPlaceholderText(QStringLiteral("010-1234-5678"));
+    installLivePhoneFormatting(phoneEdit_);
+    row2->addWidget(makeFieldBlock(QStringLiteral("전화번호"), false, phoneEdit_, tab), 1);
     formCol->addLayout(row2);
 
     addressEdit_ = new QLineEdit(detail_.card.address, tab);
@@ -487,7 +492,10 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
     // 넓게 쓰면(테두리·padding 탓에 QLabel보다 실사용 폭이 좁아서) 그 뒤 채널·아이콘 칸이
     // 수정 모드에서만 오른쪽으로 밀려 헤더와 안 맞아 보인다(gui/issue/target1.png 지적) —
     // 그래서 라벨·인풋 모두 이 상수 하나를 공유한다.
-    static const int kPillW = 52, kNameW = 160, kPhoneW = 134, kChannelW = 92;
+    // 이메일 칸을 끼워 넣으면서 연락처(134->120)·알림채널(92->80)을 살짝 줄이고, 연락처~
+    // 알림채널 사이의 넓은 여백(kGapPhoneChannel=40)을 없애 양쪽에 자연스러운 간격으로
+    // 나눴다 — 다이얼로그 폭(MODAL_W_M=720)에 맞춘 값(create dialog와 동일).
+    static const int kPillW = 52, kNameW = 150, kPhoneW = 120, kEmailW = 150, kChannelW = 80;
     static const int kIconW = 24, kIconGap = 6;
     // 보기 모드는 편집+삭제 두 아이콘, 수정 모드는 저장+취소 두 아이콘이 나란히 붙는다 —
     // 헤더의 마지막 칸도 이 두 아이콘 폭에 맞춰야 우측 끝 정렬이 흐트러지지 않는다.
@@ -495,7 +503,8 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
     // 칸 사이 간격을 균일한 spacing 하나로 주면 이름(가변폭) 뒤 여백이 다른 칸보다 훨씬
     // 넓어 보이는 문제가 생긴다(리뷰 지적: 순위-이름 너무 가깝고, 이름-연락처 너무 멀고,
     // 연락처-알림채널 너무 가까움). 이름 칸을 고정폭으로 바꾸고, 칸마다 간격을 따로 준다.
-    static const int kGapPillName = 16, kGapNamePhone = 10, kGapPhoneChannel = 40, kGapChannelEdit = 16;
+    static const int kGapPillName = 16, kGapNamePhone = 10, kGapPhoneEmail = 12, kGapEmailChannel = 12,
+                      kGapChannelEdit = 16;
 
     auto* boxLayout = new QVBoxLayout(box);
     boxLayout->setContentsMargins(0, 0, 0, 0);
@@ -522,7 +531,9 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
     addHeaderCell(QStringLiteral("이름 (관계)"), kNameW);
     headerLayout->addSpacing(kGapNamePhone);
     addHeaderCell(QStringLiteral("연락처"), kPhoneW);
-    headerLayout->addSpacing(kGapPhoneChannel);
+    headerLayout->addSpacing(kGapPhoneEmail);
+    addHeaderCell(QStringLiteral("이메일"), kEmailW);
+    headerLayout->addSpacing(kGapEmailChannel);
     addHeaderCell(QStringLiteral("알림 채널"), kChannelW);
     headerLayout->addSpacing(kGapChannelEdit);
     // 편집 아이콘이 테이블 우측 끝에 최대한 붙도록 남는 폭을 여기서 흡수한다.
@@ -565,7 +576,13 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
         phoneLabel->setProperty("role", "mono");
         phoneLabel->setFixedWidth(kPhoneW);
         viewLayout->addWidget(phoneLabel);
-        viewLayout->addSpacing(kGapPhoneChannel);
+        viewLayout->addSpacing(kGapPhoneEmail);
+
+        auto* emailLabel = new QLabel(viewPage);
+        emailLabel->setProperty("role", "secondary");
+        emailLabel->setFixedWidth(kEmailW);
+        viewLayout->addWidget(emailLabel);
+        viewLayout->addSpacing(kGapEmailChannel);
 
         auto* channelLabel = new QLabel(viewPage);
         channelLabel->setProperty("role", "secondary");
@@ -576,13 +593,16 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
         // 폭을 여기서 흡수한다 — 순위 칸은 왼쪽 끝에 그대로 붙어 있다.
         viewLayout->addStretch();
 
-        auto refreshViewLabels = [this, r, nameLabel, phoneLabel, channelLabel] {
+        auto refreshViewLabels = [this, r, nameLabel, phoneLabel, emailLabel, channelLabel] {
             const GuardianContact& gg = detail_.guardians[r];
             const QString nameText =
                 gg.relation.isEmpty() ? gg.name : QStringLiteral("%1 (%2)").arg(gg.name, gg.relation);
             nameLabel->setText(QFontMetrics(nameLabel->font()).elidedText(nameText, Qt::ElideRight, kNameW));
             nameLabel->setToolTip(nameText);
             phoneLabel->setText(gg.phone);
+            const QString emailText = gg.email.isEmpty() ? Tokens::Format::EMPTY : gg.email;
+            emailLabel->setText(QFontMetrics(emailLabel->font()).elidedText(emailText, Qt::ElideRight, kEmailW));
+            emailLabel->setToolTip(gg.email);
             channelLabel->setText(gg.isEmergencyFixed
                                        ? QStringLiteral("모의 신고 전용")
                                        : (gg.notifyEnabled ? QStringLiteral("수신") : QStringLiteral("미수신")));
@@ -635,7 +655,12 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
             phoneEdit->setFixedWidth(kPhoneW);
             installLivePhoneFormatting(phoneEdit);  // 입력하는 즉시 하이픈이 보이도록
             editLayout->addWidget(phoneEdit);
-            editLayout->addSpacing(kGapPhoneChannel);
+            editLayout->addSpacing(kGapPhoneEmail);
+            auto* emailEdit = new QLineEdit(editPage);
+            emailEdit->setFixedWidth(kEmailW);
+            emailEdit->setPlaceholderText(QStringLiteral("guardian@example.com"));
+            editLayout->addWidget(emailEdit);
+            editLayout->addSpacing(kGapEmailChannel);
             // DB의 guardian.notify_enabled가 boolean이라 입력도 체크박스로 맞춘다(예전엔
             // "문자 + 전화" 같은 자유 텍스트였는데 저장할 칸이 없어 결국 boolean으로 뭉개졌다).
             auto* channelEdit = new QCheckBox(QStringLiteral("수신"), editPage);
@@ -662,19 +687,20 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
             stack->addWidget(editPage);  // index 1
 
             connect(editBtn, &QPushButton::clicked, this,
-                    [this, r, stack, nameEdit, phoneEdit, channelEdit] {
+                    [this, r, stack, nameEdit, phoneEdit, emailEdit, channelEdit] {
                         const GuardianContact& gg = detail_.guardians[r];
                         const QString nameText = gg.relation.isEmpty()
                                                       ? gg.name
                                                       : QStringLiteral("%1 (%2)").arg(gg.name, gg.relation);
                         nameEdit->setText(nameText);
                         phoneEdit->setText(gg.phone);
+                        emailEdit->setText(gg.email);
                         channelEdit->setChecked(gg.notifyEnabled);
                         stack->setCurrentIndex(1);
                     });
 
             connect(saveBtn, &QPushButton::clicked, this,
-                    [this, r, stack, nameEdit, phoneEdit, channelEdit, refreshViewLabels] {
+                    [this, r, stack, nameEdit, phoneEdit, emailEdit, channelEdit, refreshViewLabels] {
                         const QString raw = nameEdit->text().trimmed();
                         if (raw.isEmpty()) return;
 
@@ -690,6 +716,7 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
                         // "-" 없이 숫자만 입력해도 저장 시점에 하이픈을 넣어준다(요청: 노출
                         // 형식 가독성).
                         detail_.guardians[r].phone = formatGuardianPhone(phoneEdit->text());
+                        detail_.guardians[r].email = emailEdit->text().trimmed();
                         detail_.guardians[r].notifyEnabled = channelEdit->isChecked();
                         refreshViewLabels();
                         stack->setCurrentIndex(0);
@@ -709,6 +736,7 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
                 autoEditGuardianIndex_ = -1;
                 nameEdit->setText(QString());
                 phoneEdit->setText(QString());
+                emailEdit->setText(QString());
                 channelEdit->setChecked(true);
                 stack->setCurrentIndex(1);
                 nameEdit->setFocus();
@@ -1312,6 +1340,7 @@ void P3RecipientDetailDialog::handleSaveClicked() {
     detail_.card.address = address;
     detail_.birthYear = birthYearEdit_->text().trimmed().toInt();  // 파싱 실패 시 0(=미상)
     detail_.gender = genderCombo_->currentText();
+    detail_.phone = formatGuardianPhone(phoneEdit_->text());
     detail_.diseases = diseasesEdit_->text().trimmed();
     detail_.note = noteEdit_->text().trimmed();
     // create dialog::handleRegisterClicked와 같은 이유로 currentText() 대신 robots_에서 실제
@@ -1359,6 +1388,7 @@ void P3RecipientDetailDialog::applyRemoteUpdate(const RecipientDetail& fresh) {
 
     nameEdit_->setText(detail_.card.name);
     addressEdit_->setText(detail_.card.address);
+    phoneEdit_->setText(detail_.phone);
     birthYearEdit_->setText(detail_.birthYear > 0 ? QString::number(detail_.birthYear) : QString());
     genderCombo_->setCurrentIndex(detail_.gender == QStringLiteral("여") ? 1 : 0);
     diseasesEdit_->setText(detail_.diseases);

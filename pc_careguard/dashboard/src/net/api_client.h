@@ -154,6 +154,7 @@ public:
         QString robotCode;    // 미배정이면 빈 문자열
         QString gender;       // "male" / "female" / "other". 미상이면 빈 문자열
         QString birthDate;    // "YYYY-MM-DD". 미상이면 빈 문자열
+        QString phone;        // 대상자 본인 연락처. 미상이면 빈 문자열
         QString homeAddress;
         QString diseases;
         QString note;
@@ -322,6 +323,7 @@ public:
         QString name;
         QString gender;  // "male" / "female" / "other" / 빈 문자열(미상)
         QString birthDate;  // "YYYY-MM-DD". 비어 있으면 서버에 안 보낸다
+        QString phone;  // 대상자 본인 연락처
         QString homeAddress;
         QString diseases;
         QString note;

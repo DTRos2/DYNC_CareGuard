@@ -142,6 +142,7 @@ struct RecipientDetail {
     RecipientCard card;
     QString gender;     // "남" / "여"
     int birthYear = 0;  // 0 = 미상
+    QString phone;      // 대상자 본인 연락처. recipient.phone
     QString diseases;
     QString note;
     QVector<GuardianContact> guardians;
