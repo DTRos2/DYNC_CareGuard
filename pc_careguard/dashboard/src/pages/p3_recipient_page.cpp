@@ -947,6 +947,8 @@ RecipientDetail recipientDetailFromApi(const ApiClient::RecipientDetailInfo& inf
         gc.phone = g.phone;
         gc.notifyEnabled = g.notifyEnabled;
         gc.isEmergencyFixed = false;
+        gc.id = g.id;
+        gc.email = g.email;
         d.guardians.append(gc);
     }
     // 119·112 고정 행은 DB에 없는 화면 전용 표시 — mockRecipientDetail()/생성 모달과 동일하게 덧붙인다.
@@ -1120,8 +1122,10 @@ bool buildRecipientParams(const RecipientDetail& detail, ApiClient::RecipientCre
     for (const auto& g : detail.guardians) {
         if (g.isEmergencyFixed) continue;  // 119·112는 화면 전용 표시라 서버에 안 보낸다
         ApiClient::GuardianCreateParams gp;
+        gp.id = g.id;  // 0이면 서버가 신규로 처리 — GuardianContact::id 주석 참고
         gp.name = g.name;
         gp.phone = g.phone;
+        gp.email = g.email;
         gp.relation = g.relation;
         gp.priority = g.priority;
         gp.notifyEnabled = g.notifyEnabled;

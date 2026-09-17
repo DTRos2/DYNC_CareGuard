@@ -114,6 +114,11 @@ struct GuardianContact {
     // 뭉개졌다. 아예 입력 단계부터 체크박스로 바꿔 DB 타입과 맞춘다.
     bool notifyEnabled = true;
     bool isEmergencyFixed = false;
+    // 서버 guardian.id — 저장 시 이 값을 그대로 실어 보내야 서버가 "기존 행 수정"으로
+    // 처리한다(0이면 신규). 새 필드는 항상 끝에 추가한다 — 브레이스 초기화(예: 아래
+    // 119·112 고정 행)가 위치 기반이라 중간에 끼우면 다른 필드로 밀린다.
+    int id = 0;
+    QString email;
 };
 
 // medication_schedule 테이블 대응(slot_no/drug_name/dose_time/days_of_week).
