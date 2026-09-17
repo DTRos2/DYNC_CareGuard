@@ -13,6 +13,7 @@
 #include <QVBoxLayout>
 
 #include "audio/call_audio_client.h"
+#include "dialogs/guardian_mail_dialog.h"
 #include "net/api_client.h"
 #include "net/server_config.h"
 #include "theme/tokens.h"
@@ -165,8 +166,8 @@ QWidget* EventDetailModal::buildProgressBar() {
     layout->setContentsMargins(16, 10, 16, 10);
     layout->setSpacing(4);
 
-    // 3단계: 감지(0)/조치(1)/완료(2). 조치는 스피커 통화 종료·보호자 문자 클릭으로
-    // 체크되고(markActionTaken), 라벨 텍스트도 그때 "조치(스피커)"/"조치(문자)"로 바뀐다
+    // 3단계: 감지(0)/조치(1)/완료(2). 조치는 스피커 통화 종료·보호자 메일 클릭으로
+    // 체크되고(markActionTaken), 라벨 텍스트도 그때 "조치(스피커)"/"조치(메일)"로 바뀐다
     // — 그래서 dot·label 포인터를 멤버로 들고 있다가 refreshProgressBar()에서 다시 그린다.
     for (int i = 0; i < 3; ++i) {
         auto* step = new QWidget(bar);
@@ -357,7 +358,7 @@ QWidget* EventDetailModal::buildActionGrid() {
     auto* grid = new QGridLayout();
     grid->setSpacing(6);
 
-    // 요청 사양: 스피커 통화·보호자 연락·보호자 문자 세 개만 남기고 나머지(대상자 전화,
+    // 요청 사양: 스피커 통화·보호자 연락·보호자 메일 세 개만 남기고 나머지(대상자 전화,
     // 119 모의 신고, 재확인 예약, 이벤트 취소)는 제거한다.
     speakerBtn_ =
         new QPushButton(SimpleIcons::speakerphone(Tokens::TEXT_INVERSE, 12), QStringLiteral("스피커 통화"), wrap);
@@ -373,17 +374,14 @@ QWidget* EventDetailModal::buildActionGrid() {
     connect(guardianContactBtn_, &QPushButton::clicked, this, &EventDetailModal::handleGuardianContactClicked);
     grid->addWidget(guardianContactBtn_, 0, 1);
 
-    auto* guardianMsgBtn =
-        new QPushButton(SimpleIcons::message(Tokens::TEXT_PRIMARY, 12), QStringLiteral("보호자 문자"), wrap);
-    guardianMsgBtn->setProperty("variant", "secondary");
-    guardianMsgBtn->setProperty("size", "s");
-    connect(guardianMsgBtn, &QPushButton::clicked, this, [this] {
-        markActionTaken(QStringLiteral("(문자)"));
-        showComingSoon(QStringLiteral("보호자 문자"));
-    });
+    guardianMailBtn_ =
+        new QPushButton(SimpleIcons::message(Tokens::TEXT_PRIMARY, 12), QStringLiteral("보호자 메일"), wrap);
+    guardianMailBtn_->setProperty("variant", "secondary");
+    guardianMailBtn_->setProperty("size", "s");
+    connect(guardianMailBtn_, &QPushButton::clicked, this, &EventDetailModal::handleGuardianMailClicked);
     // 2열 그리드 유지(한 줄에 3개를 다 넣으면 버튼 폭이 좁아져 "보호자 연락"/"보호자
-    // 문자" 글자가 잘렸다) — 마지막 버튼만 2칸을 차지해 아래 한 줄 전체를 채운다.
-    grid->addWidget(guardianMsgBtn, 1, 0, 1, 2);
+    // 메일" 글자가 잘렸다) — 마지막 버튼만 2칸을 차지해 아래 한 줄 전체를 채운다.
+    grid->addWidget(guardianMailBtn_, 1, 0, 1, 2);
 
     layout->addLayout(grid);
     return wrap;
@@ -469,11 +467,6 @@ void EventDetailModal::handleResolveClicked() {
     accept();
 }
 
-void EventDetailModal::showComingSoon(const QString& feature) {
-    QMessageBox::information(this, QStringLiteral("CareGuard"),
-                              QStringLiteral("추후 구현: %1").arg(feature));
-}
-
 void EventDetailModal::handleSpeakerCallClicked() {
     speakerBtn_->setEnabled(false);
 
@@ -511,19 +504,21 @@ void EventDetailModal::resetSpeakerCallButton() {
     speakerBtn_->setEnabled(true);
 }
 
-void EventDetailModal::handleGuardianContactClicked() {
+void EventDetailModal::fetchRecipientIdAndGuardians(
+    std::function<void(bool ok, int recipientId, const QVector<ApiClient::GuardianInfo>& guardians,
+                        const QString& err)>
+        callback) {
     if (row_.recipientName.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("보호자 연락처"),
-                                  QStringLiteral("이 이벤트에는 연결된 대상자가 없습니다."));
+        callback(false, 0, {}, QStringLiteral("이 이벤트에는 연결된 대상자가 없습니다."));
         return;
     }
 
     // GET /recipients에는 이름만 있고 id가 없어(EventTableModel::EventRow가 EventInfo::
     // recipientName만 들고 있다 — 서버 이벤트 응답 자체에 recipient_id가 안 실려 있음),
     // 이름으로 먼저 목록에서 id를 찾은 뒤 그 id로 상세(guardians)를 받는 2단계 조회다.
-    guardianContactBtn_->setEnabled(false);
     const QString recipientName = row_.recipientName;
-    apiClient_->fetchRecipients([this, recipientName](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
+    apiClient_->fetchRecipients([this, recipientName, callback](bool ok,
+                                                                  const QVector<ApiClient::RecipientInfo>& items) {
         int recipientId = 0;
         if (ok) {
             for (const auto& r : items) {
@@ -534,22 +529,51 @@ void EventDetailModal::handleGuardianContactClicked() {
             }
         }
         if (recipientId <= 0) {
-            guardianContactBtn_->setEnabled(true);
-            QMessageBox::warning(this, QStringLiteral("보호자 연락처"),
-                                  QStringLiteral("대상자 정보를 불러오지 못했습니다."));
+            callback(false, 0, {}, QStringLiteral("대상자 정보를 불러오지 못했습니다."));
             return;
         }
         apiClient_->fetchRecipientDetail(
-            recipientId, [this](bool ok2, const ApiClient::RecipientDetailInfo& detail, const QString& err) {
-                guardianContactBtn_->setEnabled(true);
+            recipientId, [callback, recipientId](bool ok2, const ApiClient::RecipientDetailInfo& detail,
+                                                   const QString& err) {
                 if (!ok2) {
-                    QMessageBox::warning(
-                        this, QStringLiteral("보호자 연락처"),
-                        err.isEmpty() ? QStringLiteral("보호자 정보를 불러오지 못했습니다.") : err);
+                    callback(false, recipientId, {},
+                             err.isEmpty() ? QStringLiteral("보호자 정보를 불러오지 못했습니다.") : err);
                     return;
                 }
-                showGuardianContactPopover(detail.guardians);
+                callback(true, recipientId, detail.guardians, QString());
             });
+    });
+}
+
+void EventDetailModal::handleGuardianContactClicked() {
+    guardianContactBtn_->setEnabled(false);
+    fetchRecipientIdAndGuardians([this](bool ok, int, const QVector<ApiClient::GuardianInfo>& guardians,
+                                         const QString& err) {
+        guardianContactBtn_->setEnabled(true);
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("보호자 연락처"), err);
+            return;
+        }
+        showGuardianContactPopover(guardians);
+    });
+}
+
+void EventDetailModal::handleGuardianMailClicked() {
+    guardianMailBtn_->setEnabled(false);
+    fetchRecipientIdAndGuardians([this](bool ok, int recipientId, const QVector<ApiClient::GuardianInfo>& guardians,
+                                         const QString& err) {
+        guardianMailBtn_->setEnabled(true);
+        if (!ok) {
+            QMessageBox::warning(this, QStringLiteral("보호자 메일"), err);
+            return;
+        }
+        // guardians는 서버가 이미 priority 오름차순으로 내려준다(recipient.py의
+        // GET /recipients/{id} SELECT ... ORDER BY priority) — 그대로 첫 번째가 1순위.
+        const QString defaultEmail = guardians.isEmpty() ? QString() : guardians.first().email;
+        auto* dialog = new GuardianMailDialog(recipientId, row_.recipientName, defaultEmail, this);
+        const bool sent = dialog->exec() == QDialog::Accepted;
+        dialog->deleteLater();
+        if (sent) markActionTaken(QStringLiteral("(메일)"));
     });
 }
 
