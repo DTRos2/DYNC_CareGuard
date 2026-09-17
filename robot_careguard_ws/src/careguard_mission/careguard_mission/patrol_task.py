@@ -63,6 +63,7 @@ APPROACH_REQUEST_TOPIC으로 보낸다. 이 노드는 그 요청을 받으면 �
 import json
 import os
 import threading
+import time
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -95,6 +96,15 @@ APPROACH_RELEASE_TOPIC = '/careguard/perception/approach_release'
 # perception 쪽이 죽거나 버그가 있어도 로봇이 그 자리에 영원히 멈춰있지 않게 하는
 # 안전장치.
 APPROACH_RELEASE_WAIT_TIMEOUT_SEC = 20.0
+
+# 2026-09-17 추가 — 복약 배출 시도(_deliver_medication)가 hw_error처럼 너무 빨리
+# (6~12초 만에) 실패해버리면, 대상자가 미처 반응하기도 전에 로봇이 다음 목적지로
+# 출발해버리는 문제가 실기에서 확인됐다. 결과(delivered/timeout/jammed/hw_error)와
+# 무관하게 이 시간이 지날 때까지는 무조건 그 자리에 멈춰있게 한다 — medication_task.py의
+# RETRIEVAL_TIMEOUT_SEC(정상 흐름의 최대 회수 대기시간)과 같은 값으로 맞춰서, "정상
+# 흐름이었다면 어차피 이만큼은 기다렸을 시간"만큼만 보장한다. 취소 요청(cancel)이
+# 오면 이 강제 대기도 즉시 풀어준다 — 사용자의 취소 의사를 억지로 무시하면 안 된다.
+MIN_MEDICATION_STOP_SEC = 20.0
 
 
 class PatrolTask(Node):
@@ -212,6 +222,7 @@ class PatrolTask(Node):
         schedule_id = goal_handle.request.medication_schedule_id
         slot_no = goal_handle.request.slot_no
         self.get_logger().info(f'복약 전달 시작: schedule_id={schedule_id} slot_no={slot_no}')
+        started_at = time.monotonic()
         # skip_person_check=True — 여기 도달했다는 것 자체가 _execute()의 웨이포인트
         # 루프가 이미 self._person_detected로 사람을 확인했다는 뜻이라(호출부 참고),
         # medication_task.py가 또 기다리게 하지 않는다(DeliverMedication.action 주석).
@@ -232,6 +243,18 @@ class PatrolTask(Node):
         # 복용하지 않았습니다"/"약을 N번 복용하지 않았습니다")를 downlink_node.py의
         # medication_alert 명령으로 곧 내려보낸다(2026-09-16). 여기서 일반 문구까지
         # 먼저 재생하면 몇 초 뒤 그 구체적 문구와 겹쳐서 두 번 안내하게 된다.
+
+        # 2026-09-17 추가 — hw_error처럼 배출 시도 자체가 몇 초 만에 실패해버리면
+        # 대상자가 반응할 시간도 없이 바로 다음 목적지로 출발해버리는 문제가 실기에서
+        # 확인됐다. status와 무관하게(취소 제외) MIN_MEDICATION_STOP_SEC이 지날 때까지
+        # 여기서 더 머문다 — _execute()의 웨이포인트 루프는 이 메서드가 반환해야만
+        # 다음 이동을 시작하므로, 이 sleep이 끝나기 전까진 로봇이 물리적으로 못 움직인다.
+        if status != 'cancelled':
+            remaining = MIN_MEDICATION_STOP_SEC - (time.monotonic() - started_at)
+            while remaining > 0 and not goal_handle.is_cancel_requested:
+                step = min(0.5, remaining)
+                time.sleep(step)
+                remaining -= step
 
     # ---------- 접근(approach) 끼어들기 ----------
 
