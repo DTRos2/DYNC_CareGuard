@@ -67,13 +67,13 @@ P2EventPage::P2EventPage(QWidget* parent) : QWidget(parent) {
     auto* title = new QLabel(QStringLiteral("이벤트 관제"), this);
     title->setObjectName("pageTitle");
 
-    auto* csvBtn = makeToolbarButton(QStringLiteral("CSV"), SimpleIcons::download(Tokens::TEXT_PRIMARY, 12), this);
-    connect(csvBtn, &QPushButton::clicked, this, [this] { showComingSoon(QStringLiteral("CSV 내보내기")); });
+    csvBtn_ = makeToolbarButton(QStringLiteral("CSV"), SimpleIcons::download(Tokens::TEXT_PRIMARY, 12), this);
+    connect(csvBtn_, &QPushButton::clicked, this, [this] { showComingSoon(QStringLiteral("CSV 내보내기")); });
 
     auto* titleRow = new QHBoxLayout();
     titleRow->addWidget(title);
     titleRow->addStretch();
-    titleRow->addWidget(csvBtn);
+    titleRow->addWidget(csvBtn_);
     layout->addLayout(titleRow);
 
     layout->addWidget(buildFilterBar());
@@ -509,7 +509,7 @@ void P2EventPage::onCellClicked(const QModelIndex& index) {
     if (!sourceIndex.isValid()) return;
 
     const EventTableModel::EventRow row = model_->rowAt(sourceIndex.row());
-    auto* modal = new EventDetailModal(row, this);
+    auto* modal = new EventDetailModal(row, readOnly_, this);
     modal->setAttribute(Qt::WA_DeleteOnClose);
     connect(modal, &EventDetailModal::eventResolved, this, &P2EventPage::resolveEvent);
     connect(modal, &EventDetailModal::videoViewRequested, this, &P2EventPage::videoViewRequested);
@@ -588,6 +588,24 @@ bool P2EventPage::eventFilter(QObject* watched, QEvent* event) {
 
 void P2EventPage::setRecipientNameFilter(const QStringList& names) {
     proxy_->setRecipientNameAllowlist(names);
+
+    // 빈 목록=admin/operator(필터 없음), 비어있지 않으면 guardian — P3RecipientPage의 같은
+    // 규약(guardianUserId_>0 여부)을 이름 목록 유무로 판단한다. guardian은 이벤트도 "영상
+    // 열람"만 가능해야 한다(요청) — 여러 건을 골라 일괄 처리하거나 CSV로 내보내는 것도
+    // 같은 이유로 막는다.
+    readOnly_ = !names.isEmpty();
+    if (tableView_) tableView_->setColumnHidden(EventTableModel::ColCheck, readOnly_);
+    if (csvBtn_) csvBtn_->setVisible(!readOnly_);
+
+    // 검색을 event_id 하나로 좁히고(요청: 로봇·대상자·담당자는 다른 사람 정보라 검색 대상에서
+    // 뺀다), "전체 N건 중 미처리 M건" 집계 텍스트도 숨긴다(다른 대상자까지 포함된 전체
+    // 이벤트 수를 굳이 보여줄 필요가 없다).
+    proxy_->setSearchEventIdOnly(readOnly_);
+    if (searchEdit_) {
+        searchEdit_->setPlaceholderText(readOnly_ ? QStringLiteral("이벤트 ID 검색")
+                                                    : QStringLiteral("이벤트 ID·로봇·대상자·담당자 검색"));
+    }
+    if (filterCountLabel_) filterCountLabel_->setVisible(!readOnly_);
 }
 
 void P2EventPage::filterToRecipient(const QString& recipientName) {
@@ -614,7 +632,7 @@ void P2EventPage::openEventRowIfPresent(const QString& eventUid) {
     for (int row = 0; row < model_->rowCount(); ++row) {
         const EventTableModel::EventRow eventRow = model_->rowAt(row);
         if (eventRow.eventId != eventUid) continue;
-        auto* modal = new EventDetailModal(eventRow, this);
+        auto* modal = new EventDetailModal(eventRow, readOnly_, this);
         modal->setAttribute(Qt::WA_DeleteOnClose);
         connect(modal, &EventDetailModal::eventResolved, this, &P2EventPage::resolveEvent);
         connect(modal, &EventDetailModal::videoViewRequested, this, &P2EventPage::videoViewRequested);

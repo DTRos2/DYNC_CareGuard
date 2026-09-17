@@ -21,6 +21,10 @@ public:
     // 그 이벤트가 필터에 안 걸려 안 보이는 것처럼 보였다.
     void setSearchKeyword(const QString& keyword);
 
+    // guardian 전용(요청) — true면 검색을 event_id 컬럼 하나로만 좁힌다. 로봇·대상자·담당자는
+    // guardian이 굳이 몰라도 되는 다른 사람 관련 정보라 검색 대상에서 뺀다.
+    void setSearchEventIdOnly(bool eventIdOnly);
+
     // [start, end] 포함 범위. 둘 다 유효해야 필터가 걸린다.
     void setDateRange(const QDate& start, const QDate& end);
 
@@ -35,6 +39,7 @@ protected:
 private:
     bool unresolvedOnly_ = true;
     QString searchKeyword_;
+    bool searchEventIdOnly_ = false;
     QDate dateStart_;
     QDate dateEnd_;
     QSet<QString> recipientAllowlist_;

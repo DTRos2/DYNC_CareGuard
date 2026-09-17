@@ -66,4 +66,9 @@ private:
     QLabel* userLabel_;
     QLabel* emergencyBadge_;
     QLabel* attentionBadge_;
+    // guardian은 TopBar의 "미처리 긴급 N"/"주의 N" 배지를 안 봐야 한다(요청) — 어차피 그
+    // 집계가 전체 대상자 기준이라 guardian 본인 대상자만 걸러진 값도 아니다. setUserRole()이
+    // role=guardian이면 false로 내려서, setEmergencyCount/setAttentionCount가 몇 건이든
+    // 배지를 계속 숨긴 채로 유지한다.
+    bool topBarBadgesEnabled_ = true;
 };

@@ -522,14 +522,28 @@ void P3RecipientPage::setWsClient(WsClient* client) {
 void P3RecipientPage::setGuardianUserId(int userId) {
     if (guardianUserId_ == userId) return;
     guardianUserId_ = userId;
+    // guardian은 이미 자기 대상자 1명(보통)만 필터링돼 보이므로 여러 대상자를 관리하는
+    // 기능(검색·정렬·등록·카드의 "복약 재안내" 버튼)이 필요 없다 — 요청: guardian은 그냥
+    // 읽기만 가능해야 한다. 헤더는 생성자에서 role을 모르는 채로 이미 한 번 만들어졌으니
+    // 여기서 뒤늦게 보이기/숨기기만 토글한다.
+    const bool readOnly = guardianUserId_ > 0;
+    if (searchEdit_) searchEdit_->setVisible(!readOnly);
+    if (sortSeg_) sortSeg_->setVisible(!readOnly);
+    if (registerBtn_) registerBtn_->setVisible(!readOnly);
     loadRecipientsFromServer();
 }
 
 void P3RecipientPage::loadRecipientsFromServer() {
-    apiClient_->fetchRecipients([this](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
+    const int requestSeq = ++loadRequestSeq_;
+    apiClient_->fetchRecipients([this, requestSeq](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
         if (!ok) {
             // 서버 미기동 등으로 실패해도 화면은 mock으로 계속 동작해야 한다 — 이미
             // 생성자에서 mockRecipients()를 채워뒀으니 여기선 아무것도 안 해도 된다.
+            return;
+        }
+        if (requestSeq != loadRequestSeq_) {
+            // 이 응답이 나간 뒤로 더 최신 요청(예: 로그인 직후 setGuardianUserId()가 쏜
+            // 필터 요청)이 이미 발사됐다 — 늦게 도착한 이 응답으로 최신 상태를 덮어쓰면 안 된다.
             return;
         }
         QVector<RecipientCard> cards;
@@ -603,17 +617,18 @@ QWidget* P3RecipientPage::buildHeaderRow() {
     }
     riskBtn->setChecked(true);
     layout->addWidget(sortSeg);
+    sortSeg_ = sortSeg;
 
     connect(riskBtn, &QPushButton::clicked, this, [this] { sortMode_ = SortMode::Risk; rebuildGrid(); });
     connect(nameBtn, &QPushButton::clicked, this, [this] { sortMode_ = SortMode::Name; rebuildGrid(); });
     connect(robotBtn, &QPushButton::clicked, this, [this] { sortMode_ = SortMode::Robot; rebuildGrid(); });
 
-    auto* registerBtn = new QPushButton(SimpleIcons::plus(Tokens::TEXT_INVERSE, 12),
-                                         QStringLiteral("대상자 등록"), bar);
-    registerBtn->setProperty("variant", "primary");
-    registerBtn->setProperty("size", "s");
-    connect(registerBtn, &QPushButton::clicked, this, &P3RecipientPage::registerRecipient);
-    layout->addWidget(registerBtn);
+    registerBtn_ = new QPushButton(SimpleIcons::plus(Tokens::TEXT_INVERSE, 12),
+                                    QStringLiteral("대상자 등록"), bar);
+    registerBtn_->setProperty("variant", "primary");
+    registerBtn_->setProperty("size", "s");
+    connect(registerBtn_, &QPushButton::clicked, this, &P3RecipientPage::registerRecipient);
+    layout->addWidget(registerBtn_);
 
     return bar;
 }
@@ -704,6 +719,9 @@ void P3RecipientPage::rebuildGrid() {
         card->setProperty(Tokens::Prop::STATUS, statusProp(rc.level));
         card->setMinimumWidth(kCardMinWidth);
         card->setCursor(Qt::PointingHandCursor);
+        // guardian도 카드를 눌러 상세 정보를 볼 수 있어야 한다 — 다만 그 상세 모달은
+        // openDetail()이 이미 guardianUserId_>0일 때 읽기 전용(readOnly)으로 열어서
+        // 정보는 전부 텍스트로만 보이고 편집·저장 등은 못 하게 되어 있다.
         connect(card, &ClickableCard::clicked, this, [this, idx] { openDetail(idx); });
 
         // QWidget은 QGraphicsEffect를 한 번에 하나만 가질 수 있어 오프라인은 그림자 대신
@@ -757,7 +775,9 @@ void P3RecipientPage::rebuildGrid() {
         cardLayout->addWidget(summaryLabel);
 
         cardLayout->addWidget(makeMedRow(rc, card));
-        if (rc.level != Tokens::Level::Normal && rc.level != Tokens::Level::Offline) {
+        // guardian은 읽기만 가능해야 한다(요청) — "복약 재안내"는 로봇에 실제 명령을 보내는
+        // 쓰기 동작이라 guardianUserId_>0이면 숨긴다.
+        if (guardianUserId_ == 0 && rc.level != Tokens::Level::Normal && rc.level != Tokens::Level::Offline) {
             cardLayout->addWidget(makeCardActions(
                 rc, card, [this](const QString& name) { emit eventCheckRequested(name); },
                 [this](const QString& robotCode, const QString& name, int slotNo) {
@@ -950,6 +970,7 @@ RecipientDetail recipientDetailFromApi(const ApiClient::RecipientDetailInfo& inf
         gc.isEmergencyFixed = false;
         gc.id = g.id;
         gc.email = g.email;
+        gc.userId = g.userId;
         d.guardians.append(gc);
     }
     // 119·112 고정 행은 DB에 없는 화면 전용 표시 — mockRecipientDetail()/생성 모달과 동일하게 덧붙인다.
@@ -1049,7 +1070,10 @@ void P3RecipientPage::openDetail(int recipientIndex) {
             if (recipientIndex >= recipients_.size()) return;  // 조회 대기 중 목록이 바뀌었으면 방어
             detail.card = recipients_[recipientIndex];  // 이름·주소 등 카드 쪽 최신값으로 덮어쓴다
 
-            auto* dialog = new P3RecipientDetailDialog(detail, operators, robots, maps, this);
+            // guardian은 읽기만 가능해야 한다(요청) — 상세 모달도 편집/저장/비활성화 버튼
+            // 없이 조회 전용으로 연다.
+            auto* dialog =
+                new P3RecipientDetailDialog(detail, operators, robots, maps, guardianUserId_ > 0, this);
             dialog->setAttribute(Qt::WA_DeleteOnClose);
 
             // 열려 있는 동안 recipient_changed가 오면(handleWsMessage) 이 다이얼로그를 다시
@@ -1131,6 +1155,7 @@ bool buildRecipientParams(const RecipientDetail& detail, ApiClient::RecipientCre
         gp.relation = g.relation;
         gp.priority = g.priority;
         gp.notifyEnabled = g.notifyEnabled;
+        gp.userId = g.userId;
         params.guardians.append(gp);
     }
 

@@ -20,7 +20,11 @@ class CallAudioClient;
 class EventDetailModal : public QDialog {
     Q_OBJECT
 public:
-    explicit EventDetailModal(const EventTableModel::EventRow& row, QWidget* parent = nullptr);
+    // readOnly=true면(guardian 로그인) "영상 열람"만 클릭 가능하게 남기고, 나머지 조치
+    // (스피커 통화·대상자 전화·보호자 연락/문자·119 모의 신고·재확인 예약·이벤트 취소·완료
+    // 처리)는 버튼으로 넣지(insert) 않고 같은 문구를 그냥 텍스트로만 보여준다(요청).
+    explicit EventDetailModal(const EventTableModel::EventRow& row, bool readOnly = false,
+                               QWidget* parent = nullptr);
 
 signals:
     // "처리 완료" 확정 시 P2EventPage가 모델에 반영하도록 전달한다.
@@ -72,6 +76,7 @@ private:
     void handleGuardianMailClicked();
 
     EventTableModel::EventRow row_;
+    bool readOnly_ = false;
     int currentStep_ = 0;   // 0=감지 1=조치 2=완료
     bool allStepsDone_ = false;
     // "조치" 단계 라벨에 붙는 접미사 — 스피커 통화 종료·보호자 메일 중 실제로 쓴 수단을

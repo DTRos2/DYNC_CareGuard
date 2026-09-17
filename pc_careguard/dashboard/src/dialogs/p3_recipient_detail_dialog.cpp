@@ -149,8 +149,14 @@ PillboxStyle pillboxStyle(MedSlotState state) {
 P3RecipientDetailDialog::P3RecipientDetailDialog(const RecipientDetail& detail,
                                                    const QVector<OperatorOption>& operators,
                                                    const QVector<RobotOption>& robots,
-                                                   const QVector<MapOption>& maps, QWidget* parent)
-    : QDialog(parent), detail_(detail), operators_(operators), robots_(robots), maps_(maps) {
+                                                   const QVector<MapOption>& maps, bool readOnly,
+                                                   QWidget* parent)
+    : QDialog(parent),
+      detail_(detail),
+      readOnly_(readOnly),
+      operators_(operators),
+      robots_(robots),
+      maps_(maps) {
     setModal(true);
     // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
@@ -429,18 +435,36 @@ QWidget* P3RecipientDetailDialog::buildBasicInfoTab() {
     guardianLabel->setProperty("role", "label");
     guardianHeader->addWidget(guardianLabel);
     guardianHeader->addStretch();
-    auto* addContactBtn = new QPushButton(SimpleIcons::plus(Tokens::TEXT_PRIMARY, 10),
-                                           QStringLiteral("연락처 추가"), tab);
-    addContactBtn->setProperty("variant", "secondary");
-    addContactBtn->setProperty("size", "s");
-    connect(addContactBtn, &QPushButton::clicked, this, &P3RecipientDetailDialog::addGuardian);
-    guardianHeader->addWidget(addContactBtn);
+    if (!readOnly_) {
+        auto* addContactBtn = new QPushButton(SimpleIcons::plus(Tokens::TEXT_PRIMARY, 10),
+                                               QStringLiteral("연락처 추가"), tab);
+        addContactBtn->setProperty("variant", "secondary");
+        addContactBtn->setProperty("size", "s");
+        connect(addContactBtn, &QPushButton::clicked, this, &P3RecipientDetailDialog::addGuardian);
+        guardianHeader->addWidget(addContactBtn);
+    }
     layout->addLayout(guardianHeader);
 
     guardianTableBox_ = makeBoxFrame(this);
     populateGuardianTable(guardianTableBox_);
     layout->addWidget(guardianTableBox_);
     layout->addStretch();
+
+    // guardian은 대상자 정보를 읽기만 할 수 있어야 한다(요청) — 위에서 만든 입력칸들을
+    // 여기서 한 번에 잠근다. QLineEdit은 setReadOnly로(값은 그대로 보이되 편집만 막힘),
+    // 콤보는 setEnabled(false)로(선택된 값은 그대로 보임).
+    if (readOnly_) {
+        nameEdit_->setReadOnly(true);
+        birthYearEdit_->setReadOnly(true);
+        genderCombo_->setEnabled(false);
+        phoneEdit_->setReadOnly(true);
+        addressEdit_->setReadOnly(true);
+        diseasesEdit_->setReadOnly(true);
+        noteEdit_->setReadOnly(true);
+        robotCombo_->setEnabled(false);
+        mapCombo_->setEnabled(false);
+        operatorCombo_->setEnabled(false);
+    }
 
     return tab;
 }
@@ -469,12 +493,14 @@ QWidget* P3RecipientDetailDialog::buildPhotoBlock() {
     photoLayout->addWidget(silhouette);
     layout->addWidget(photoBox, 0, Qt::AlignHCenter);
 
-    auto* registerBtn = new QPushButton(QStringLiteral("사진 등록"), wrap);
-    registerBtn->setProperty("variant", "secondary");
-    registerBtn->setProperty("size", "s");
-    connect(registerBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("사진 등록")); });
-    layout->addWidget(registerBtn, 0, Qt::AlignHCenter);
+    if (!readOnly_) {
+        auto* registerBtn = new QPushButton(QStringLiteral("사진 등록"), wrap);
+        registerBtn->setProperty("variant", "secondary");
+        registerBtn->setProperty("size", "s");
+        connect(registerBtn, &QPushButton::clicked, this,
+                [this] { showComingSoon(QStringLiteral("사진 등록")); });
+        layout->addWidget(registerBtn, 0, Qt::AlignHCenter);
+    }
 
     auto* caption = new QLabel(QStringLiteral("JPG·PNG\n최대 5MB"), wrap);
     caption->setProperty("role", "caption");
@@ -609,7 +635,9 @@ void P3RecipientDetailDialog::populateGuardianTable(QWidget* box) {
         };
         refreshViewLabels();
 
-        if (!emergencyFixed) {
+        // guardian(readOnly_)은 119·112 같은 고정 행과 마찬가지로 편집/삭제 아이콘 없이
+        // 보기 전용 행만 보여준다(요청: guardian은 읽기만 가능해야 한다).
+        if (!emergencyFixed && !readOnly_) {
             auto* editBtn = new QPushButton(viewPage);
             editBtn->setIcon(SimpleIcons::edit(Tokens::TEXT_MUTED, 12));
             editBtn->setProperty("variant", "ghost");
@@ -816,19 +844,21 @@ QWidget* P3RecipientDetailDialog::buildMedicationTab() {
         text->setWordWrap(true);
         bannerLayout->addWidget(text, 1);
 
-        auto* renotifyBtn = new QPushButton(QStringLiteral("재안내"), banner);
-        renotifyBtn->setProperty("variant", "primary");
-        renotifyBtn->setProperty("size", "s");
-        connect(renotifyBtn, &QPushButton::clicked, this,
-                [this] { showComingSoon(QStringLiteral("복약 재안내")); });
-        bannerLayout->addWidget(renotifyBtn);
+        if (!readOnly_) {
+            auto* renotifyBtn = new QPushButton(QStringLiteral("재안내"), banner);
+            renotifyBtn->setProperty("variant", "primary");
+            renotifyBtn->setProperty("size", "s");
+            connect(renotifyBtn, &QPushButton::clicked, this,
+                    [this] { showComingSoon(QStringLiteral("복약 재안내")); });
+            bannerLayout->addWidget(renotifyBtn);
 
-        auto* ackBtn = new QPushButton(QStringLiteral("확인 처리"), banner);
-        ackBtn->setProperty("variant", "secondary");
-        ackBtn->setProperty("size", "s");
-        connect(ackBtn, &QPushButton::clicked, this,
-                [this] { showComingSoon(QStringLiteral("미수령 확인 처리")); });
-        bannerLayout->addWidget(ackBtn);
+            auto* ackBtn = new QPushButton(QStringLiteral("확인 처리"), banner);
+            ackBtn->setProperty("variant", "secondary");
+            ackBtn->setProperty("size", "s");
+            connect(ackBtn, &QPushButton::clicked, this,
+                    [this] { showComingSoon(QStringLiteral("미수령 확인 처리")); });
+            bannerLayout->addWidget(ackBtn);
+        }
 
         layout->addWidget(banner);
     }
@@ -839,12 +869,14 @@ QWidget* P3RecipientDetailDialog::buildMedicationTab() {
     auto* scheduleHeader = new QHBoxLayout();
     scheduleHeader->addWidget(makeSectionLabel(QStringLiteral("복약 스케줄"), tab));
     scheduleHeader->addStretch();
-    auto* addScheduleBtn = new QPushButton(SimpleIcons::plus(Tokens::TEXT_PRIMARY, 10),
-                                            QStringLiteral("스케줄 추가"), tab);
-    addScheduleBtn->setProperty("variant", "secondary");
-    addScheduleBtn->setProperty("size", "s");
-    connect(addScheduleBtn, &QPushButton::clicked, this, &P3RecipientDetailDialog::addSchedule);
-    scheduleHeader->addWidget(addScheduleBtn);
+    if (!readOnly_) {
+        auto* addScheduleBtn = new QPushButton(SimpleIcons::plus(Tokens::TEXT_PRIMARY, 10),
+                                                QStringLiteral("스케줄 추가"), tab);
+        addScheduleBtn->setProperty("variant", "secondary");
+        addScheduleBtn->setProperty("size", "s");
+        connect(addScheduleBtn, &QPushButton::clicked, this, &P3RecipientDetailDialog::addSchedule);
+        scheduleHeader->addWidget(addScheduleBtn);
+    }
     layout->addLayout(scheduleHeader);
 
     scheduleTableBox_ = makeBoxFrame(this);
@@ -994,157 +1026,166 @@ void P3RecipientDetailDialog::populateScheduleTable(QWidget* box) {
         };
         refreshViewLabels();
 
-        auto* editBtn = new QPushButton(viewPage);
-        editBtn->setIcon(SimpleIcons::edit(Tokens::TEXT_MUTED, 12));
-        editBtn->setProperty("variant", "ghost");
-        editBtn->setProperty("size", "s");
-        editBtn->setFixedSize(kIconW, kIconW);
-        viewLayout->addWidget(editBtn);
-        viewLayout->addSpacing(kIconGap);
+        // guardian(readOnly_)은 편집/삭제 아이콘 없이 보기 전용 행만 보여준다(요청: guardian은
+        // 읽기만 가능해야 한다) — populateGuardianTable()의 emergencyFixed 분기와 같은 패턴.
+        if (!readOnly_) {
+            auto* editBtn = new QPushButton(viewPage);
+            editBtn->setIcon(SimpleIcons::edit(Tokens::TEXT_MUTED, 12));
+            editBtn->setProperty("variant", "ghost");
+            editBtn->setProperty("size", "s");
+            editBtn->setFixedSize(kIconW, kIconW);
+            viewLayout->addWidget(editBtn);
+            viewLayout->addSpacing(kIconGap);
 
-        auto* deleteBtn = new QPushButton(viewPage);
-        deleteBtn->setIcon(SimpleIcons::trash(Tokens::TEXT_MUTED, 12));
-        deleteBtn->setProperty("variant", "ghost");
-        deleteBtn->setProperty("size", "s");
-        deleteBtn->setFixedSize(kIconW, kIconW);
-        viewLayout->addWidget(deleteBtn);
-        connect(deleteBtn, &QPushButton::clicked, this, [this, r] {
-            const QString drugName = detail_.schedules[r].drugName;
-            const QString question =
-                QStringLiteral("%1 스케줄을 삭제할까요?").arg(drugName.isEmpty() ? QStringLiteral("이") : drugName);
-            if (QMessageBox::question(this, QStringLiteral("스케줄 삭제"), question,
-                                       QMessageBox::Yes | QMessageBox::No,
-                                       QMessageBox::No) == QMessageBox::Yes) {
-                removeSchedule(r);
-            }
-        });
-        stack->addWidget(viewPage);  // index 0
+            auto* deleteBtn = new QPushButton(viewPage);
+            deleteBtn->setIcon(SimpleIcons::trash(Tokens::TEXT_MUTED, 12));
+            deleteBtn->setProperty("variant", "ghost");
+            deleteBtn->setProperty("size", "s");
+            deleteBtn->setFixedSize(kIconW, kIconW);
+            viewLayout->addWidget(deleteBtn);
+            connect(deleteBtn, &QPushButton::clicked, this, [this, r] {
+                const QString drugName = detail_.schedules[r].drugName;
+                const QString question =
+                    QStringLiteral("%1 스케줄을 삭제할까요?").arg(drugName.isEmpty() ? QStringLiteral("이") : drugName);
+                if (QMessageBox::question(this, QStringLiteral("스케줄 삭제"), question,
+                                           QMessageBox::Yes | QMessageBox::No,
+                                           QMessageBox::No) == QMessageBox::Yes) {
+                    removeSchedule(r);
+                }
+            });
+            stack->addWidget(viewPage);  // index 0
 
-        // ---- 수정 모드 — 클릭했을 때만 QLineEdit으로 바뀐다 ----
-        auto* editPage = new QWidget(stack);
-        auto* editLayout = new QHBoxLayout(editPage);
-        editLayout->setContentsMargins(10, 7, 10, 7);
-        editLayout->setSpacing(8);
+            // ---- 수정 모드 — 클릭했을 때만 QLineEdit으로 바뀐다 ----
+            auto* editPage = new QWidget(stack);
+            auto* editLayout = new QHBoxLayout(editPage);
+            editLayout->setContentsMargins(10, 7, 10, 7);
+            editLayout->setSpacing(8);
 
-        // 칸(약통 칸통) 번호도 수정 가능 — 저장 시 다른 행과 중복되면 경고하고 막는다(아래 saveBtn).
-        auto* slotEdit = new QLineEdit(QString::number(detail_.schedules[r].slotNo), editPage);
-        slotEdit->setValidator(new QIntValidator(1, 99, slotEdit));
-        slotEdit->setFixedWidth(kSlotW);
-        editLayout->addWidget(slotEdit);
+            // 칸(약통 칸통) 번호도 수정 가능 — 저장 시 다른 행과 중복되면 경고하고 막는다(아래 saveBtn).
+            auto* slotEdit = new QLineEdit(QString::number(detail_.schedules[r].slotNo), editPage);
+            slotEdit->setValidator(new QIntValidator(1, 99, slotEdit));
+            slotEdit->setFixedWidth(kSlotW);
+            editLayout->addWidget(slotEdit);
 
-        auto* drugEdit = new QLineEdit(editPage);
-        editLayout->addWidget(drugEdit, 1);
-        // 편집 가능한 콤보박스 — 목록에서 골라도 되고, normalizeDoseTime()이 받아주는
-        // 형식이면 뭐든 직접 타이핑해도 된다(예: "9", "930").
-        auto* timeEdit = new CareGuardComboBox(editPage);
-        timeEdit->setEditable(true);
-        timeEdit->addItems(kTimePresets);
-        timeEdit->setCurrentText(QString());
-        timeEdit->setFixedWidth(kTimeW);
-        editLayout->addWidget(timeEdit);
-        auto* daysEdit = new QLineEdit(editPage);
-        daysEdit->setFixedWidth(kDaysW);
-        editLayout->addWidget(daysEdit);
+            auto* drugEdit = new QLineEdit(editPage);
+            editLayout->addWidget(drugEdit, 1);
+            // 편집 가능한 콤보박스 — 목록에서 골라도 되고, normalizeDoseTime()이 받아주는
+            // 형식이면 뭐든 직접 타이핑해도 된다(예: "9", "930").
+            auto* timeEdit = new CareGuardComboBox(editPage);
+            timeEdit->setEditable(true);
+            timeEdit->addItems(kTimePresets);
+            timeEdit->setCurrentText(QString());
+            timeEdit->setFixedWidth(kTimeW);
+            editLayout->addWidget(timeEdit);
+            auto* daysEdit = new QLineEdit(editPage);
+            daysEdit->setFixedWidth(kDaysW);
+            editLayout->addWidget(daysEdit);
 
-        auto* saveBtn = new QPushButton(editPage);
-        saveBtn->setIcon(SimpleIcons::deviceFloppy(Tokens::TEXT_SECONDARY, 12));
-        saveBtn->setProperty("variant", "ghost");
-        saveBtn->setProperty("size", "s");
-        saveBtn->setFixedSize(kIconW, kIconW);
-        editLayout->addWidget(saveBtn);
+            auto* saveBtn = new QPushButton(editPage);
+            saveBtn->setIcon(SimpleIcons::deviceFloppy(Tokens::TEXT_SECONDARY, 12));
+            saveBtn->setProperty("variant", "ghost");
+            saveBtn->setProperty("size", "s");
+            saveBtn->setFixedSize(kIconW, kIconW);
+            editLayout->addWidget(saveBtn);
 
-        auto* cancelBtn = new QPushButton(editPage);
-        cancelBtn->setIcon(SimpleIcons::x(Tokens::TEXT_MUTED, 12));
-        cancelBtn->setProperty("variant", "ghost");
-        cancelBtn->setProperty("size", "s");
-        cancelBtn->setFixedSize(kIconW, kIconW);
-        editLayout->addWidget(cancelBtn);
+            auto* cancelBtn = new QPushButton(editPage);
+            cancelBtn->setIcon(SimpleIcons::x(Tokens::TEXT_MUTED, 12));
+            cancelBtn->setProperty("variant", "ghost");
+            cancelBtn->setProperty("size", "s");
+            cancelBtn->setFixedSize(kIconW, kIconW);
+            editLayout->addWidget(cancelBtn);
 
-        stack->addWidget(editPage);  // index 1
+            stack->addWidget(editPage);  // index 1
 
-        connect(editBtn, &QPushButton::clicked, this,
-                [this, r, stack, slotEdit, drugEdit, timeEdit, daysEdit] {
-                    const MedicationScheduleItem& ss = detail_.schedules[r];
-                    slotEdit->setText(QString::number(ss.slotNo));
-                    drugEdit->setText(ss.drugName);
-                    timeEdit->setCurrentText(ss.doseTime);
-                    daysEdit->setText(ss.daysLabel);
-                    stack->setCurrentIndex(1);
-                });
+            connect(editBtn, &QPushButton::clicked, this,
+                    [this, r, stack, slotEdit, drugEdit, timeEdit, daysEdit] {
+                        const MedicationScheduleItem& ss = detail_.schedules[r];
+                        slotEdit->setText(QString::number(ss.slotNo));
+                        drugEdit->setText(ss.drugName);
+                        timeEdit->setCurrentText(ss.doseTime);
+                        daysEdit->setText(ss.daysLabel);
+                        stack->setCurrentIndex(1);
+                    });
 
-        connect(saveBtn, &QPushButton::clicked, this,
-                [this, r, stack, slotEdit, drugEdit, timeEdit, daysEdit, refreshViewLabels] {
-                    const QString drugName = drugEdit->text().trimmed();
-                    if (drugName.isEmpty()) return;
+            connect(saveBtn, &QPushButton::clicked, this,
+                    [this, r, stack, slotEdit, drugEdit, timeEdit, daysEdit, refreshViewLabels] {
+                        const QString drugName = drugEdit->text().trimmed();
+                        if (drugName.isEmpty()) return;
 
-                    bool slotOk = false;
-                    const int slotNo = slotEdit->text().trimmed().toInt(&slotOk);
-                    if (!slotOk || slotNo <= 0) {
-                        QMessageBox::warning(this, QStringLiteral("칸 번호 오류"),
-                                              QStringLiteral("칸 번호는 1 이상의 숫자로 입력해야 합니다."));
-                        return;
-                    }
-                    for (int i = 0; i < detail_.schedules.size(); ++i) {
-                        if (i != r && detail_.schedules[i].slotNo == slotNo) {
-                            QMessageBox::warning(
-                                this, QStringLiteral("칸 번호 중복"),
-                                QStringLiteral("이미 %1번 칸을 사용 중인 스케줄이 있습니다.\n다른 칸 번호를 입력하세요.")
-                                    .arg(slotNo));
+                        bool slotOk = false;
+                        const int slotNo = slotEdit->text().trimmed().toInt(&slotOk);
+                        if (!slotOk || slotNo <= 0) {
+                            QMessageBox::warning(this, QStringLiteral("칸 번호 오류"),
+                                                  QStringLiteral("칸 번호는 1 이상의 숫자로 입력해야 합니다."));
                             return;
                         }
-                    }
-
-                    // 저장 버튼을 누르는 즉시 검사한다 — 시각 형식이 이상하면 바로 이 자리에서
-                    // 고칠 수 있게(요청: 저장 시점부터 유효성 검사).
-                    const QString rawTime = timeEdit->currentText().trimmed();
-                    QString normalizedTime;
-                    if (!rawTime.isEmpty()) {
-                        normalizedTime = normalizeDoseTime(rawTime);
-                        if (normalizedTime.isEmpty()) {
-                            QMessageBox::warning(
-                                this, QStringLiteral("복용 시각 오류"),
-                                QStringLiteral("'%1'을(를) 시각으로 알아볼 수 없습니다.\n9, 09:30, 930처럼 "
-                                               "입력하거나 목록에서 골라주세요.")
-                                    .arg(rawTime));
-                            return;  // 수정 모드 유지 — 바로 고칠 수 있게
+                        for (int i = 0; i < detail_.schedules.size(); ++i) {
+                            if (i != r && detail_.schedules[i].slotNo == slotNo) {
+                                QMessageBox::warning(
+                                    this, QStringLiteral("칸 번호 중복"),
+                                    QStringLiteral("이미 %1번 칸을 사용 중인 스케줄이 있습니다.\n다른 칸 번호를 입력하세요.")
+                                        .arg(slotNo));
+                                return;
+                            }
                         }
-                    } else if (detail_.schedules[r].doseTime.isEmpty()) {
-                        normalizedTime = (slotNo >= 1 && slotNo <= 3) ? kDefaultTimes[slotNo - 1] : QString();
-                    } else {
-                        normalizedTime = detail_.schedules[r].doseTime;  // 안 건드렸으면 기존 값 유지
-                    }
 
-                    detail_.schedules[r].slotNo = slotNo;
-                    detail_.schedules[r].drugName = drugName;
-                    detail_.schedules[r].doseTime = normalizedTime;
-                    detail_.schedules[r].daysLabel = daysEdit->text().trimmed();
-                    refreshViewLabels();
+                        // 저장 버튼을 누르는 즉시 검사한다 — 시각 형식이 이상하면 바로 이 자리에서
+                        // 고칠 수 있게(요청: 저장 시점부터 유효성 검사).
+                        const QString rawTime = timeEdit->currentText().trimmed();
+                        QString normalizedTime;
+                        if (!rawTime.isEmpty()) {
+                            normalizedTime = normalizeDoseTime(rawTime);
+                            if (normalizedTime.isEmpty()) {
+                                QMessageBox::warning(
+                                    this, QStringLiteral("복용 시각 오류"),
+                                    QStringLiteral("'%1'을(를) 시각으로 알아볼 수 없습니다.\n9, 09:30, 930처럼 "
+                                                   "입력하거나 목록에서 골라주세요.")
+                                        .arg(rawTime));
+                                return;  // 수정 모드 유지 — 바로 고칠 수 있게
+                            }
+                        } else if (detail_.schedules[r].doseTime.isEmpty()) {
+                            normalizedTime = (slotNo >= 1 && slotNo <= 3) ? kDefaultTimes[slotNo - 1] : QString();
+                        } else {
+                            normalizedTime = detail_.schedules[r].doseTime;  // 안 건드렸으면 기존 값 유지
+                        }
+
+                        detail_.schedules[r].slotNo = slotNo;
+                        detail_.schedules[r].drugName = drugName;
+                        detail_.schedules[r].doseTime = normalizedTime;
+                        detail_.schedules[r].daysLabel = daysEdit->text().trimmed();
+                        refreshViewLabels();
+                        stack->setCurrentIndex(0);
+                    });
+
+            // 방금 "스케줄 추가"로 만든 빈 행에서 취소를 누르면 빈 행을 남기지 않고 통째로
+            // 지운다 — populateGuardianTable()의 cancelBtn과 같은 방침.
+            connect(cancelBtn, &QPushButton::clicked, this, [this, r, stack] {
+                if (detail_.schedules[r].drugName.isEmpty()) {
+                    detail_.schedules.removeAt(r);
+                    refreshScheduleTable();
+                } else {
                     stack->setCurrentIndex(0);
-                });
+                }
+            });
 
-        // 방금 "스케줄 추가"로 만든 빈 행에서 취소를 누르면 빈 행을 남기지 않고 통째로
-        // 지운다 — populateGuardianTable()의 cancelBtn과 같은 방침.
-        connect(cancelBtn, &QPushButton::clicked, this, [this, r, stack] {
-            if (detail_.schedules[r].drugName.isEmpty()) {
-                detail_.schedules.removeAt(r);
-                refreshScheduleTable();
-            } else {
-                stack->setCurrentIndex(0);
+            if (r == autoEditScheduleIndex_) {
+                autoEditScheduleIndex_ = -1;
+                const int slotNo = detail_.schedules[r].slotNo;
+                drugEdit->setText(QString());
+                timeEdit->setCurrentText(QString());
+                if (timeEdit->lineEdit()) {
+                    timeEdit->lineEdit()->setPlaceholderText(
+                        slotNo >= 1 && slotNo <= 3 ? kDefaultTimes[slotNo - 1] : QString());
+                }
+                daysEdit->setText(QString());
+                stack->setCurrentIndex(1);
+                drugEdit->setFocus();
             }
-        });
-
-        if (r == autoEditScheduleIndex_) {
-            autoEditScheduleIndex_ = -1;
-            const int slotNo = detail_.schedules[r].slotNo;
-            drugEdit->setText(QString());
-            timeEdit->setCurrentText(QString());
-            if (timeEdit->lineEdit()) {
-                timeEdit->lineEdit()->setPlaceholderText(
-                    slotNo >= 1 && slotNo <= 3 ? kDefaultTimes[slotNo - 1] : QString());
-            }
-            daysEdit->setText(QString());
-            stack->setCurrentIndex(1);
-            drugEdit->setFocus();
+        } else {
+            auto* spacer = new QWidget(viewPage);
+            spacer->setFixedWidth(kActionsW);
+            viewLayout->addWidget(spacer);
+            stack->addWidget(viewPage);  // 읽기 전용은 수정 모드 자체가 없다
         }
 
         boxLayout->addWidget(stack);
@@ -1296,37 +1337,42 @@ QWidget* P3RecipientDetailDialog::buildFooter() {
     layout->setContentsMargins(16, 0, 16, 0);
     layout->setSpacing(8);
 
-    auto* deactivateBtn = new QPushButton(QStringLiteral("대상자 비활성화"), footer);
-    deactivateBtn->setProperty("variant", "secondary");
-    deactivateBtn->setProperty("tone", "danger");
-    connect(deactivateBtn, &QPushButton::clicked, this, [this] {
-        QMessageBox box(this);
-        box.setWindowTitle(QStringLiteral("대상자 비활성화"));
-        box.setText(QStringLiteral("%1 대상자를 비활성화하시겠습니까?\n"
-                                    "비활성화하면 대상자 목록에서 사라지며, 되돌릴 수 없습니다.")
-                        .arg(detail_.card.name));
-        box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
-        box.setDefaultButton(QMessageBox::Cancel);
-        box.button(QMessageBox::Ok)->setText(QStringLiteral("확인"));
-        box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
-        if (box.exec() != QMessageBox::Ok) return;
+    if (!readOnly_) {
+        auto* deactivateBtn = new QPushButton(QStringLiteral("대상자 비활성화"), footer);
+        deactivateBtn->setProperty("variant", "secondary");
+        deactivateBtn->setProperty("tone", "danger");
+        connect(deactivateBtn, &QPushButton::clicked, this, [this] {
+            QMessageBox box(this);
+            box.setWindowTitle(QStringLiteral("대상자 비활성화"));
+            box.setText(QStringLiteral("%1 대상자를 비활성화하시겠습니까?\n"
+                                        "비활성화하면 대상자 목록에서 사라지며, 되돌릴 수 없습니다.")
+                            .arg(detail_.card.name));
+            box.setStandardButtons(QMessageBox::Ok | QMessageBox::Cancel);
+            box.setDefaultButton(QMessageBox::Cancel);
+            box.button(QMessageBox::Ok)->setText(QStringLiteral("확인"));
+            box.button(QMessageBox::Cancel)->setText(QStringLiteral("취소"));
+            if (box.exec() != QMessageBox::Ok) return;
 
-        emit deactivateRequested(detail_.card.id);
-        reject();
-    });
-    layout->addWidget(deactivateBtn);
+            emit deactivateRequested(detail_.card.id);
+            reject();
+        });
+        layout->addWidget(deactivateBtn);
+    }
 
     layout->addStretch();
 
-    auto* cancelBtn = new QPushButton(QStringLiteral("취소"), footer);
+    // guardian(readOnly_)은 "저장"이 없어 이 버튼이 유일한 닫기 수단이므로 문구를 맞춘다.
+    auto* cancelBtn = new QPushButton(readOnly_ ? QStringLiteral("닫기") : QStringLiteral("취소"), footer);
     cancelBtn->setProperty("variant", "secondary");
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
     layout->addWidget(cancelBtn);
 
-    auto* saveBtn = new QPushButton(QStringLiteral("저장"), footer);
-    saveBtn->setProperty("variant", "primary");
-    connect(saveBtn, &QPushButton::clicked, this, &P3RecipientDetailDialog::handleSaveClicked);
-    layout->addWidget(saveBtn);
+    if (!readOnly_) {
+        auto* saveBtn = new QPushButton(QStringLiteral("저장"), footer);
+        saveBtn->setProperty("variant", "primary");
+        connect(saveBtn, &QPushButton::clicked, this, &P3RecipientDetailDialog::handleSaveClicked);
+        layout->addWidget(saveBtn);
+    }
 
     return footer;
 }

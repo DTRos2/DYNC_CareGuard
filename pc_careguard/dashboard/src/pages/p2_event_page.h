@@ -116,7 +116,12 @@ private:
     QLabel* bulkCountLabel_;
     QLabel* filterCountLabel_;
     QPushButton* unresolvedOnlyChip_;
+    QPushButton* csvBtn_ = nullptr;
     LiveSearchLineEdit* searchEdit_;
+    // guardian 로그인이면 true — setRecipientNameFilter(비어있지 않은 목록)가 켠다.
+    // 요청: 이벤트 상세는 "영상 열람"만 가능하고 나머지 조치는 못 하게(텍스트로만 보이게).
+    // 체크박스로 여러 이벤트를 골라 일괄 처리/CSV로 내보내는 것도 같은 이유로 막는다.
+    bool readOnly_ = false;
     QButtonGroup* periodGroup_;
     QPushButton* periodMonthBtn_;
     QPushButton* periodCustomBtn_;
