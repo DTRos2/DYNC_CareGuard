@@ -494,6 +494,7 @@ class GuardianCreate(BaseModel):
     relation: Optional[str] = None
     priority: int = 1
     notify_enabled: bool = True
+    user_id: Optional[int] = None  # 이 보호자 연락처와 연결할 로그인 계정(careguard_user, role=guardian) id
 
 
 class GuardianItem(BaseModel):
@@ -503,6 +504,7 @@ class GuardianItem(BaseModel):
     relation: Optional[str] = None
     priority: int
     notify_enabled: bool
+    user_id: Optional[int] = None
 
 
 class MedicationScheduleCreate(BaseModel):

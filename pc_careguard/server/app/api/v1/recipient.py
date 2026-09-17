@@ -45,6 +45,26 @@ def _resolve_operator_id(cur, operator_id):
     return operator_id
 
 
+def _resolve_guardian_user_id(cur, user_id):
+    """GuardianCreate.user_id(이 보호자 연락처와 연결할 로그인 계정) 검증. _resolve_operator_id와
+    같은 이유 — role.code='guardian'이고 삭제되지 않은 계정만 허용해, 존재하지 않거나 역할이
+    다른 계정을 몰래 연결할 수 없게 한다. 지금 대시보드엔 이 값을 입력하는 UI가 없고,
+    GET으로 받아온 값을 그대로 되돌려 보내는(round-trip) 용도로만 쓰인다."""
+    if user_id is None:
+        return None
+    cur.execute(
+        """
+        SELECT u.id FROM careguard_user u
+        JOIN role r ON r.id = u.role_id
+        WHERE u.id = %s AND r.code = 'guardian' AND u.deleted_at IS NULL
+        """,
+        (user_id,),
+    )
+    if cur.fetchone() is None:
+        raise HTTPException(status_code=404, detail="보호자 계정을 찾을 수 없습니다")
+    return user_id
+
+
 # 요일 비트마스크: 월=1 화=2 수=4 목=8 금=16 토=32 일=64 — 대시보드
 # bitmaskFromDaysLabel()/daysLabelFromBitmask()와 동일 규칙. Python date.weekday()는
 # 월=0..일=6이라 1 << weekday()가 그대로 이 비트값과 맞아떨어진다.
@@ -201,7 +221,7 @@ def get_recipient(recipient_id: int):
 
         cur.execute(
             """
-            SELECT id, name, phone, relation, priority, notify_enabled
+            SELECT id, name, phone, relation, priority, notify_enabled, user_id
             FROM guardian
             WHERE recipient_id = %s AND deregistered_at IS NULL
             ORDER BY priority
@@ -283,12 +303,13 @@ def create_recipient(payload: RecipientCreate):
         recipient_id = cur.fetchone()["id"]
 
         for g in payload.guardians:
+            guardian_user_id = _resolve_guardian_user_id(cur, g.user_id)
             cur.execute(
                 """
-                INSERT INTO guardian (recipient_id, name, phone, relation, priority, notify_enabled)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO guardian (recipient_id, name, phone, relation, priority, notify_enabled, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled),
+                (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled, guardian_user_id),
             )
 
         for s in payload.schedules:
@@ -364,12 +385,13 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
             (recipient_id,),
         )
         for g in payload.guardians:
+            guardian_user_id = _resolve_guardian_user_id(cur, g.user_id)
             cur.execute(
                 """
-                INSERT INTO guardian (recipient_id, name, phone, relation, priority, notify_enabled)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO guardian (recipient_id, name, phone, relation, priority, notify_enabled, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled),
+                (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled, guardian_user_id),
             )
 
         # 슬롯 번호(slot_no) 기준으로 있는 건 그 자리에서 갱신하고, 새 슬롯만 새로 심는다
