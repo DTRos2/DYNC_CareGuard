@@ -82,15 +82,28 @@ private:
     // 드롭다운을 채운다(예전엔 "R-04" 고정 표시였다 — 2026-09-09 요청). 아직 맵이
     // 없는 로봇도 여기 나와야 매핑을 시작할 수 있어 GET /maps/active로는 못 만든다.
     void loadRobotsFromServer();
+    // WS 재연결 시 robots_의 온라인 상태만 다시 맞춘다 — P7SettingsPage::fetchRobots과
+    // 같은 이유(재연결 중 놓친 robot_status push를 이걸로 따라잡는다, 2026-09-17
+    // 발견: 셀렉트 창이 실제로는 온라인인 로봇을 계속 오프라인으로 보여주는 문제).
+    // loadRobotsFromServer()를 그대로 재사용하면 rebuildRobotMenu()가 콤보를 통째로
+    // 비웠다 채우면서 switchToRobot()까지 다시 타 currentSlamJobId_·registeredMaps_
+    // 등 진행 중이던 화면 상태가 리셋되므로, 온라인 상태 필드만 갱신하는 가벼운
+    // 경로를 따로 둔다.
+    void refreshRobotOnlineStatus();
     // robots_ 기준으로 robotCombo_의 항목 목록을 다시 채운다 — GET /robots 응답이 올
     // 때만 부른다(로봇 목록 자체가 바뀔 때). 이름은 그대로 두지만 이제 QMenu가 아니라
     // CareGuardComboBox 항목을 채운다(대상자 페이지 모달의 로봇/맵 배정 콤보와 같은
     // 위젯 — 디자인 통일).
     void rebuildRobotMenu();
-    // robotCombo_에서 지금 선택된 로봇 항목의 텍스트를 "코드 (이름) · 온라인/오프라인"
-    // 형태로 다시 그린다 — switchToRobot()과 robot_status WS 처리(handleWsMessage) 둘
-    // 다에서 부른다. 다른 로봇 항목의 상태는(예전 QMenu 버전과 마찬가지로) 갱신하지
-    // 않는다 — 실시간 상태를 아는 건 지금 선택된 로봇뿐이다.
+    // "코드 (이름) · 온라인/오프라인" 형태의 콤보 항목 텍스트를 만든다. rebuildRobotMenu()
+    // (전체 로봇, robots_[i].isOnline 기준)와 updateRobotChipText()/handleWsMessage의
+    // robot_status 처리(개별 로봇, 최신 값 기준) 양쪽에서 공유한다.
+    QString formatRobotChipText(const ApiClient::RobotInfo& robot, bool online) const;
+    // robotCombo_에서 지금 선택된 로봇 항목의 텍스트를 robotOnline_ 기준으로 다시
+    // 그린다 — switchToRobot()이 로봇 전환 직후 안전하게 "오프라인"으로 강제한 상태를
+    // 반영할 때 쓴다. 다른 로봇 항목은 handleWsMessage의 robot_status 처리가 각자
+    // robots_[i].isOnline로 직접 갱신한다(2026-09-16부터 — 예전엔 선택된 로봇만
+    // 갱신되고 드롭다운을 펼쳐도 다른 로봇 상태가 안 보였다).
     void updateRobotChipText();
     // 로봇 드롭다운에서 다른 로봇을 고르면 페이지 전체(SLAM 캔버스·온라인 배너·저장
     // 정보 카드·텔레옵 대상)가 그 로봇 기준으로 바뀐다. P6PatrolPage::
