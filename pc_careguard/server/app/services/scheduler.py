@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from ..core import db
 from ..api.v1.event import EVENT_TYPE_LABELS
 from ..api.v1.patrol import start_patrol_run
-from ..ws import dashboard_ws
+from ..ws import dashboard_ws, robot_ws
 from . import notifier
 
 KST = ZoneInfo("Asia/Seoul")
@@ -69,25 +69,47 @@ async def _tick() -> None:
         # 새 시각에 다시 트리거되지 않는다(실사용 중 발견: 23분 실행 후 26분으로 수정해도
         # patrol_run이 전혀 안 생겼던 사고, 2026-09-15). 마지막 수정 시각 이후의 실행만
         # "오늘 이미 돌았다"로 친다.
+        # status='failed'는 제외한다 — start_patrol_run이 WS 전송 실패(로봇이 마침 그 20초
+        # 틱에 재연결 중이었거나 네트워크가 잠깐 흔들린 경우 등)를 여기로 기록하는데, 이걸
+        # "오늘 이미 시도했다"로 치면 단 한 번의 일시적 전송 실패로 그 스케줄이 하루 종일
+        # 다시는 안 도는 사고가 난다(2026-09-17 실사용 중 확인 — "스케줄 주행만 됐다 안
+        # 됐다 한다"). _is_due()와 같은 "늦게라도 한 번은 도는 게 낫다" 원칙을 실패 케이스에도
+        # 그대로 적용해, 다음 틱(20초 후)에 자동으로 다시 시도되게 한다.
         cur.execute(
             """
             SELECT DISTINCT pr.schedule_id
             FROM patrol_run pr
             JOIN patrol_schedule ps ON ps.id = pr.schedule_id
             WHERE pr.schedule_id = ANY(%s) AND pr.started_at::date = %s AND pr.started_at >= ps.updated_at
+              AND pr.status != 'failed'
             """,
             (due_ids, now.date()),
         )
         already_run = {r["schedule_id"] for r in cur.fetchall()}
 
-        cur.execute("SELECT id, robot_id FROM map WHERE is_active")
-        robot_by_map = {r["id"]: r["robot_id"] for r in cur.fetchall()}
+        cur.execute(
+            """
+            SELECT m.id AS map_id, m.robot_id, r.code AS robot_code
+            FROM map m
+            JOIN robot r ON r.id = m.robot_id
+            WHERE m.is_active
+            """
+        )
+        robot_by_map = {r["map_id"]: (r["robot_id"], r["robot_code"]) for r in cur.fetchall()}
 
     for s in due:
         if s["schedule_id"] in already_run:
             continue
-        robot_id = robot_by_map.get(s["map_id"])
-        if robot_id is None:
+        entry = robot_by_map.get(s["map_id"])
+        if entry is None:
+            continue
+        robot_id, robot_code = entry
+        # 로봇이 지금 연결 안 된 게 뻔히 보이면(흔한 케이스 — 로봇 전원 꺼짐/재연결 중)
+        # patrol_run row조차 안 만들고 건너뛴다 — status='failed' row를 계속 쌓지 않아도
+        # 위의 already_run 제외 로직 덕분에 다음 틱에 자연스럽게 다시 시도된다. send_json
+        # 자체가 그 순간 실패하는(연결은 있어 보였는데 막상 전송에서 끊기는) 더 좁은 경합은
+        # 여전히 start_patrol_run 쪽 status='failed' 처리로 잡힌다.
+        if not robot_ws.is_connected(robot_code):
             continue
         await start_patrol_run(robot_id, s["route_id"], "schedule", schedule_id=s["schedule_id"])
 
