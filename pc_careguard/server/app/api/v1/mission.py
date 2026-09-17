@@ -8,9 +8,10 @@ from ...ws import robot_ws
 # patrol_schedule만 폴링) 여기는 스케줄러를 거치지 않고 버튼 클릭 즉시 mission을 만들어
 # 바로 로봇에 다운링크를 보낸다 — patrol.py::start_patrol_run과 같은 "즉시 실행" 성격.
 #
-# 로봇 쪽(downlink_node.py)은 아직 이 명령 타입을 모른다(patrol_start/slam_*/cmd_vel만
-# 인식) — 그래서 실제 주행·음성 안내·약통 개방은 이번 스코프 밖이고, 이 엔드포인트는
-# mission 기록 + 다운링크 전송 시도까지만 담당한다.
+# 로봇 쪽(downlink_node.py)은 이제 "medication_start"를 인식한다 — payload.slot_no가
+# 있으면(대시보드가 이미 화면에 표시 중인 미수령 슬롯을 그대로 보냄) DeliverMedication
+# 액션을 바로 호출한다. slot_no가 0이면(카드 상태와 안 맞는 방어적 경우) downlink_node가
+# 조용히 무시한다.
 router = APIRouter(prefix="/missions", tags=["mission"])
 
 
@@ -35,6 +36,7 @@ async def create_mission(payload: MissionCreate):
         conn.commit()
 
     connected = await robot_ws.send_command(
-        payload.robot_code, {"type": "medication_start", "mission_id": row["id"]}
+        payload.robot_code,
+        {"type": "medication_start", "mission_id": row["id"], "slot_no": payload.slot_no},
     )
     return MissionItem(**row, robot_connected=connected)

@@ -29,6 +29,13 @@ audio_player.py가 그 문장을 그대로 TTS(Piper)로 합성해 스피커로 
 `ros2 launch careguard_bringup navigation_diff_launch.py map:=<등록된 맵 yaml 경로>`
 를 실행해 amcl·costmap·bt_navigator 등을 먼저 올려둬야 한다.
 
+"복약 전달" 경로(goal.medication_schedule_id > 0)일 때는 모든 웨이포인트를 다
+돈 "다음"이 아니라, 순찰 도중 언제든 PERSON_DETECTED_TOPIC으로 사람을 찾는
+즉시 — 남은 웨이포인트를 더 돌지 않고 — 음성 안내("복약을 권장합니다...")를
+내보내고 medication_client.py를 통해 DeliverMedication 액션을 호출한다(끝까지
+아무도 못 찾으면 배출을 시도하지 않고 그냥 순찰을 마친다 — _execute() 하단
+person_found 분기 참고).
+
 접근(approach) 끼어들기 — 2026-09-15 추가:
 careguard_perception/patrol_intruder_watch_node.py가 순찰 중 사람을 감지하면(먼
 거리라 인식 정확도가 낮을 수 있어), 더 가까이 가서 다시 확인하고 싶다는 요청을
@@ -60,13 +67,22 @@ import threading
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from nav2_simple_commander.robot_navigator import TaskResult
 
 from careguard_msgs.action import Patrol
 from careguard_nav.dock_return import return_to_charging
 from careguard_nav.waypoint_manager import WaypointManager
+
+from .medication_client import MedicationClient
+
+# medication_task.py의 같은 이름 상수와 동일한 문자열이어야 한다 — 이 코드베이스가
+# PATROL_RECORDING_TOPIC 등에서 이미 쓰는 방식(패키지 간 공유 없이 토픽명을 각자
+# 하드코딩)을 그대로 따른다. 아직 이 토픽을 실제로 발행하는 실시간 인식 노드는
+# 없다(medication_task.py 상단 주석 참고) — 이 구독은 "언젠가 생길 발행자"를
+# 기다리는 자리다.
+PERSON_DETECTED_TOPIC = '/careguard/perception/person_detected'
 
 # careguard_perception/config.py의 APPROACH_REQUEST_TOPIC/APPROACH_ARRIVED_TOPIC/
 # APPROACH_RELEASE_TOPIC과 같은 문자열 — PATROL_RECORDING_TOPIC 등과 같은 기존
@@ -91,6 +107,19 @@ class PatrolTask(Node):
         # careguard_hmi/config.py의 VOICE_TOPIC과 같은 문자열.
         self._voice_pub = self.create_publisher(String, '/careguard/voice/announce', 10)
         self._waypoint_manager = WaypointManager()
+        # DeliverMedication 액션 클라이언트(블로킹 래퍼) — medication_client.py 상단
+        # 주석 참고. medication_task.py 준비 여부는 여기서 확인 안 하고 실제로 배출이
+        # 필요한 순간(_deliver_medication)에 처음 wait_for_server를 건다.
+        self._medication_client = MedicationClient()
+
+        # "복약 전달" 경로에서 순찰 도중(웨이포인트 이동 중이든 각 지점 도착
+        # 직후든) 사람을 찾았는지 — _execute()가 매 웨이포인트마다 확인해서, 찾는
+        # 즉시 남은 지점을 더 돌지 않고 바로 음성 안내+배출로 넘어간다. 구독 자체는
+        # 노드 수명 내내 켜둔다(매 goal마다 새로 만들 이유가 없다 — video_recorder
+        # 구독 패턴과 같음) — _execute() 진입 시 clear()로 이전 goal의 신호가
+        # 안 새어 들어오게만 막는다.
+        self._person_detected = threading.Event()
+        self.create_subscription(Bool, PERSON_DETECTED_TOPIC, self._on_person_detected, 10)
 
         # 순찰 경로 좌표는 매번 goal에 실려 오지만, 복귀 지점(충전 스테이션)은 goal에
         # 없다 — CAREGUARD_MAP_ID로 한 번 캐시를 채워 charging_waypoint()가 동작하게 한다.
@@ -157,6 +186,52 @@ class PatrolTask(Node):
         msg = String()
         msg.data = json.dumps({'text': text})
         self._voice_pub.publish(msg)
+
+    def _on_person_detected(self, msg: Bool):
+        if msg.data:
+            self._person_detected.set()
+
+    def _deliver_medication(self, goal_handle):
+        """DeliverMedication 액션을 블로킹으로 호출하고 결과에 따라 음성 안내만
+        얹는다 — 서버로의 relay(medication_done, /careguard/patrol_status)는
+        medication_task.py._execute()의 finally에서 자신이 직접 발행한다(여기서
+        또 발행하면 이중 발행이 된다). medication_task.py가 그쪽에서 직접 발행하는
+        이유: 이 액션은 patrol_task.py를 안 거치는 경로(P3 수동 재안내,
+        downlink_node.py가 직접 호출)도 있어서, 여기서만 relay하면 그 경로의
+        결과가 서버에 아예 안 가기 때문이다.
+
+        medication_client.py 상단 주석 참고 — 여기서 블로킹으로 기다려도
+        _execute() 자체가 이미 goal 전용 스레드에서 돌고 있어 다른 goal 처리를
+        막지 않는다(patrol_task는 어차피 goal 하나만 동시 실행 — _executing 가드).
+
+        서버 쪽 ws/robot_ws.py는 아직 "medication_done" 타입을 처리하지 않는다 —
+        받는 쪽(medication_log INSERT + 대시보드 broadcast)을 추가해야 이 값이
+        실제로 medication_log에 'delivered'로 남는다(별도 TODO, patrol.py::
+        start_patrol_run이 slot_no를 채워 보내는 서버쪽 변경과 짝을 맞춰야 함).
+        """
+        schedule_id = goal_handle.request.medication_schedule_id
+        slot_no = goal_handle.request.slot_no
+        self.get_logger().info(f'복약 전달 시작: schedule_id={schedule_id} slot_no={slot_no}')
+        # skip_person_check=True — 여기 도달했다는 것 자체가 _execute()의 웨이포인트
+        # 루프가 이미 self._person_detected로 사람을 확인했다는 뜻이라(호출부 참고),
+        # medication_task.py가 또 기다리게 하지 않는다(DeliverMedication.action 주석).
+        status = self._medication_client.deliver(
+            slot_no=slot_no, schedule_id=schedule_id, skip_person_check=True,
+            cancel_check=lambda: goal_handle.is_cancel_requested)
+        self.get_logger().info(f'복약 전달 결과: {status}')
+        if status == 'delivered':
+            self._publish_voice('약을 전달했습니다.')
+        elif status == 'timeout':
+            # hw_error는 여기서 안내하지 않는다 — 통신 자체가 끊긴 상황이라 로봇
+            # 스피커까지 정상 동작할지 알 수 없고, 억지로 재생 시도하다 또 다른
+            # 예외를 만들 이유가 없다(patrol_task._execute의 다른 실패 경로들과
+            # 같은 "확실한 것만 안내한다" 원칙).
+            self._publish_voice('약 전달에 실패했습니다. 담당자에게 알려드릴게요.')
+        # status == 'jammed'는 여기서 일반 문구를 안내하지 않는다 — robot_ws.py::
+        # _handle_medication_done이 오늘 미수령 횟수를 세어 더 구체적인 문구("약을
+        # 복용하지 않았습니다"/"약을 N번 복용하지 않았습니다")를 downlink_node.py의
+        # medication_alert 명령으로 곧 내려보낸다(2026-09-16). 여기서 일반 문구까지
+        # 먼저 재생하면 몇 초 뒤 그 구체적 문구와 겹쳐서 두 번 안내하게 된다.
 
     # ---------- 접근(approach) 끼어들기 ----------
 
@@ -250,6 +325,14 @@ class PatrolTask(Node):
         # 양쪽에서 같은 값을 써야 하므로 try 진입 전에 한 번만 계산해둔다.
         is_patrol = goal_handle.request.return_to_charging
         run_id = goal_handle.request.run_id
+        # "복약 전달" 경로인지 — 아래 루프가 매 웨이포인트마다 사람을 찾았는지
+        # 확인할지(그리고 남은 지점을 더 안 돌고 바로 배출로 넘어갈지) 이 값 하나로
+        # 게이팅한다. 일반 순찰/이동(P6 "이동" 포함)에서는 person_detected를 아예
+        # 신경 쓰지 않는다 — 대상자 앞이 아닌 곳에서 사람을 잘못 인식해 순찰이
+        # 조기 종료되는 걸 막기 위해서다.
+        is_medication_route = goal_handle.request.medication_schedule_id > 0
+        if is_medication_route:
+            self._person_detected.clear()
         if is_patrol:
             self._publish_patrol_recording('start', run_id)
             self._publish_voice('순찰을 시작합니다. 지금부터 영상을 촬영합니다.')
@@ -258,13 +341,21 @@ class PatrolTask(Node):
             waypoints_total = len(waypoints)
             self.get_logger().info(f'순찰 시작: run_id={run_id} 지점 {waypoints_total}개')
 
+            person_found = False
             for i, wp in enumerate(waypoints, start=1):
                 # 접근(approach) 요청이 오면 이 웨이포인트 이동을 잠깐 멈추고 다녀온 뒤
                 # 같은 웨이포인트로 다시 시도한다 — _navigate_with_approach_support 참고.
+                # is_medication_route일 때는 person_detected도 같이 cancel_check에
+                # 건다 — Nav2가 이동하는 도중에 사람을 찾으면(꼭 지점에 "도착"할 때까지
+                # 기다리지 않고) 그 즉시 멈춘다. _navigate_with_approach_support는 멈춘
+                # 이유가 "접근 요청"이면 다녀온 뒤 같은 웨이포인트를 다시 시도하고, 그 외
+                # (진짜 취소든 person_detected든)에는 바로 반환한다 — person_detected로
+                # 멈춘 경우는 아래 person_found 분기가 이어서 처리한다.
                 nav_result = self._navigate_with_approach_support(
                     goal_handle,
                     lambda wp=wp: self._waypoint_manager.navigate_poses(
-                        [wp], cancel_check=lambda: self._interrupt_requested(goal_handle)),
+                        [wp], cancel_check=lambda: self._interrupt_requested(goal_handle) or (
+                            is_medication_route and self._person_detected.is_set())),
                 )
 
                 # WaypointManager._go_through가 cancel_check()에 걸려 중간에 cancelTask()로
@@ -278,6 +369,21 @@ class PatrolTask(Node):
                     result.status = 'cancelled'
                     result.waypoints_done = i - 1
                     return result
+
+                # 사람을 찾았으면(도착해서 성공했든, 이동 중 인식돼 중간에 멈췄든)
+                # 남은 웨이포인트는 더 돌지 않는다 — 대상자를 이미 찾았는데 다른
+                # 지점을 마저 도는 건 의미가 없고, 오히려 그사이 대상자가 자리를
+                # 뜰 수 있다. 실패(nav_result != SUCCEEDED)로 아래에서 또 걸리기
+                # 전에 먼저 처리한다.
+                if is_medication_route and self._person_detected.is_set():
+                    person_found = True
+                    self.get_logger().info(f'{i}번째 웨이포인트 근처에서 사람을 인식했습니다 — 복약 안내를 시작합니다')
+                    waypoints_done = i if nav_result == TaskResult.SUCCEEDED else i - 1
+                    goal_handle.publish_feedback(
+                        Patrol.Feedback(waypoints_done=waypoints_done, waypoints_total=waypoints_total))
+                    self._publish_status(type='patrol_progress', run_id=run_id, waypoints_done=waypoints_done)
+                    self._publish_voice('복약을 권장합니다. 약통에서 약을 배출해드릴게요.')
+                    break
 
                 # 예전엔 이 결과를 아예 확인 안 했다 — Nav2 goal이 아무리 실패(FAILED)/
                 # 취소(CANCELED)돼도 그냥 다음 지점으로 넘어가거나 끝까지 다 돌고 나서
@@ -302,6 +408,16 @@ class PatrolTask(Node):
                     return result
                 goal_handle.publish_feedback(Patrol.Feedback(waypoints_done=i, waypoints_total=waypoints_total))
                 self._publish_status(type='patrol_progress', run_id=run_id, waypoints_done=i)
+
+            # 위 루프에서 실제로 사람을 찾았을 때만 배출한다(person_found) —
+            # medication_schedule_id > 0이어도 끝까지 아무도 못 찾았으면 그냥
+            # 지나간다: 확인도 안 된 상태로 약통을 억지로 열 이유가 없다. 그 경우
+            # medication_log에 'delivered'가 안 남으므로 서버 scheduler.py::
+            # _medication_tick()이 알아서 MED_MISSED로 잡아낸다(반응형 경로가 이미
+            # 있으므로 로봇이 여기서 또 막힐 이유가 없다). 실패(timeout/jammed/
+            # hw_error)해도 마찬가지로 순찰 자체를 중단하지는 않는다.
+            if person_found:
+                self._deliver_medication(goal_handle)
 
             # P6 "이동"(단일 웨이포인트 주행, run_id=0)은 도착한 자리에 그대로 머물러야
             # 한다 — 원래 순찰(여러 지점을 돌고 항상 충전소로 복귀)과 이 필드(is_patrol)로
@@ -368,8 +484,18 @@ class PatrolTask(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = PatrolTask()
+    # rclpy.spin(node)(기본 SingleThreadedExecutor)를 쓰면 안 된다 — medication_
+    # task.py와 똑같은 버그(그쪽 main()의 주석 참고, 2026-09-11 최소 재현으로 확인):
+    # _execute()가 ActionServer 콜백 그룹을 점유한 채(웨이포인트 루프가 도는 내내)
+    # 도는 동안, 같은 노드의 _on_person_detected 구독 콜백이 그 그룹이 안 풀릴
+    # 때까지 전혀 실행되지 않는다 — 그러면 "복약 전달 경로" 순찰이 person_detected를
+    # 아무리 pub해도 절대 못 멈추고 매번 웨이포인트를 다 돌아버린다(이 파일의 핵심
+    # 기능이 조용히 죽어있었다는 뜻). MultiThreadedExecutor로 액션 실행과 구독
+    # 콜백을 다른 스레드로 동시에 돌려야 한다.
+    executor = rclpy.executors.MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
         node.destroy_node()
         # SIGINT 시 rclpy가 내부적으로 먼저 shutdown()을 부를 수 있어, 여기서

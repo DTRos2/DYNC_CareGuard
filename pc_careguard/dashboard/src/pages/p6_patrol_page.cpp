@@ -97,16 +97,29 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
     popover_ = new WaypointPopover(this);
     connect(popover_, &WaypointPopover::saveRequested, this, &P6PatrolPage::handlePopoverSave);
     connect(popover_, &WaypointPopover::deleteRequested, this, &P6PatrolPage::handleCanvasDeleteRequested);
+    connect(popover_, &WaypointPopover::cancelled, this, &P6PatrolPage::handlePopoverCancelled);
     // "경로 이동" — 웨이포인트 편집 팝오버 안으로 옮겨왔다(예전엔 캔버스 툴바의
     // "로봇 이동" 모드에서 마커를 직접 클릭해야 했다). driveToSingleWaypoint는 그때와
     // 동일한 함수를 그대로 재사용한다.
     connect(popover_, &WaypointPopover::driveRequested, this, &P6PatrolPage::driveToSingleWaypoint);
     connect(popover_, &WaypointPopover::cancelDriveRequested, this, &P6PatrolPage::cancelCurrentDrive);
+    // "편집" 버튼으로 편집 모드에 들어간 동안만 그 웨이포인트의 위치 캡처
+    // (WaypointCanvas::setWaypointCaptureMode — "초기 위치 설정"과 같은 클릭+드래그
+    // 방식)를 무장한다 — 꺼지면(저장/취소/삭제 등 팝오버가 닫히는 모든 경로에서
+    // WaypointPopover::hideEvent가 editModeToggled(false)를 낸다) 캔버스를 클릭해도
+    // 더 이상 위치가 안 바뀐다.
+    connect(popover_, &WaypointPopover::editModeToggled, this, [this](bool editing) {
+        canvas_->setWaypointCaptureMode(editing ? popover_->editingWaypointId() : QString());
+    });
 
     connect(canvas_, &WaypointCanvas::waypointAddRequested, this, &P6PatrolPage::handleCanvasAddRequested);
     connect(canvas_, &WaypointCanvas::waypointEditRequested, this, &P6PatrolPage::handleCanvasEditRequested);
     connect(canvas_, &WaypointCanvas::waypointDeleteRequested, this, &P6PatrolPage::handleCanvasDeleteRequested);
-    connect(canvas_, &WaypointCanvas::waypointMoved, this, &P6PatrolPage::handleCanvasMoved);
+    // 웨이포인트 편집 캡처(setWaypointCaptureMode)로 위치/방향을 다시 잡았다 —
+    // handleCanvasMoved는 원래 마커 드래그가 쓰던 슬롯인데 시그니처(id, pos,
+    // headingDeg)가 그대로 맞아 재사용한다(웨이포인트 갱신·서버 반영·팝오버 새로고침
+    // 로직이 동일하게 필요하므로).
+    connect(canvas_, &WaypointCanvas::waypointPoseCaptured, this, &P6PatrolPage::handleCanvasMoved);
     connect(canvas_, &WaypointCanvas::initialPoseCaptureFinished, this, &P6PatrolPage::handleInitialPoseCaptured);
     connect(canvas_, &WaypointCanvas::initialPoseCaptureCancelled, this,
             [this] { poseCaptureBtn_->setChecked(false); });
@@ -147,7 +160,10 @@ P6PatrolPage::P6PatrolPage(QWidget* parent) : QWidget(parent), currentMapIndex_(
         const QString editingId = popover_->editingWaypointId();
         if (popover_->isVisible() && !editingId.isEmpty()) {
             if (const WaypointCanvas::Waypoint* wp = canvas_->findWaypoint(editingId)) {
-                popover_->setForEditWaypoint(*wp);
+                // preserveEditMode=true — 리사이즈로 좌표만 다시 맞추는 것일 뿐, 마침
+                // "편집" 모드로 마커를 드래그하던 중이었다면 그 상태를 그대로 유지해야
+                // 한다(안 그러면 리사이즈가 편집 중간에 "보기" 모드로 되돌려버린다).
+                popover_->setForEditWaypoint(*wp, /*preserveEditMode=*/true);
                 refreshPopoverDriveButton();
                 movePopoverNear(canvas_->mapTo(this, canvas_->worldToScreen(wp->pos).toPoint()));
             } else {
@@ -410,15 +426,18 @@ QWidget* P6PatrolPage::buildHeaderRow() {
     refreshRobotStateBtn_ = new QPushButton(SimpleIcons::refresh(Tokens::TEXT_SECONDARY, 12), QString(), row);
     refreshRobotStateBtn_->setProperty("variant", "secondary");
     refreshRobotStateBtn_->setIconSize(QSize(12, 12));
-    refreshRobotStateBtn_->setToolTip(QStringLiteral("로봇 상태 새로고침"));
+    refreshRobotStateBtn_->setToolTip(QStringLiteral("새로고침 · 로봇 상태·맵·웨이포인트·경로·주행 스케줄을 DB 기준으로 다시 받아옵니다"));
     connect(refreshRobotStateBtn_, &QPushButton::clicked, this, [this] {
         refreshRobotState();
-        // 배지가 떠 있을 때만(=staleMapIds_에 지금 맵이 있을 때만) 실제 재조회를
-        // 한다 — 평소엔 이 버튼이 로봇 상태만 다시 맞추던 것과 동작이 그대로다.
-        if (currentMapIndex_ >= 0 && currentMapIndex_ < maps_.size() &&
-            staleMapIds_.contains(maps_[currentMapIndex_].serverMapId)) {
-            reloadCurrentMapWaypointsAndRoutes();
-        }
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        // 예전엔 staleMapIds_에 지금 맵이 있을 때(=다른 대시보드가 저장했다는 WS
+        // 메시지를 이 세션이 실제로 받았을 때)만 웨이포인트/경로/스케줄/맵을 다시
+        // 받았다 — 그 WS 메시지를 못 받은 경우(DB를 직접/다른 경로로 바꿨거나
+        // 메시지를 놓친 경우) 이 버튼이 로봇 상태만 맞추고 나머지는 조용히 그대로라,
+        // 대시보드를 껐다 켜야만 반영되는 문제가 있었다(2026-09-16 리포트). 이제
+        // 배지 유무와 무관하게 새로고침을 누르면 항상 DB 기준으로 다시 맞춘다.
+        refreshMapForRobot(maps_[currentMapIndex_].robotId);
+        reloadCurrentMapWaypointsAndRoutes();
     });
     layout->addWidget(refreshRobotStateBtn_);
 
@@ -915,7 +934,20 @@ void P6PatrolPage::handleCanvasAddRequested(QPointF pos, qreal headingDeg) {
 void P6PatrolPage::handleCanvasEditRequested(const QString& id) {
     const WaypointCanvas::Waypoint* wp = canvas_->findWaypoint(id);
     if (!wp) return;
+    if (popover_->isVisible() && popover_->editingWaypointId() == id) {
+        // 이미 이 웨이포인트를 보고 있는(십중팔구 편집 모드로 드래그하려다 살짝
+        // 클릭으로도 잡힌) 팝오버를 다시 setForEditWaypoint(preserveEditMode=false)로
+        // 열면 "편집"->"보기"로 되돌아가 입력 중이던 값이 잠겨버린다 — 그냥 앞으로
+        // 가져오기만 한다.
+        popover_->raise();
+        return;
+    }
     popover_->setForEditWaypoint(*wp);
+    // "취소" 스냅샷 — 지금(아직 "편집" 누르기 전) 위치/방향을 남겨둔다. 편집 캡처는
+    // "저장" 전에도 바로 로컬·서버에 반영되므로, 취소하면 이 자리로 되돌려야 한다.
+    editingSnapshotId_ = wp->id;
+    editingSnapshotPos_ = wp->pos;
+    editingSnapshotYawDeg_ = wp->yawDeg;
     const QPoint anchor = canvas_->mapTo(this, canvas_->worldToScreen(wp->pos).toPoint());
     movePopoverNear(anchor);
     popover_->raise();
@@ -939,14 +971,36 @@ void P6PatrolPage::movePopoverNear(const QPoint& anchor) {
 }
 
 void P6PatrolPage::handleCanvasDeleteRequested(const QString& id) {
+    // 이 웨이포인트가 들어있는 경로가 하나라도 있으면 삭제를 막는다(요청 사양) —
+    // 조용히 지우면 그 경로의 patrol_route.steps가 더 이상 존재하지 않는 웨이포인트를
+    // 가리키게 되고(서버가 그 스텝을 못 찾아 순찰 중 건너뛰거나 에러), 사용자도 경로가
+    // 왜 짧아졌는지 알 길이 없다 — 먼저 경로에서 빼도록 알람으로 알려준다. 팝오버는
+    // 열려 있었다면 그대로 둔다(막힌 삭제 때문에 갑자기 닫히면 혼란스러우므로).
+    QStringList containingRoutes;
+    for (auto it = routes_.begin(); it != routes_.end(); ++it) {
+        if (it.value().contains(id)) containingRoutes.append(it.key());
+    }
+    if (!containingRoutes.isEmpty()) {
+        QMessageBox::warning(
+            this, QStringLiteral("삭제할 수 없음"),
+            QStringLiteral("이 웨이포인트는 %1개의 경로(%2)에 포함되어 있어 삭제할 수 없습니다.\n"
+                            "먼저 해당 경로에서 뺀 뒤 다시 시도해주세요.")
+                .arg(containingRoutes.size())
+                .arg(containingRoutes.join(QStringLiteral(", "))));
+        return;
+    }
+
     popover_->hide();
+    if (editingSnapshotId_ == id) editingSnapshotId_.clear();
     for (int i = 0; i < waypoints_.size(); ++i) {
         if (waypoints_[i].id == id) {
             waypoints_.remove(i);
             break;
         }
     }
-    for (auto it = routes_.begin(); it != routes_.end(); ++it) it.value().removeAll(id);
+    // routes_는 위에서 이미 이 id를 포함하지 않는다고 확인했으니(그렇지 않았으면
+    // 위에서 알람과 함께 return했다) 여기서 다시 지울 필요가 없다. routeEditSelection_
+    // (아직 저장 전인 "경로 편집" 중 선택 순서)은 별개 구조라 그대로 정리한다.
     routeEditSelection_.removeAll(id);
 
     canvas_->setWaypoints(waypoints_);
@@ -987,8 +1041,21 @@ void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos, qreal headi
     canvas_->setWaypoints(waypoints_);
     rebuildWpList();
 
-    // waypointMoved는 드래그가 끝날 때(mouseReleaseEvent) 딱 한 번만 온다 — 드래그
-    // 도중 계속 오는 게 아니라 여기서 바로 서버에 반영해도 요청이 쏟아지지 않는다.
+    // 클릭+드래그로 다시 잡은 게 지금 편집 팝오버가 보고 있는 그 웨이포인트라면,
+    // 팝오버가 들고 있는 canvasPos_/yaw도 같이 새로고침해야 한다 — 안 하면 팝오버는
+    // 그 전(낡은) 좌표를 그대로 쥐고 있다가, 조금 뒤 "저장"을 누르면 방금 새로 잡은
+    // 위치를 그 낡은 좌표로 도로 덮어써버린다. preserveEditMode=true — 위치만 새로
+    // 고칠 뿐, 이 자체가 편집 모드를 끝내는 동작은 아니다(캡처는 편집 모드 내내
+    // 계속 무장돼 있어야 하므로 — WaypointCanvas::setWaypointCaptureMode 주석 참고).
+    if (popover_->isVisible() && popover_->editingWaypointId() == id) {
+        if (const WaypointCanvas::Waypoint* wp = canvas_->findWaypoint(id)) {
+            popover_->setForEditWaypoint(*wp, /*preserveEditMode=*/true);
+        }
+    }
+
+    // waypointPoseCaptured는 클릭+드래그를 놓을 때(mouseReleaseEvent) 딱 한 번만
+    // 온다 — 드래그 도중 계속 오는 게 아니라 여기서 바로 서버에 반영해도 요청이
+    // 쏟아지지 않는다.
     if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
     const int serverId = maps_[currentMapIndex_].waypointServerIds.value(id, -1);
     if (serverId <= 0) return;  // 아직 서버에 없는 웨이포인트 — 다음 "저장"(popover)에서 생성될 때 반영됨
@@ -1000,8 +1067,48 @@ void P6PatrolPage::handleCanvasMoved(const QString& id, QPointF pos, qreal headi
         [](bool, const ApiClient::WaypointInfo&, const QString&) {});
 }
 
+void P6PatrolPage::handlePopoverCancelled() {
+    if (editingSnapshotId_.isEmpty()) return;
+    const QString id = editingSnapshotId_;
+    const QPointF snapPos = editingSnapshotPos_;
+    const qreal snapYaw = editingSnapshotYawDeg_;
+    editingSnapshotId_.clear();  // 한 번만 되돌린다.
+
+    WaypointCanvas::Waypoint* target = nullptr;
+    for (WaypointCanvas::Waypoint& w : waypoints_) {
+        if (w.id == id) {
+            target = &w;
+            break;
+        }
+    }
+    if (!target) return;  // 편집 중 삭제됐으면(우클릭 등) 되돌릴 것도 없다.
+
+    target->pos = snapPos;
+    target->yawDeg = snapYaw;
+    target->metersPos = canvas_->canvasToMapMeters(snapPos);
+    canvas_->setWaypoints(waypoints_);
+    rebuildWpList();
+
+    // handleCanvasMoved와 같은 이유 — 편집 캡처(WaypointCanvas::waypointPoseCaptured)가
+    // "저장" 전에도 이미 서버에 반영해버렸으니, 취소도 서버에 똑같이 반영해야 한다.
+    if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+    const int serverId = maps_[currentMapIndex_].waypointServerIds.value(id, -1);
+    if (serverId <= 0) return;  // 아직 서버에 없던 웨이포인트 — 로컬 되돌리기로 충분.
+    apiClient_->updateWaypoint(
+        serverId,
+        QJsonObject{{"pos_x", target->metersPos.x()},
+                    {"pos_y", target->metersPos.y()},
+                    {"yaw", CanvasGeometry::canvasYawDegToMapYawRad(snapYaw)}},
+        [](bool, const ApiClient::WaypointInfo&, const QString&) {});
+}
+
 void P6PatrolPage::handlePopoverSave(const QString& id, const QString& name, const QString& kind, qreal yaw,
                                       QPointF pos) {
+    // 저장했으니 "취소" 스냅샷은 더 이상 유효하지 않다(이 id로 다시 열 때 새로
+    // 채워진다) — 안 지워도 실질적으로 위험하진 않지만(팝오버가 닫혀 있으면 취소
+    // 버튼을 누를 수 없다) 명확히 한다.
+    if (editingSnapshotId_ == id) editingSnapshotId_.clear();
+
     QString oldChargingCode;  // 교체되어 'patrol'로 내려야 할 예전 충전 웨이포인트(있으면)
     if (kind == QStringLiteral("charge")) {
         const QString existing = chargingWaypointId();
@@ -2483,8 +2590,45 @@ void P6PatrolPage::reloadCurrentMapWaypointsAndRoutes() {
 
                 staleMapIds_.remove(mapId);
                 updateRefreshBadge();
+
+                // 경로 목록이 바뀌었을 수 있으니(추가/삭제/이름변경) 스케줄도 그 새
+                // 목록 기준으로 통째로 다시 받는다 — routesOk가 false면(조회 실패)
+                // 위에서 이미 routes_를 그대로 뒀으니, 여기서도 스케줄에 손대지 않고
+                // 건너뛴다(빈 목록으로 돌리면 정상 스케줄까지 지워버리게 된다).
+                if (routesOk) reloadSchedulesForRoutes(mapId, serverRoutes, 0, {});
             });
     });
+}
+
+void P6PatrolPage::reloadSchedulesForRoutes(int mapId, const QVector<ApiClient::PatrolRouteInfo>& routes, int index,
+                                             QVector<Schedule> accumulated) {
+    if (index >= routes.size()) {
+        if (currentMapIndex_ < 0 || currentMapIndex_ >= maps_.size()) return;
+        if (maps_[currentMapIndex_].serverMapId != mapId) return;
+        maps_[currentMapIndex_].schedules = accumulated;
+        if (scheduleEditIndex_ < 0) {
+            schedules_ = accumulated;
+            rebuildScheduleList();
+        }
+        return;
+    }
+
+    const ApiClient::PatrolRouteInfo route = routes[index];
+    apiClient_->fetchPatrolSchedules(
+        route.id, [this, mapId, routes, index, accumulated, route](
+                      bool ok, const QVector<ApiClient::PatrolScheduleInfo>& list) mutable {
+            if (ok) {
+                for (const ApiClient::PatrolScheduleInfo& s : list) {
+                    QVector<int> days;
+                    for (int i = 0; i < 7; ++i) {
+                        if (s.daysOfWeek & (1 << i)) days.append(i);
+                    }
+                    accumulated.append(
+                        Schedule{route.name, s.runTime, days, s.enabled, s.id, s.medicationScheduleId});
+                }
+            }
+            reloadSchedulesForRoutes(mapId, routes, index + 1, accumulated);
+        });
 }
 
 void P6PatrolPage::loadServerMapDetails(std::shared_ptr<QVector<MapData>> maps, int index) {

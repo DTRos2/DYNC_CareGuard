@@ -1,0 +1,37 @@
+# 약통 슬롯 하나를 열어 복약을 전달한다. careguard_mission/medication_task.py가
+# 액션 서버. 두 곳에서 호출한다:
+#   1) careguard_mission/patrol_task.py — "복약 전달" 경로(Patrol.action의
+#      medication_schedule_id > 0)의 마지막 웨이포인트 도착 후, 충전소 복귀 전에
+#      medication_client.py(블로킹 래퍼)를 통해 호출.
+#   2) careguard_agent/downlink_node.py — 서버의 "medication_start" WS 명령(P3
+#      "복약 재안내" 버튼, 순찰과 무관한 즉시 호출) — 로봇이 이미 대상자 앞에
+#      있다고 가정하고 비동기로 직접 호출.
+# 두 트리거가 같은 배출 로직을 하나만 공유하기 위해 분리했다(patrol_task.py 안에
+# 얹으면 이 두 번째 트리거를 위해 같은 상태머신을 또 만들어야 한다).
+#
+# schedule_id/slot_no 둘 다 없거나(0) medication_schedule 테이블과 안 맞아도 액션
+# 자체는 동작한다(예: P3 수동 재안내가 특정 회차와 안 묶인 경우) — 그때는
+# medication_log에 결과를 남기지 않는다(medication_task.py 쪽 구현 참고).
+int32 slot_no             # medication_schedule.slot_no(1~3). 0이면 유효하지 않은
+                           # 호출로 보고 즉시 hw_error로 거부한다.
+int32 schedule_id         # medication_schedule.id. 0이면 "특정 회차와 안 묶인 즉시
+                           # 호출"(P3 재안내) — medication_log를 남기지 않는다.
+float32 person_timeout_sec   # 사람 인식 대기 최대 시간(초). 0 이하면 기본값(호출부가
+                              # 안 채운 경우) — medication_task.py의 DEFAULT_PERSON_
+                              # TIMEOUT_SEC을 대신 쓴다.
+# true면 waiting_person 단계를 건너뛰고 바로 슬롯을 연다 — patrol_task.py가 순찰
+# 도중 이미 person_detected 토픽으로 사람을 확인한 뒤 호출하는 경우(patrol_task.py
+# 자신의 구독과 이 액션 서버의 구독이 서로 다른 순간에 각자 True를 받는 것뿐이라,
+# 이미 확인된 걸 여기서 또 기다리게 하면 그 사이 사람이 자리를 떠도 모른다 — 이중
+# 대기를 없애려는 목적). P3 수동 재안내(downlink_node.py 직접 호출)는 이 확인이
+# 없어 false로 둔다.
+bool skip_person_check
+---
+# "delivered": 정상 배출+회수 확인. "timeout": person_timeout_sec 안에 사람을 못
+# 찾음(칸을 안 엶). "jammed": 칸은 열었는데 IR 센서가 끝내 회수를 못 봄(칸이 열린
+# 채로 남을 수 있음 — 운영자가 확인 필요). "hw_error": pillbox_controller와 통신
+# 실패 등 하드웨어 계층 오류. "cancelled": 액션 취소.
+string status
+---
+# "waiting_person" / "opening" / "waiting_retrieval" / "closing" — 지금 단계.
+string phase

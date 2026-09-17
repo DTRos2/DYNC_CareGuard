@@ -15,10 +15,12 @@ class CameraLiveView;
 
 // P6 웨이포인트 편집 캔버스 — p6_patrol_route_wireframe.html의 <svg> 영역.
 // addWaypointMode()가 켜져 있을 때만 빈 곳 드래그로 웨이포인트를 추가한다(방향
-// 지정) — 꺼져 있으면 빈 곳 드래그는 패닝이다. 마커 드래그로 이동+재조준, 마커를
-// 드래그 없이 클릭하면 편집 팝오버(WaypointPopover의 "경로 이동" 버튼이 실제
-// 주행 요청을 담당한다 — 이 캔버스 자신은 더 이상 클릭만으로 주행을 요청하지
-// 않는다)는 addWaypointMode()와 무관하게 항상 가능하다. 우클릭으로 삭제. 경로
+// 지정) — 꺼져 있으면 빈 곳 드래그는 패닝이다. 마커를 클릭하면 편집 팝오버가 열린다
+// (WaypointPopover의 "경로 이동" 버튼이 실제 주행 요청을 담당한다 — 이 캔버스
+// 자신은 더 이상 클릭만으로 주행을 요청하지 않는다) — addWaypointMode()와 무관하게
+// 항상 가능하다. 기존 웨이포인트의 위치/방향을 바꾸는 건 마커를 직접 드래그하는
+// 게 아니라, 그 팝오버가 "편집" 모드로 켜는 setWaypointCaptureMode로 한다("위치
+// 보정"(AMCL 초기 위치)과 완전히 같은 클릭+드래그 방식). 우클릭으로 삭제. 경로
 // 편집 모드에서는 클릭 순서대로 웨이포인트를 골라 경로를 구성한다(충전 스테이션은
 // 클릭 불가 — 자동 출발·복귀 전용이라 경로 순서와 무관하다. 긴급 버튼은 patrol과
 // 동일하게 경로에 포함할 수 있다). 마우스 휠로 확대/축소, 휠 버튼(가운데 클릭) 드래그로 화면 이동,
@@ -63,9 +65,10 @@ public:
 
     // 웨이포인트 목록 카드의 "+ 추가" 토글(P6PatrolPage::addWpBtn_)이 켜져 있는
     // 동안만 빈 곳 클릭+드래그가 새 웨이포인트 추가(방향 지정)로 이어진다 — 꺼져
-    // 있으면 빈 곳 드래그는 그냥 패닝(화면 이동)이다. 마커 클릭(편집 팝오버)·드래그
-    // (이동+재조준)·우클릭(삭제)은 이 값과 무관하게 항상 가능하다 — "추가" 모드는
-    // 오직 "빈 곳을 눌렀을 때 무슨 일이 생기는지"만 가른다.
+    // 있으면 빈 곳 드래그는 그냥 패닝(화면 이동)이다. 마커 클릭(편집 팝오버)·우클릭
+    // (삭제)은 이 값과 무관하게 항상 가능하다 — "추가" 모드는 오직 "빈 곳을 눌렀을
+    // 때 무슨 일이 생기는지"만 가른다. (예전엔 마커를 직접 드래그해 이동+재조준도
+    // 가능했지만 없앴다 — setWaypointCaptureMode 주석 참고.)
     void setAddWaypointMode(bool on);
     bool addWaypointMode() const { return addWaypointMode_; }
 
@@ -75,6 +78,17 @@ public:
     // 자동으로 꺼진다(단발성) — 호출자가 다시 setPoseCaptureMode(true)로 재진입해야 한다.
     void setPoseCaptureMode(bool on);
     bool poseCaptureMode() const { return poseCaptureMode_; }
+
+    // 편집 팝오버(WaypointPopover)가 기존 웨이포인트를 "편집" 모드로 연 동안 쓰는,
+    // "위치 보정"과 완전히 같은 방식의 클릭+드래그(위치+방향)로 그 웨이포인트id의
+    // 새 위치를 잡는 모드 — 요청 사양: 마커를 직접 드래그해서 옮기는 대신 "초기
+    // 위치 설정"과 같은 조작으로 통일한다. setPoseCaptureMode(AMCL용)와 내부 상태를
+    // 공유하지만(poseCaptureMode_) 다른 점 하나 — 단발성이 아니라, 편집 중엔 몇
+    // 번이든 다시 클릭+드래그할 수 있도록 매 확정(release) 뒤에도 계속 무장돼
+    // 있는다(호출부가 편집이 끝날 때 빈 문자열로 꺼야 한다). 빈 문자열이면 꺼짐.
+    void setWaypointCaptureMode(const QString& waypointId);
+    void clearWaypointCaptureMode() { setWaypointCaptureMode(QString()); }
+    QString waypointCaptureId() const { return waypointCaptureId_; }
 
     // 실제 map 프레임 미터<->캔버스 좌표 환산 기준(서버 map.resolution/origin_x/origin_y).
     // 맵을 전환할 때마다(P6PatrolPage::loadMapData) 그 맵의 값으로 갱신해야 한다.
@@ -174,10 +188,6 @@ signals:
     void waypointAddRequested(QPointF canvasPos, qreal headingDeg);
     void waypointEditRequested(const QString& id);
     void waypointDeleteRequested(const QString& id);
-    // 마커를 드래그해 옮겼을 때 — headingDeg는 드래그 시작점->끝점 방향(위와 같은
-    // 규칙). 드래그가 너무 짧으면 기존 yawDeg를 그대로 돌려준다(의미 없는 미세한
-    // 떨림으로 방향이 바뀌지 않도록).
-    void waypointMoved(const QString& id, QPointF newPos, qreal headingDeg);
     void routeWaypointClicked(const QString& id);
     // 경로 편집 모드에서 charge(충전 스테이션) 마커를 클릭했다 — 자동 출발·복귀
     // 전용이라 경로 순서에 넣을 수 없다. emergency는 patrol과 동일하게 경로에
@@ -193,6 +203,12 @@ signals:
     // 위치 보정 모드 진입 후 실제로 드래그를 시작하기 전에 우클릭 등으로 취소했다 —
     // 호출자는 툴바 버튼의 체크 상태를 되돌려야 한다.
     void initialPoseCaptureCancelled();
+    // setWaypointCaptureMode(id)로 무장한 뒤 클릭(+드래그)을 마치고 마우스를 뗐다 —
+    // initialPoseCaptureFinished와 같은 좌표계·각도 규약. 드래그가 너무 짧으면(거의
+    // 클릭) 그 웨이포인트의 기존 yaw를 그대로 돌려준다(예전 마커 드래그가 쓰던
+    // 규칙과 동일 — 의미 없는 미세한 클릭으로 방향이 사라지지 않도록). 단발성이
+    // 아니다 — 편집 모드가 꺼질 때까지 매 확정 뒤에도 다시 무장된 채로 남는다.
+    void waypointPoseCaptured(const QString& id, QPointF canvasPos, qreal headingDeg);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -220,13 +236,11 @@ private:
     bool routeEditMode_;
     bool addWaypointMode_ = false;
 
+    // 마커를 누른 채(release까지) 추적만 한다 — 움직여도 위치는 안 바뀌고, 뗄 때
+    // 항상 편집 팝오버를 연다(waypointEditRequested). 위치/방향 편집은
+    // setWaypointCaptureMode 쪽에서만 한다.
     bool dragging_;
-    bool dragMoved_;
     int dragIndex_;
-    // 드래그로 마커를 옮길 때 방향(headingDeg)을 "시작점 -> 끝점"으로 계산하려면
-    // 시작 위치가 필요하다 — mouseMoveEvent가 waypoints_[dragIndex_].pos를 계속
-    // 덮어써서 release 시점엔 이미 원래 위치를 알 수 없어 별도로 들고 있는다.
-    QPointF dragStartPos_;
 
     // "WP 추가" 모드에서 빈 곳을 클릭+드래그해 새 웨이포인트의 위치+방향을 한 번에
     // 잡는 상태 — poseCapturing_과 같은 패턴이다. 이 모드에 있는 동안은 빈 곳
@@ -245,6 +259,12 @@ private:
     QPointF currentRobotPos_;
     qreal currentRobotHeadingDeg_;
     bool hasRobotPos_;
+
+    // 비어 있지 않으면 poseCaptureMode_가 "AMCL 초기 위치"가 아니라 "이 웨이포인트
+    // 편집"용으로 켜져 있다는 뜻 — mousePress/Release가 이 값의 유무로 두 쓰임을
+    // 가르고, 완료 시 emit할 신호(initialPoseCaptureFinished vs waypointPoseCaptured)
+    // 와 단발성 여부(AMCL만 단발성)도 이걸로 정한다.
+    QString waypointCaptureId_;
 
     bool poseCaptureMode_ = false;
     bool poseCapturing_ = false;

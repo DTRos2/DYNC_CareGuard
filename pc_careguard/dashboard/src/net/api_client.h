@@ -284,8 +284,10 @@ public:
 
     // POST /missions — P3 "복약 재안내" 버튼. medication_scheduler가 없어 스케줄을 안 거치고
     // 즉시 mission을 만들어 로봇에 다운링크를 보낸다(robots.py 스코프 밖이라 robot.code로 보냄).
-    // 로봇 쪽은 아직 이 명령을 실행하지 않는다 — mission 기록·다운링크 전송까지만 실동작.
-    void startMedicationMission(const QString& robotCode, ItemCallback<MissionInfo> callback);
+    // slotNo는 카드에 이미 표시돼 있던 "미수령(Missed)" 슬롯 — 호출부(p3_recipient_page.cpp)가
+    // RecipientCard::meds에서 찾아서 넘긴다. 로봇 쪽 medication_task.py가 이 번호로 실제
+    // 약통 채널을 연다(careguard_msgs/action/DeliverMedication.action 참고).
+    void startMedicationMission(const QString& robotCode, int slotNo, ItemCallback<MissionInfo> callback);
 
     // GET /recipients — P3 대상자 목록. 위험도(level)·상태 요약·복약 배지는 care_event
     // 연동이 아직 없어 이 응답에 없다 — 호출부가 등록 직후 기본값(정상/미확인)을 채운다.

@@ -441,6 +441,12 @@ class RobotThresholds(BaseModel):
 class MissionCreate(BaseModel):
     robot_code: str
     kind: str = "medication"  # 이번 스코프에선 P3 "복약 재안내" 버튼만 이걸로 미션을 만든다
+    # medication_schedule.slot_no(1~3). P3 카드가 이미 화면에 표시 중인 "미수령" 슬롯을
+    # 그대로 넘긴다(대시보드 p3_recipient_page.cpp가 RecipientCard::meds에서 찾음) — 여기서
+    # 다시 조회하지 않는 이유는 patrol.py::start_patrol_run이 웨이포인트 좌표를 직접 싣는
+    # 것과 같다(호출부가 이미 아는 값을 굳이 서버가 재조회할 이유가 없음). 0이면 downlink_
+    # node.py가 "유효한 슬롯 없음"으로 보고 무시한다.
+    slot_no: int = 0
 
 
 class MissionItem(BaseModel):

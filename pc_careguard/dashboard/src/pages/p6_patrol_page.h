@@ -178,6 +178,9 @@ private:
     void handleCanvasDeleteRequested(const QString& id);
     void handleCanvasMoved(const QString& id, QPointF pos, qreal headingDeg);
     void handlePopoverSave(const QString& id, const QString& name, const QString& kind, qreal yaw, QPointF pos);
+    // "취소" — editingSnapshotId_가 있으면(편집 모드에서 위치 캡처로 이미 로컬·서버에
+    // 반영해버린 위치/방향이 있다는 뜻) 그 스냅샷으로 되돌린다.
+    void handlePopoverCancelled();
 
     void enterRouteEditMode(const QString& routeName);
     void exitRouteEditMode(bool save);
@@ -265,13 +268,26 @@ private:
     void refreshSchedulesForRoute(int routeId);
     // 다른 대시보드가 이 맵의 웨이포인트/경로를 저장했을 수 있다(waypoints_changed/
     // patrol_routes_changed WS) — 자동으로 캔버스를 갈아치우면 편집 중인 상태를 덮어쓸
-    // 위험이 있어(캔버스가 아직 안 뜬 시점의 좌표 변환 문제도 있고), 대신 새로고침
-    // 버튼 옆에 배지만 띄워두고 실제 재조회는 사용자가 그 버튼을 눌렀을 때만 한다.
-    // GET /waypoints + GET /patrol-routes로 지금 맵(currentMapIndex_)만 다시 받아
-    // waypoints_/routes_에 반영한다 — loadServerMapImageDone의 초기 로딩 경로와 같은
-    // 변환을 쓰되, 이미 떠 있는 캔버스라 designMapMetersToCanvas 대신 canvas_->
-    // mapMetersToCanvas()(live)를 쓴다.
+    // 위험이 있어(캔버스가 아직 안 뜬 시점의 좌표 변환 문제도 있고), WS 수신 시엔 배지만
+    // 띄워둔다. 새로고침 버튼(refreshRobotStateBtn_)은 이제 그 배지(staleMapIds_) 유무와
+    // 무관하게 항상 이 함수를 불러 DB 기준으로 다시 맞춘다(2026-09-16 리포트: DB가
+    // 직접/다른 경로로 바뀌었는데 이 세션엔 WS 메시지가 안 와서 배지도 안 뜨고, 대시보드를
+    // 껐다 켜야만 반영되던 문제 — 새로고침이 "확실히 항상" DB와 동기화하는 버튼이어야
+    // 한다). GET /waypoints + GET /patrol-routes로 지금 맵(currentMapIndex_)만 다시 받아
+    // waypoints_/routes_에 반영하고, 그 경로들의 스케줄도 reloadSchedulesForRoutes로
+    // 통째로 다시 받는다 — loadServerMapImageDone의 초기 로딩 경로와 같은 변환을 쓰되,
+    // 이미 떠 있는 캔버스라 designMapMetersToCanvas 대신 canvas_->mapMetersToCanvas()
+    // (live)를 쓴다.
     void reloadCurrentMapWaypointsAndRoutes();
+    // reloadCurrentMapWaypointsAndRoutes가 방금 새로 받은 경로 목록(routes)의 스케줄을
+    // 처음부터(index=0, accumulated 빈 벡터) 순서대로 다시 받아 schedules_/
+    // MapData::schedules를 통째로 교체한다(append형인 refreshSchedulesForRoute와 달리
+    // "경로 자체가 삭제된 경우"도 정확히 반영하려고 append가 아니라 완전 교체). 재귀
+    // 도중 다른 맵으로 전환됐으면(mapId 불일치) 조용히 버린다. scheduleEditIndex_>=0
+    // (스케줄 폼 편집 중)이면 schedules_/UI는 건드리지 않는다(refreshSchedulesForRoute와
+    // 같은 이유) — MapData::schedules 캐시는 그래도 갱신해 다음 맵 전환 때는 최신값.
+    void reloadSchedulesForRoutes(int mapId, const QVector<ApiClient::PatrolRouteInfo>& routes, int index,
+                                   QVector<Schedule> accumulated);
     // refreshRobotStateBtn_ 옆 "웨이포인트/경로 변경됨" 배지를 staleMapIds_ 기준으로
     // 보이거나 숨긴다 — 맵 전환(loadMapData)·WS 수신·재조회 완료 시점마다 부른다.
     void updateRefreshBadge();
@@ -451,6 +467,14 @@ private:
     QString drivingWaypointId_;
     // "순찰 시작" — updateDrivingButtonsEnabled()가 활성화 여부를 갱신한다.
     QPushButton* testBtn_;
+
+    // 편집 팝오버를 "보기" 모드로 새로 열 때(handleCanvasEditRequested)의 위치/방향
+    // 스냅샷 — 편집 캡처(WaypointCanvas::waypointPoseCaptured)는 "저장"을 누르기
+    // 전에도 즉시 로컬·서버에 반영되므로, "취소"를 누르면 이 스냅샷으로 되돌려야
+    // 한다(요청 사양). editingSnapshotId_가 비어 있으면 되돌릴 스냅샷이 없다는 뜻.
+    QString editingSnapshotId_;
+    QPointF editingSnapshotPos_;
+    qreal editingSnapshotYawDeg_ = 0.0;
 
     QVector<WaypointCanvas::Waypoint> waypoints_;
     QMap<QString, QVector<QString>> routes_;

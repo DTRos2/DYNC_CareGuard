@@ -338,6 +338,31 @@ async def start_patrol_run(
         )
         recipient = cur.fetchone()
 
+        # 이 회차(patrol_schedule)가 "복약 전달" 경로로 등록돼 있으면(P6 체크박스,
+        # patrol_schedule.medication_schedule_id) 로봇에 slot_no까지 같이 실어
+        # 보낸다 — patrol_task.py가 마지막 웨이포인트 도착 후 DeliverMedication을
+        # 부를지 판단하는 유일한 근거(Patrol.action 주석 참고). schedule_id가
+        # None이면(대시보드 "순찰 시작" 수동 버튼 — POST /patrol-runs가 schedule_id
+        # 없이 부른다) 이 조회 자체를 건너뛴다: 복약 전달은 patrol_schedule 단위
+        # 속성이라, 스케줄을 거치지 않은 수동 순찰엔 애초에 매칭될 medication_
+        # schedule이 없다.
+        medication_schedule_id = 0
+        slot_no = 0
+        if schedule_id is not None:
+            cur.execute(
+                """
+                SELECT ms.id, ms.slot_no
+                FROM patrol_schedule ps
+                JOIN medication_schedule ms ON ms.id = ps.medication_schedule_id
+                WHERE ps.id = %s AND ms.deregistered_at IS NULL
+                """,
+                (schedule_id,),
+            )
+            medication = cur.fetchone()
+            if medication is not None:
+                medication_schedule_id = medication["id"]
+                slot_no = medication["slot_no"]
+
         cur.execute(
             """
             INSERT INTO patrol_run (robot_id, recipient_id, route_id, schedule_id, trigger, status, waypoints_total)
@@ -371,6 +396,10 @@ async def start_patrol_run(
             # 위치) — 없으면 사용자가 SSH로 navigation_diff_launch.py를 직접 켜야
             # 순찰 중 로봇 위치가 대시보드에 뜬다.
             "map_id": route["map_id"],
+            # 위에서 못 찾았으면(복약 전달 경로가 아니거나 수동 순찰) 둘 다 0 —
+            # downlink_node.py는 이 기본값을 "복약 전달 아님"으로 그대로 해석한다.
+            "medication_schedule_id": medication_schedule_id,
+            "slot_no": slot_no,
         },
     )
     return PatrolRunItem(**row, robot_connected=connected)
