@@ -44,6 +44,7 @@ QVariant EventTableModel::data(const QModelIndex& index, int role) const {
     if (role == ResolvedRole) return row.resolved;
     if (role == IsEmergencyRole) return row.severity == Severity::Emergency;
     if (role == DateRole) return row.date;
+    if (role == OccurredAtRole) return row.occurredAt;
 
     if (role == Qt::CheckStateRole && index.column() == ColCheck) {
         return row.checked ? Qt::Checked : Qt::Unchecked;
