@@ -680,6 +680,23 @@ void ApiClient::deactivateRecipient(int recipientId, SimpleCallback callback) {
              [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
 }
 
+void ApiClient::sendGuardianMail(int recipientId, const QString& toEmail, const QString& message,
+                                  SimpleCallback callback) {
+    QJsonObject body{{"to_email", toEmail}, {"message", message}};
+    postJson(QStringLiteral("/recipients/%1/guardian-mail").arg(recipientId), body,
+             [callback](bool httpOk, const QByteArray& respBody, const QString& err) {
+                 // HTTP 200이어도 실제 발송이 실패(SMTP 오류)했을 수 있어 응답 본문의
+                 // ok/error를 봐야 한다 — startCall의 robot_connected와 같은 패턴.
+                 if (!httpOk) {
+                     callback(false, err);
+                     return;
+                 }
+                 const QJsonObject o = QJsonDocument::fromJson(respBody).object();
+                 const bool sendOk = o.value(QStringLiteral("ok")).toBool();
+                 callback(sendOk, sendOk ? QString() : o.value(QStringLiteral("error")).toString());
+             });
+}
+
 void ApiClient::fetchOperators(ListCallback<OperatorInfo> callback) {
     getJsonArray(QStringLiteral("/accounts"), [callback](bool ok, const QByteArray& body) {
         QVector<OperatorInfo> operators;

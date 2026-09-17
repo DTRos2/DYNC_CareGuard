@@ -1,5 +1,7 @@
 #include "event_filter_proxy_model.h"
 
+#include <QDateTime>
+
 #include "event_table_model.h"
 
 EventFilterProxyModel::EventFilterProxyModel(QObject* parent) : QSortFilterProxyModel(parent) {
@@ -69,5 +71,9 @@ bool EventFilterProxyModel::lessThan(const QModelIndex& left, const QModelIndex&
     const int leftKind = sourceModel()->data(left, EventTableModel::RowKindRole).toInt();
     const int rightKind = sourceModel()->data(right, EventTableModel::RowKindRole).toInt();
     if (leftKind != rightKind) return leftKind < rightKind;
-    return left.row() < right.row();
+    // 같은 심각도 버킷 안에서는 발생일시 최신순(요청 사양) — 행 삽입 순서에 기대던
+    // 예전 방식은 WS 실시간 반영·재조회 순서가 항상 시간순이라는 보장이 없었다.
+    const QDateTime leftAt = sourceModel()->data(left, EventTableModel::OccurredAtRole).toDateTime();
+    const QDateTime rightAt = sourceModel()->data(right, EventTableModel::OccurredAtRole).toDateTime();
+    return leftAt > rightAt;
 }

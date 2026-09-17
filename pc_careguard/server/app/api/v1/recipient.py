@@ -7,11 +7,14 @@ from fastapi import APIRouter, HTTPException
 from ...core import db
 from ...schemas import (
     GuardianItem,
+    GuardianMailRequest,
+    GuardianMailResponse,
     MedicationScheduleItem,
     RecipientCreate,
     RecipientDetailItem,
     RecipientItem,
 )
+from ...services import notifier
 from ...ws import dashboard_ws
 
 router = APIRouter(prefix="/recipients", tags=["recipient"])
@@ -475,6 +478,40 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
     anyio.from_thread.run(dashboard_ws.broadcast, {"type": "recipient_changed", "recipient_id": recipient_id})
 
     return get_recipient(recipient_id)
+
+
+@router.post("/{recipient_id}/guardian-mail", response_model=GuardianMailResponse)
+def send_guardian_mail(recipient_id: int, payload: GuardianMailRequest):
+    """P2 이벤트 상세 모달 "보호자 메일" — 담당자가 직접 쓴 메시지를 즉시 발송한다.
+    scheduler.py의 자동 MED_MISSED 발송과 같은 notifier.send_email()을 쓰지만, 그쪽과
+    달리 담당자가 수신자를 자유롭게 바꿔 보낼 수 있어 guardian_id는 "참고용"으로만
+    조회한다(못 찾아도 발송 자체는 막지 않는다 — 예: 이메일을 직접 고쳐 보낸 경우).
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT name FROM recipient WHERE id = %s AND deregistered_at IS NULL", (recipient_id,))
+        recipient = cur.fetchone()
+        if recipient is None:
+            raise HTTPException(status_code=404, detail="대상자를 찾을 수 없습니다")
+
+        cur.execute(
+            "SELECT id FROM guardian WHERE recipient_id = %s AND email = %s AND deregistered_at IS NULL LIMIT 1",
+            (recipient_id, payload.to_email),
+        )
+        guardian = cur.fetchone()
+
+        subject = f"[CareGuard] {recipient['name']}님 관련 안내"
+        ok, err = notifier.send_email(payload.to_email, subject, payload.message)
+
+        cur.execute(
+            """
+            INSERT INTO notification_log (recipient_id, guardian_id, channel, template_code, body, status, sent_at)
+            VALUES (%s, %s, 'mail', 'MANUAL', %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END)
+            """,
+            (recipient_id, guardian["id"] if guardian else None, payload.message, "sent" if ok else "failed", ok),
+        )
+        conn.commit()
+
+    return GuardianMailResponse(ok=ok, error="" if ok else err)
 
 
 @router.post("/{recipient_id}/deactivate", status_code=204)

@@ -81,6 +81,8 @@ add_executable(careguard_dashboard
     src/widgets/checkable_list_widget.cpp
     src/dialogs/event_detail_modal.h
     src/dialogs/event_detail_modal.cpp
+    src/dialogs/guardian_mail_dialog.h
+    src/dialogs/guardian_mail_dialog.cpp
     src/dialogs/robot_control_modal.h
     src/dialogs/robot_control_modal.cpp
     src/dialogs/p5_map_file_register_dialog.h

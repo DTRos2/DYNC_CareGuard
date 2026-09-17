@@ -338,6 +338,10 @@ public:
     // POST /recipients/{id}/deactivate — P3 상세 모달의 "대상자 비활성화". 하드 삭제가 아니라
     // recipient.deregistered_at을 찍어 목록·조회에서만 제외한다(서버 쪽 주석 참고).
     void deactivateRecipient(int recipientId, SimpleCallback callback);
+    // POST /recipients/{id}/guardian-mail — P2 이벤트 상세 모달 "보호자 메일" 발송. 서버가
+    // NOTIFY_MODE=mock이면 실제 SMTP 연결 없이 notification_log만 남긴다(notifier.py와 동일).
+    void sendGuardianMail(int recipientId, const QString& toEmail, const QString& message,
+                          SimpleCallback callback);
 
     // GET /accounts — 대상자 등록/상세 모달의 "관리 담당자" 콤보 후보. role_code=="operator"
     // 이면서 활성 계정인 것만 추려서 넘긴다(비활성 계정에 새로 배정하는 건 막는다).

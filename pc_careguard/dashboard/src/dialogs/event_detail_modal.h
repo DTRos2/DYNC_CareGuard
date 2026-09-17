@@ -1,4 +1,6 @@
 #pragma once
+#include <functional>
+
 #include <QDialog>
 #include <QVector>
 
@@ -38,7 +40,6 @@ private:
     QWidget* buildHistorySection();
     QWidget* buildResolveSection();
 
-    void showComingSoon(const QString& feature);
     void updateResolveButtonState();
     void handleResolveClicked();
     void handleSpeakerCallClicked();
@@ -47,8 +48,8 @@ private:
     // 다시 그린다. buildProgressBar()가 처음 그릴 때, markActionTaken()이 "조치" 단계를
     // 완료 처리할 때 각각 호출한다.
     void refreshProgressBar();
-    // 조치 버튼(스피커 통화 종료·보호자 문자) 클릭 시 "조치" 단계에 체크를 찍고 "완료"
-    // 단계를 다음 단계로 넘긴다. suffix는 "(스피커)"/"(문자)"처럼 "조치" 라벨 뒤에 붙는
+    // 조치 버튼(스피커 통화 종료·보호자 메일) 클릭 시 "조치" 단계에 체크를 찍고 "완료"
+    // 단계를 다음 단계로 넘긴다. suffix는 "(스피커)"/"(메일)"처럼 "조치" 라벨 뒤에 붙는
     // 텍스트 — 어느 수단으로 조치했는지 남긴다.
     void markActionTaken(const QString& suffix);
     QString stepLabelText(int i) const;
@@ -58,12 +59,23 @@ private:
     // 읽기 전용이라 별도 화면 전용 데이터(119·112 고정 행 등)는 덧붙이지 않는다.
     void handleGuardianContactClicked();
     void showGuardianContactPopover(const QVector<ApiClient::GuardianInfo>& guardians);
+    // row_.recipientName -> recipient id -> guardians 2단계 조회. 보호자 연락처·보호자
+    // 메일 두 버튼이 똑같은 조회가 필요해서 공유 헬퍼로 뺐다. ok=false면 recipientId=0,
+    // guardians는 비어있고 err에 사용자에게 보여줄 메시지가 담긴다.
+    void fetchRecipientIdAndGuardians(
+        std::function<void(bool ok, int recipientId, const QVector<ApiClient::GuardianInfo>& guardians,
+                            const QString& err)>
+            callback);
+    // "보호자 메일" 클릭 — 위 헬퍼로 얻은 1순위 보호자 이메일을 기본값으로 채운
+    // GuardianMailDialog를 띄운다. 다이얼로그가 Accepted로 닫히면(=실제 발송 성공)
+    // "조치" 단계를 체크한다.
+    void handleGuardianMailClicked();
 
     EventTableModel::EventRow row_;
     int currentStep_ = 0;   // 0=감지 1=조치 2=완료
     bool allStepsDone_ = false;
-    // "조치" 단계 라벨에 붙는 접미사 — 스피커 통화 종료·보호자 문자 중 실제로 쓴 수단을
-    // 남긴다("(스피커)"/"(문자)"). 비어있으면 아직 조치 전.
+    // "조치" 단계 라벨에 붙는 접미사 — 스피커 통화 종료·보호자 메일 중 실제로 쓴 수단을
+    // 남긴다("(스피커)"/"(메일)"). 비어있으면 아직 조치 전.
     QString actionSuffix_;
     QLabel* stepDots_[3] = {nullptr, nullptr, nullptr};
     QLabel* stepLabels_[3] = {nullptr, nullptr, nullptr};
@@ -78,6 +90,8 @@ private:
     // "보호자 연락처" — 팝오버가 떠 있는 동안/응답을 기다리는 동안 버튼 위치 앵커 겸
     // 중복 클릭 방지용 비활성화 대상.
     QPushButton* guardianContactBtn_ = nullptr;
+    // "보호자 메일" — 조회 중 중복 클릭 방지용 비활성화 대상.
+    QPushButton* guardianMailBtn_ = nullptr;
     ApiClient* apiClient_ = nullptr;
     CallAudioClient* callAudio_ = nullptr;
     bool callActive_ = false;

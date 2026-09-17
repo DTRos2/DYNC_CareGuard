@@ -510,6 +510,18 @@ class GuardianItem(BaseModel):
     notify_enabled: bool
 
 
+class GuardianMailRequest(BaseModel):
+    # P2 이벤트 상세 모달 "보호자 메일" — 수신자는 기본으로 1순위 보호자 이메일이
+    # 채워져 오지만 담당자가 다른 주소로 바꿔 보낼 수도 있어 여기서 그대로 받는다.
+    to_email: str
+    message: str
+
+
+class GuardianMailResponse(BaseModel):
+    ok: bool
+    error: str = ""
+
+
 class MedicationScheduleCreate(BaseModel):
     # medication_schedule.slot_no CHECK(1~3)과 동일한 제약. P3 등록 모달은 UI상 4번째
     # 이상 칸도 만들 수 있어(대상자 상세 모달의 "칸 없으면 계속 증가" 정책과 동일) 그런
