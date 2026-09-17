@@ -178,6 +178,62 @@ def create_map(payload: MapCreate):
     return MapItem(**row, image_url=f"/media/files/{image_file_id}" if image_file_id else None)
 
 
+@router.delete("/{map_id}", status_code=204)
+def delete_map(map_id: int):
+    """P5 "초기화" 확인 후 호출 — 예전엔 맵 행이 다음 저장/재등록이 올 때까지 서버에
+    그대로 남아있었다(create_map의 ON CONFLICT가 그때 가서 덮어씀). 지금 당장 지워달라는
+    요청(2026-09-16)으로 map 행 자체를 즉시 삭제한다.
+
+    map 테이블엔 소프트 삭제 컬럼이 없어 실제 DELETE를 쓴다. waypoint/patrol_route는
+    map_id를 갖지만 실제 FK 제약이 없어(schema 참고) 그냥 두면 맵이 사라진 뒤에도
+    고아로 남아 P6 등에서 존재하지 않는 맵을 참조하게 된다 — patrol.py::delete_route와
+    같은 패턴(deregistered_at)으로 같이 정리한다. call_button(물리 호출 버튼 설치 정보)은
+    실제 하드웨어 배치라 여기서 같이 지우지 않는다 — 필요하면 별도로 정리해야 한다.
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT r.code AS robot_code FROM map m JOIN robot r ON r.id = m.robot_id WHERE m.id = %s",
+            (map_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="맵을 찾을 수 없습니다")
+        robot_code = row["robot_code"]
+
+        cur.execute(
+            "UPDATE patrol_route SET deregistered_at = NOW() "
+            "WHERE map_id = %s AND deregistered_at IS NULL RETURNING id",
+            (map_id,),
+        )
+        route_ids = [r["id"] for r in cur.fetchall()]
+        if route_ids:
+            cur.execute(
+                "UPDATE patrol_schedule SET deregistered_at = NOW() "
+                "WHERE route_id = ANY(%s) AND deregistered_at IS NULL",
+                (route_ids,),
+            )
+
+        cur.execute(
+            "UPDATE waypoint SET deregistered_at = NOW() WHERE map_id = %s AND deregistered_at IS NULL",
+            (map_id,),
+        )
+
+        # 맵 이미지 파일도 같이 정리한다(soft delete만, 실제 파일은 지우지 않는다 —
+        # create_map의 같은 처리와 동일한 이유).
+        cur.execute(
+            "UPDATE files SET deleted_at = NOW() "
+            "WHERE entity_type = 'map_image' AND entity_id = %s AND deleted_at IS NULL",
+            (str(map_id),),
+        )
+
+        cur.execute("DELETE FROM map WHERE id = %s", (map_id,))
+        conn.commit()
+
+    # 다른 대시보드가 이미 이 로봇의 P5/P6를 열어두고 있을 수 있다 — create_map과 같은
+    # 이유로 map_changed를 재사용해 재조회하게 만든다.
+    anyio.from_thread.run(dashboard_ws.broadcast, {"type": "map_changed", "robot_code": robot_code})
+
+
 @waypoints_router.get("", response_model=List[WaypointItem])
 def list_waypoints(map_id: int = Query(..., description="대상 맵 id")):
     """맵 위 활성 웨이포인트 목록. 순찰 지점(kind=patrol)과 충전 스테이션(kind=charge)을 모두 포함한다."""
