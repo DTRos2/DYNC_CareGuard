@@ -267,6 +267,7 @@ void P5MapPage::openFileRegisterDialog() {
     overlay->raise();
 
     MapFileRegisterDialog dialog(this);
+    dialog.setRobots(robots_, currentRobotCode_);
     connect(&dialog, &MapFileRegisterDialog::mapRegistered, this,
             [this, &dialog](const QImage& image, const QString& mapName, const QString& robotId,
                             const QString& recipientName) {
