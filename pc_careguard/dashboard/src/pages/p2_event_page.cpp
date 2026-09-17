@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -20,6 +21,7 @@
 
 #include "dialogs/event_detail_modal.h"
 #include "net/api_client.h"
+#include "net/ws_client.h"
 #include "theme/calendar_style.h"
 #include "theme/tokens.h"
 #include "widgets/careguard_date_edit.h"
@@ -79,6 +81,14 @@ P2EventPage::P2EventPage(QWidget* parent) : QWidget(parent) {
     layout->addWidget(bulkBar_);
     layout->addWidget(buildTable(), /*stretch=*/1);
     layout->addWidget(buildPagination());
+
+    // 필터·검색·정렬·모델 갱신 어느 경로로 proxy_ 행 구성이 바뀌든 페이지 수·숨김
+    // 상태를 다시 계산해야 한다 — 트리거마다 일일이 updatePagination()을 부르는 대신
+    // proxy_ 자체의 변경 시그널에 붙여 한 곳에서 처리한다.
+    connect(proxy_, &QAbstractItemModel::modelReset, this, &P2EventPage::updatePagination);
+    connect(proxy_, &QAbstractItemModel::layoutChanged, this, &P2EventPage::updatePagination);
+    connect(proxy_, &QAbstractItemModel::rowsInserted, this, &P2EventPage::updatePagination);
+    connect(proxy_, &QAbstractItemModel::rowsRemoved, this, &P2EventPage::updatePagination);
 
     // GET /events가 비동기로 도착하기 전까지는 화면이 비어 보이므로, 응답 오기 전 첫 화면은
     // mock으로 그려두고 loadEventsFromServer()가 도착하는 대로 덮어쓴다(P3 대상자 페이지와
@@ -268,24 +278,90 @@ QWidget* P2EventPage::buildPagination() {
     layout->setSpacing(8);
     layout->addStretch();
 
-    auto* prev = new QPushButton(SimpleIcons::chevronLeft(Tokens::TEXT_SECONDARY, 11), QString(), row);
-    prev->setObjectName("segBtn");
-    prev->setProperty("pos", "first");
-    layout->addWidget(prev);
+    paginationPrevBtn_ = new QPushButton(SimpleIcons::chevronLeft(Tokens::TEXT_SECONDARY, 11), QString(), row);
+    paginationPrevBtn_->setObjectName("segBtn");
+    paginationPrevBtn_->setProperty("pos", "first");
+    connect(paginationPrevBtn_, &QPushButton::clicked, this, [this] {
+        if (currentPage_ > 0) --currentPage_;
+        updatePagination();
+    });
+    layout->addWidget(paginationPrevBtn_);
 
-    auto* page1 = new QPushButton(QStringLiteral("1"), row);
-    page1->setObjectName("segBtn");
-    page1->setCheckable(true);
-    page1->setChecked(true);
-    layout->addWidget(page1);
+    // 페이지 번호 버튼들은 총 페이지 수가 바뀔 때마다 updatePagination()이 이 컨테이너
+    // 안을 통째로 비우고 다시 채운다 — 미리 개수를 알 수 없어서(필터·검색에 따라
+    // 달라짐) 고정 버튼을 못 둔다.
+    paginationPagesContainer_ = new QWidget(row);
+    auto* pagesLayout = new QHBoxLayout(paginationPagesContainer_);
+    pagesLayout->setContentsMargins(0, 0, 0, 0);
+    pagesLayout->setSpacing(4);
+    layout->addWidget(paginationPagesContainer_);
 
-    auto* next = new QPushButton(SimpleIcons::chevronRight(Tokens::TEXT_SECONDARY, 11), QString(), row);
-    next->setObjectName("segBtn");
-    next->setProperty("pos", "last");
-    layout->addWidget(next);
+    paginationNextBtn_ = new QPushButton(SimpleIcons::chevronRight(Tokens::TEXT_SECONDARY, 11), QString(), row);
+    paginationNextBtn_->setObjectName("segBtn");
+    paginationNextBtn_->setProperty("pos", "last");
+    connect(paginationNextBtn_, &QPushButton::clicked, this, [this] {
+        ++currentPage_;
+        updatePagination();
+    });
+    layout->addWidget(paginationNextBtn_);
 
     layout->addStretch();
     return row;
+}
+
+void P2EventPage::updatePagination() {
+    const int total = proxy_->rowCount();
+    const int pageCount = qMax(1, (total + kEventsPerPage - 1) / kEventsPerPage);
+    currentPage_ = qBound(0, currentPage_, pageCount - 1);
+
+    const int pageStart = currentPage_ * kEventsPerPage;
+    const int pageEnd = qMin(total, pageStart + kEventsPerPage);
+    for (int r = 0; r < total; ++r) {
+        tableView_->setRowHidden(r, r < pageStart || r >= pageEnd);
+    }
+
+    paginationPrevBtn_->setEnabled(currentPage_ > 0);
+    paginationNextBtn_->setEnabled(currentPage_ < pageCount - 1);
+
+    // 페이지 번호 줄을 통째로 새로 그린다 — QLayout은 자식 위젯까지 자동으로 안 지워서
+    // takeAt()으로 꺼낸 뒤 위젯을 직접 delete해야 한다(레이아웃만 지우면 버튼이 숨은
+    // 채로 계속 쌓인다).
+    QLayout* pagesLayout = paginationPagesContainer_->layout();
+    QLayoutItem* item;
+    while ((item = pagesLayout->takeAt(0)) != nullptr) {
+        delete item->widget();
+        delete item;
+    }
+
+    auto addPageButton = [this, pagesLayout](int pageIndex) {
+        auto* btn = new QPushButton(QString::number(pageIndex + 1), paginationPagesContainer_);
+        btn->setObjectName("segBtn");
+        btn->setCheckable(true);
+        btn->setChecked(pageIndex == currentPage_);
+        connect(btn, &QPushButton::clicked, this, [this, pageIndex] {
+            currentPage_ = pageIndex;
+            updatePagination();
+        });
+        pagesLayout->addWidget(btn);
+    };
+    auto addEllipsis = [this, pagesLayout] {
+        auto* label = new QLabel(QStringLiteral("…"), paginationPagesContainer_);
+        label->setProperty("role", "muted");
+        pagesLayout->addWidget(label);
+    };
+
+    // 첫/끝 페이지는 항상 보여주고, 현재 페이지 좌우 1칸씩만 더 보여준다 — 페이지가
+    // 많아져도 번호 버튼이 한 줄을 넘어가지 않게(예: 1 … 4 5 6 … 42).
+    constexpr int kNeighbors = 1;
+    int lastShown = -1;
+    for (int p = 0; p < pageCount; ++p) {
+        const bool isEdge = (p == 0 || p == pageCount - 1);
+        const bool isNear = qAbs(p - currentPage_) <= kNeighbors;
+        if (!isEdge && !isNear) continue;
+        if (lastShown != -1 && p - lastShown > 1) addEllipsis();
+        addPageButton(p);
+        lastShown = p;
+    }
 }
 
 void P2EventPage::seedMockData() {
@@ -329,6 +405,22 @@ void P2EventPage::refreshFromServer() {
     loadEventsFromServer();
 }
 
+void P2EventPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
+    connect(wsClient_, &WsClient::messageReceived, this, &P2EventPage::handleWsMessage);
+}
+
+void P2EventPage::handleWsMessage(const QJsonObject& message) {
+    const QString type = message.value(QStringLiteral("type")).toString();
+    // scheduler.py::_medication_tick()·robot_ws.py 등이 care_event를 새로 커밋할 때 보내는
+    // 알림 — 페이로드를 직접 파싱해 끼워넣는 대신(P1OverviewPage 방식) 전체를 다시 받아온다.
+    // 이러면 recipientByRobot 매핑(로봇 매칭 대상자 표시)과 정렬이 항상 GET /events와
+    // 같은 경로로 일관되게 계산된다.
+    if (type == QStringLiteral("event_created")) {
+        loadEventsFromServer();
+    }
+}
+
 void P2EventPage::loadEventsFromServer(std::function<void()> onLoaded) {
     apiClient_->fetchEvents([this, onLoaded](bool ok, const QVector<ApiClient::EventInfo>& items) {
         if (!ok) return;  // 서버 미기동 등: seedMockData()로 채워둔 화면을 그대로 둔다
@@ -368,6 +460,7 @@ void P2EventPage::loadEventsFromServer(std::function<void()> onLoaded) {
                 // "이벤트 발생 날짜/시각 컬럼") 오늘 이벤트도 시각만 보여주던 것을 그만두고
                 // 항상 날짜까지 함께 보여준다.
                 row.timeText = occurred.toString(QStringLiteral("MM.dd HH:mm"));
+                row.occurredAt = occurred;  // EventFilterProxyModel::lessThan 정렬용
                 row.robotId = info.robotCode;
                 row.recipientName = info.recipientName.isEmpty()
                                          ? recipientByRobot.value(info.robotCode)

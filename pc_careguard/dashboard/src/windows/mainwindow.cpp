@@ -70,6 +70,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // connectionStateChanged(true)를 못 받는 페이지(P5/P6/P7)가 생기지 않는다.
     wsClient_ = new WsClient(this);
     overviewPage->setWsClient(wsClient_);
+    eventPage_->setWsClient(wsClient_);
     recipientPage_->setWsClient(wsClient_);
     videoPage_->setWsClient(wsClient_);
     mapPage->setWsClient(wsClient_);
