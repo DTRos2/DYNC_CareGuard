@@ -86,8 +86,12 @@ P5MapPage::P5MapPage(QWidget* parent) : QWidget(parent) {
 void P5MapPage::setWsClient(WsClient* client) {
     wsClient_ = client;
     connect(wsClient_, &WsClient::messageReceived, this, &P5MapPage::handleWsMessage);
-    connect(wsClient_, &WsClient::connectionStateChanged, this,
-            [this](bool connected) { connectionBanner_->setVisible(!connected); });
+    connect(wsClient_, &WsClient::connectionStateChanged, this, [this](bool connected) {
+        connectionBanner_->setVisible(!connected);
+        // 재연결 순간 놓쳤을 수 있는 robot_status push를 따라잡는다(P7SettingsPage::
+        // setWsClient와 같은 이유) — 아래 refreshRobotOnlineStatus() 주석 참고.
+        if (connected) refreshRobotOnlineStatus();
+    });
 }
 
 QFrame* P5MapPage::buildRobotOfflineBanner() {
@@ -450,6 +454,27 @@ void P5MapPage::loadRobotsFromServer() {
     });
 }
 
+void P5MapPage::refreshRobotOnlineStatus() {
+    // loadRobotsFromServer()와 같은 엔드포인트(GET /robots)를 재사용하지만, 콤보
+    // 재구성이나 switchToRobot() 호출 없이 robots_[i].isOnline과 콤보 항목 텍스트만
+    // 갱신한다 — h 파일의 선언부 주석 참고.
+    apiClient_->fetchRobots([this](bool ok, const QVector<ApiClient::RobotInfo>& robots) {
+        if (!ok) return;
+        for (const ApiClient::RobotInfo& r : robots) {
+            for (int i = 0; i < robots_.size(); ++i) {
+                if (robots_[i].code != r.code) continue;
+                robots_[i].isOnline = r.isOnline;
+                robotCombo_->setItemText(i, formatRobotChipText(robots_[i], r.isOnline));
+                if (r.code == currentRobotCode_) {
+                    robotOnline_ = r.isOnline;
+                    robotOfflineBanner_->setVisible(!robotOnline_);
+                }
+                break;
+            }
+        }
+    });
+}
+
 void P5MapPage::rebuildRobotMenu() {
     // addItem 하나하나가 currentIndexChanged를 튀길 수 있어(특히 첫 addItem이
     // index -1 -> 0로 넘어갈 때) 재구성 중엔 신호를 막는다 — switchToRobot()이
@@ -458,17 +483,24 @@ void P5MapPage::rebuildRobotMenu() {
     const QSignalBlocker blocker(robotCombo_);
     robotCombo_->clear();
     const QIcon robotIcon = SimpleIcons::robot(Tokens::TEXT_SECONDARY, 13);
+    // GET /robots가 매 항목마다 실시간 계산한 isOnline을 그대로 초기 표시값으로 쓴다
+    // — 지금 선택된 로봇은 뒤이은 switchToRobot()이 안전 기본값(오프라인)으로 한 번 더
+    // 덮어쓰지만, 드롭다운을 펼쳤을 때 보이는 다른 로봇들은 이 값이 유일한 출처다.
     for (const ApiClient::RobotInfo& r : robots_) {
-        robotCombo_->addItem(robotIcon, QStringLiteral("%1 (%2)").arg(r.code, r.name));
+        robotCombo_->addItem(robotIcon, formatRobotChipText(r, r.isOnline));
     }
+}
+
+QString P5MapPage::formatRobotChipText(const ApiClient::RobotInfo& robot, bool online) const {
+    const QString status = online ? QStringLiteral("● 온라인") : QStringLiteral("○ 오프라인");
+    return QStringLiteral("%1 (%2) · %3").arg(robot.code, robot.name, status);
 }
 
 void P5MapPage::updateRobotChipText() {
     if (currentRobotIndex_ < 0 || currentRobotIndex_ >= robots_.size()) return;
-    const ApiClient::RobotInfo& r = robots_[currentRobotIndex_];
-    const QString status = robotOnline_ ? QStringLiteral("● 온라인") : QStringLiteral("○ 오프라인");
     // 텍스트만 바꾼다 — currentIndex는 그대로라 currentIndexChanged는 안 튄다.
-    robotCombo_->setItemText(currentRobotIndex_, QStringLiteral("%1 (%2) · %3").arg(r.code, r.name, status));
+    robotCombo_->setItemText(currentRobotIndex_,
+                              formatRobotChipText(robots_[currentRobotIndex_], robotOnline_));
 }
 
 void P5MapPage::switchToRobot(int index) {
@@ -514,6 +546,14 @@ void P5MapPage::switchToRobot(int index) {
         slamCard_->resetForRobot(currentRobotCode_);
         mapNameEdit_->setText(QStringLiteral("새 맵"));
     }
+
+    // 위에서 robotOnline_을 안전 기본값(오프라인)으로 강제해뒀는데, 이미 온라인인
+    // 로봇으로 전환한 경우엔 서버가 새로 "전환" 이벤트를 안 보내므로(연결 상태
+    // 자체는 안 바뀌었음) robot_status push만 기다리면 실제로는 온라인인데도 화면엔
+    // 계속 오프라인으로 남는다(2026-09-17 실제로 확인된 증상: 콤보에서 온라인으로
+    // 보이던 로봇을 클릭하는 순간 오프라인으로 바뀜). 전환 직후 현재 상태를 즉시
+    // 다시 조회해 바로잡는다.
+    refreshRobotOnlineStatus();
 }
 
 void P5MapPage::handleMappingToggleClicked() {
@@ -658,10 +698,22 @@ void P5MapPage::handleWsMessage(const QJsonObject& message) {
         // 별개다. 이게 없으면 와이파이가 불안정할 때 카메라(uplink)는 계속 잘 보이는데
         // teleop 명령은 조용히 무시되는 상황(실제로 겪음)에서 사용자가 끊긴 줄 모른 채
         // 화살표를 누르며 "왜 안 움직이지"만 반복하게 된다 — 안전 문제라 반드시 표시한다.
-        if (message.value(QStringLiteral("robot_code")).toString() != currentRobotCode_) return;
-        robotOnline_ = message.value(QStringLiteral("online")).toBool();
-        robotOfflineBanner_->setVisible(!robotOnline_);
-        updateRobotChipText();
+        //
+        // 예전엔 currentRobotCode_ 외 메시지를 여기서 버려서, 드롭다운을 펼쳐도 지금
+        // 선택 중이 아닌 로봇은 상태가 하나도 안 보였다(GET /robots를 다시 받아야만
+        // 갱신됨) — 이제 robots_ 목록에 있는 대상이면 항상 그 항목 텍스트를 갱신한다.
+        const QString code = message.value(QStringLiteral("robot_code")).toString();
+        const bool online = message.value(QStringLiteral("online")).toBool();
+        for (int i = 0; i < robots_.size(); ++i) {
+            if (robots_[i].code != code) continue;
+            robots_[i].isOnline = online;
+            robotCombo_->setItemText(i, formatRobotChipText(robots_[i], online));
+            break;
+        }
+        if (code == currentRobotCode_) {
+            robotOnline_ = online;
+            robotOfflineBanner_->setVisible(!robotOnline_);
+        }
         return;
     }
 
