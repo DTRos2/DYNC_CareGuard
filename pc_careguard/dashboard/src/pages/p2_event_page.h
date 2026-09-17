@@ -17,6 +17,8 @@ class EventFilterProxyModel;
 class EventRowDelegate;
 class LiveSearchLineEdit;
 class ApiClient;
+class WsClient;
+class QJsonObject;
 
 // P2 이벤트 관제. gui/wireframe/v1/p2_event_queue_wireframe_v2.html,
 // CareGuard_DESIGN_SYSTEM.md §4-3(테이블 규약)·§6(P2 행) 기준.
@@ -53,6 +55,12 @@ public:
     // 한다(안 그러면 다음 기간 재선택 전까지 옛 이름이 그대로 남는다).
     void refreshFromServer();
 
+    // MainWindow가 앱 공유 WsClient를 내려준다(P1/P3 등과 같은 패턴) — scheduler.py가
+    // MED_MISSED 등을 만들 때 보내는 event_created를 구독해, 새로고침 없이도 방금 생긴
+    // 이벤트가 바로 목록에 뜨게 한다. 예전엔 이 페이지만 구독이 빠져있어서 실시간 반영이
+    // 전혀 안 됐다(2026-09-17 리포트).
+    void setWsClient(WsClient* client);
+
 signals:
     // MainWindow가 TopBar 뱃지(setEmergencyCount/setAttentionCount)에 연결한다.
     void unresolvedCountsChanged(int emergencyCount, int attentionCount);
@@ -88,8 +96,17 @@ private:
     void applyPeriodPreset(int spanDays);   // -1 = 직접(수동 편집 허용), 0/6/29 = 오늘/7일/30일
     void setDateEditsReadOnly(bool readOnly);
     void showComingSoon(const QString& feature);
+    void handleWsMessage(const QJsonObject& message);
+    // 필터·정렬·모델 갱신 등으로 proxy_ 행 구성이 바뀔 때마다 proxy_ 시그널(연결부
+    // 참고)로 불린다. 페이지 수를 다시 계산해 범위를 벗어나면 currentPage_를 안으로
+    // 당기고, 현재 페이지 밖 행은 tableView_->setRowHidden()으로 숨긴 뒤 페이지 번호
+    // 버튼 줄을 다시 그린다. QTableView는 스크롤만 있고 실제 "페이지" 개념이 없어서
+    // 서버 쪽 페이징 대신 이 방식(행 숨김)으로 구현한다 — 목록이 몇백 건을 넘기 전까지는
+    // 성능에 문제없다.
+    void updatePagination();
 
     ApiClient* apiClient_;
+    WsClient* wsClient_ = nullptr;
     EventTableModel* model_;
     EventFilterProxyModel* proxy_;
     EventRowDelegate* delegate_;
@@ -110,4 +127,12 @@ private:
     QTimer* pulseTimer_;
     bool pulseOn_ = true;
     int hoveredRow_ = -1;  // 프록시 모델 기준 행 번호. EventRowDelegate가 행 단위 호버 판정에 참조.
+
+    // 페이징 — 한 페이지에 보여줄 행 수. 서버 페이징 없이 클라이언트에서 행을 숨기는
+    // 방식이라(updatePagination() 주석 참고) 값을 바꿔도 API 호출은 그대로다.
+    static constexpr int kEventsPerPage = 20;
+    int currentPage_ = 0;  // 0-based
+    QPushButton* paginationPrevBtn_ = nullptr;
+    QPushButton* paginationNextBtn_ = nullptr;
+    QWidget* paginationPagesContainer_ = nullptr;  // updatePagination()이 매번 안의 번호 버튼을 다시 채운다
 };
