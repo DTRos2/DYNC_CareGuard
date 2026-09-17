@@ -402,6 +402,25 @@ async def start_patrol_run(
             "slot_no": slot_no,
         },
     )
+    if not connected:
+        # 위에서 이미 status='running'으로 커밋했는데(로봇 연결 여부와 무관하게
+        # P8/P1이 "시작됨"을 바로 보게 하려는 의도), WS 전송 자체가 실패하면 로봇은
+        # 이 명령을 받은 적도 없이 patrol_run만 'running'으로 영구 고아가 남는 사고가
+        # 실제로 있었다(2026-09-17, run_id 113/127 — DB엔 running인데 로봇 쪽 로그에
+        # patrol_start 흔적이 전혀 없었다). scheduler.py의 자동 트리거는 반환값을 아예
+        # 안 보므로 이 정리가 없으면 아무도 모르게 stuck된다. 여기서 즉시 되돌린다.
+        with db.get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE patrol_run SET status = 'failed', ended_at = NOW() "
+                "WHERE id = %s AND status = 'running' "
+                "RETURNING status, ended_at",
+                (row["id"],),
+            )
+            updated = cur.fetchone()
+            conn.commit()
+        if updated is not None:
+            row["status"] = updated["status"]
+            row["ended_at"] = updated["ended_at"]
     return PatrolRunItem(**row, robot_connected=connected)
 
 
