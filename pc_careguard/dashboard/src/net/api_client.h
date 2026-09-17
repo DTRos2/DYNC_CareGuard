@@ -341,7 +341,7 @@ public:
     // GET /events — P2 이벤트 관제 큐. 기간·검색·미처리 필터는 대시보드가 이미 로컬로
     // 하고 있어(EventFilterProxyModel) 서버는 취소되지 않은 전체를 내려준다.
     void fetchEvents(ListCallback<EventInfo> callback);
-    // POST /events/{event_uid}/resolve — 상세 모달 "RESOLVED 전환"·일괄 완료 처리가 공유하는
+    // POST /events/{event_uid}/resolve — 상세 모달 "처리 완료"·일괄 완료 처리가 공유하는
     // 진입점(둘 다 이벤트 하나씩 이 호출을 쓴다).
     void resolveEvent(const QString& eventUid, ItemCallback<EventInfo> callback);
 

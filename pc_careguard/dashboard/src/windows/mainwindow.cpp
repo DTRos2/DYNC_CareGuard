@@ -133,6 +133,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(recipientPage_, &P3RecipientPage::guardianRecipientNamesChanged, eventPage_,
             &P2EventPage::setRecipientNameFilter);
 
+    // P3에서 대상자 이름·배정 로봇을 저장하면 P2 이벤트 목록의 "대상자"/"로봇" 칸이
+    // 옛 값으로 남아있지 않도록 바로 다시 받아온다.
+    connect(recipientPage_, &P3RecipientPage::recipientsUpdated, eventPage_,
+            &P2EventPage::refreshFromServer);
+
     rootLayout->addLayout(body, /*stretch=*/1);
 }
 

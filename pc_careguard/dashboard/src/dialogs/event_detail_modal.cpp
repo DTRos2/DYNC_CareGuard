@@ -1,6 +1,9 @@
 #include "event_detail_modal.h"
 
+#include <algorithm>
+
 #include <QFrame>
+#include <QGraphicsDropShadowEffect>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -73,12 +76,10 @@ EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, QWidget
     setFixedWidth(640);
 
     if (row_.resolved) {
-        currentStep_ = 4;
+        currentStep_ = 2;
         allStepsDone_ = true;
-    } else if (!row_.assignee.isEmpty()) {
-        currentStep_ = 2;  // 감지·출동 완료, 음성 확인 진행 중
     } else {
-        currentStep_ = 1;  // 감지 완료, 출동 진행 중
+        currentStep_ = 1;  // 감지 완료, 조치 진행 중
     }
 
     apiClient_ = new ApiClient(this);
@@ -89,6 +90,7 @@ EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, QWidget
     connect(callAudio_, &CallAudioClient::audioDisconnected, this, [this] {
         callActive_ = false;
         resetSpeakerCallButton();
+        markActionTaken(QStringLiteral("(스피커)"));
     });
     // 통화 중에 모달을 닫아도(X 버튼 등) 통화가 계속 열려있으면 안 된다 — 로봇 쪽
     // 스피커/마이크가 계속 켜진 채로 남는 것을 막는다.
@@ -98,14 +100,6 @@ EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, QWidget
         callAudio_->stop();
         apiClient_->endCall(row_.robotId, [](bool, bool, const QString&) {});
     });
-    // 모의 신고 중에 모달을 닫아도(X 버튼 등) 키오스크에 "119 신고중"이 계속 남으면
-    // 안 된다 — callActive_와 같은 이유.
-    connect(this, &QDialog::finished, this, [this](int) {
-        if (!emergencyReportActive_) return;
-        emergencyReportActive_ = false;
-        apiClient_->endEmergencyReport(row_.robotId, [](bool, const QString&) {});
-    });
-
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
@@ -114,11 +108,17 @@ EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, QWidget
     root->addWidget(buildProgressBar());
 
     auto* body = new QHBoxLayout();
-    body->setContentsMargins(16, 14, 16, 14);
+    body->setContentsMargins(16, 14, 16, 0);
     body->setSpacing(12);
     body->addWidget(buildLeftColumn(), 6);
     body->addWidget(buildRightColumn(), 5);
     root->addLayout(body);
+
+    // "완료 처리"는 좌우 컬럼에 눌려 좁아지지 않도록 컬럼 밖으로 빼서 모달 너비 전체를 쓴다.
+    auto* resolveLayout = new QVBoxLayout();
+    resolveLayout->setContentsMargins(16, 12, 16, 14);
+    resolveLayout->addWidget(buildResolveSection());
+    root->addLayout(resolveLayout);
 }
 
 QWidget* EventDetailModal::buildHeader() {
@@ -165,15 +165,10 @@ QWidget* EventDetailModal::buildProgressBar() {
     layout->setContentsMargins(16, 10, 16, 10);
     layout->setSpacing(4);
 
-    static const QStringList kSteps = {QStringLiteral("감지"), QStringLiteral("출동"),
-                                        QStringLiteral("음성 확인"), QStringLiteral("조치"),
-                                        QStringLiteral("완료")};
-    const QColor activeColor = severityColor(row_.severity);
-
-    for (int i = 0; i < kSteps.size(); ++i) {
-        const bool done = allStepsDone_ || i < currentStep_;
-        const bool active = !allStepsDone_ && i == currentStep_;
-
+    // 3단계: 감지(0)/조치(1)/완료(2). 조치는 스피커 통화 종료·보호자 문자 클릭으로
+    // 체크되고(markActionTaken), 라벨 텍스트도 그때 "조치(스피커)"/"조치(문자)"로 바뀐다
+    // — 그래서 dot·label 포인터를 멤버로 들고 있다가 refreshProgressBar()에서 다시 그린다.
+    for (int i = 0; i < 3; ++i) {
         auto* step = new QWidget(bar);
         auto* stepLayout = new QHBoxLayout(step);
         stepLayout->setContentsMargins(0, 0, 0, 0);
@@ -185,6 +180,42 @@ QWidget* EventDetailModal::buildProgressBar() {
         QFont dotFont = dot->font();
         dotFont.setPointSizeF(8);
         dot->setFont(dotFont);
+        stepDots_[i] = dot;
+        stepLayout->addWidget(dot);
+
+        auto* label = new QLabel(step);
+        stepLabels_[i] = label;
+        stepLayout->addWidget(label);
+
+        layout->addWidget(step);
+
+        if (i < 2) {
+            auto* line = new QFrame(bar);
+            line->setFixedHeight(2);
+            stepLines_[i] = line;
+            layout->addWidget(line, /*stretch=*/1);
+        }
+    }
+
+    refreshProgressBar();
+    return bar;
+}
+
+QString EventDetailModal::stepLabelText(int i) const {
+    static const QStringList kBase = {QStringLiteral("감지"), QStringLiteral("조치"),
+                                       QStringLiteral("완료")};
+    if (i == 1 && !actionSuffix_.isEmpty()) return QStringLiteral("조치%1").arg(actionSuffix_);
+    return kBase[i];
+}
+
+void EventDetailModal::refreshProgressBar() {
+    const QColor activeColor = severityColor(row_.severity);
+
+    for (int i = 0; i < 3; ++i) {
+        const bool done = allStepsDone_ || i < currentStep_;
+        const bool active = !allStepsDone_ && i == currentStep_;
+
+        QLabel* dot = stepDots_[i];
         if (done) {
             dot->setText(QStringLiteral("✓"));
             dot->setStyleSheet(QStringLiteral("border-radius:7px; background:%1; color:#FFFFFF;")
@@ -194,32 +225,32 @@ QWidget* EventDetailModal::buildProgressBar() {
             dot->setStyleSheet(QStringLiteral("border-radius:7px; background:%1; color:#FFFFFF;")
                                     .arg(activeColor.name()));
         } else {
+            dot->setText(QString());
             dot->setStyleSheet(QStringLiteral("border-radius:7px; border:1px solid %1;")
                                     .arg(Tokens::BORDER_STRONG.name()));
         }
-        stepLayout->addWidget(dot);
 
-        auto* label = new QLabel(kSteps[i], step);
+        QLabel* label = stepLabels_[i];
+        label->setText(stepLabelText(i));
         QColor textColor = Tokens::TEXT_MUTED;
         if (done) textColor = Tokens::OK.main;
         else if (active) textColor = activeColor;
         label->setStyleSheet(QStringLiteral("color:%1; font-size:11px; font-weight:%2;")
                                   .arg(textColor.name(), (done || active) ? "500" : "400"));
-        stepLayout->addWidget(label);
-
-        layout->addWidget(step);
-
-        if (i < kSteps.size() - 1) {
-            auto* line = new QFrame(bar);
-            line->setFixedHeight(2);
-            const bool lineDone = allStepsDone_ || (i + 1) <= currentStep_;
-            line->setStyleSheet(QStringLiteral("background:%1;")
-                                     .arg((lineDone ? Tokens::OK.main : Tokens::BORDER).name()));
-            layout->addWidget(line, /*stretch=*/1);
-        }
     }
 
-    return bar;
+    for (int i = 0; i < 2; ++i) {
+        const bool lineDone = allStepsDone_ || (i + 1) <= currentStep_;
+        stepLines_[i]->setStyleSheet(QStringLiteral("background:%1;")
+                                          .arg((lineDone ? Tokens::OK.main : Tokens::BORDER).name()));
+    }
+}
+
+void EventDetailModal::markActionTaken(const QString& suffix) {
+    if (allStepsDone_) return;  // 이미 완료 처리된 이벤트를 다시 여는 경우 — 손댈 필요 없음
+    actionSuffix_ = suffix;
+    if (currentStep_ < 2) currentStep_ = 2;  // "조치" 체크, "완료" 단계로 진행
+    refreshProgressBar();
 }
 
 QWidget* EventDetailModal::buildLeftColumn() {
@@ -229,7 +260,6 @@ QWidget* EventDetailModal::buildLeftColumn() {
     layout->setSpacing(12);
 
     layout->addWidget(buildTriggerSection());
-    layout->addWidget(buildVoiceLogSection());
     layout->addWidget(buildVideoSection());
     layout->addStretch();
 
@@ -244,7 +274,6 @@ QWidget* EventDetailModal::buildRightColumn() {
 
     layout->addWidget(buildActionGrid());
     layout->addWidget(buildHistorySection());
-    layout->addWidget(buildResolveSection());
     layout->addStretch();
 
     return col;
@@ -267,68 +296,6 @@ QWidget* EventDetailModal::buildTriggerSection() {
     summary->setProperty("role", "secondary");
     summary->setWordWrap(true);
     boxLayout->addWidget(summary);
-
-    layout->addWidget(box);
-    return wrap;
-}
-
-QWidget* EventDetailModal::buildVoiceLogSection() {
-    auto* wrap = new QWidget(this);
-    auto* layout = new QVBoxLayout(wrap);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(5);
-    layout->addWidget(makeSectionLabel(QStringLiteral("음성 확인 결과"), wrap));
-
-    auto* box = makeBoxFrame(wrap);
-    auto* boxLayout = new QVBoxLayout(box);
-    boxLayout->setContentsMargins(0, 0, 0, 0);
-    boxLayout->setSpacing(0);
-
-    struct LogLine { QString time; QString text; QString status; QColor statusColor; };
-    QVector<LogLine> lines;
-    if (row_.resolved) {
-        lines.append({row_.timeText, QStringLiteral("확인 완료 · 정상 종료"), QStringLiteral("완료"),
-                      Tokens::OK.main});
-    } else if (row_.severity == Severity::Emergency) {
-        lines.append({row_.timeText, QStringLiteral("1차 질문 송출 \"괜찮으세요?\""),
-                      QStringLiteral("무응답"), Tokens::EMERGENCY.main});
-        lines.append({QString(), QStringLiteral("2차 질문 송출 · 담당자 연락 예고"),
-                      QStringLiteral("응답 대기 중"), Tokens::INFO.main});
-    } else {
-        lines.append({row_.timeText, QStringLiteral("알림 발송 · 확인 대기"),
-                      QStringLiteral("대기 중"), Tokens::ATTENTION.main});
-    }
-
-    for (int i = 0; i < lines.size(); ++i) {
-        const auto& line = lines[i];
-        auto* row = new QWidget(box);
-        auto* rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(10, 6, 10, 6);
-        rowLayout->setSpacing(8);
-
-        auto* time = new QLabel(line.time.isEmpty() ? Tokens::Format::EMPTY : line.time, row);
-        time->setProperty("role", "mono");
-        time->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_SECONDARY.name()));
-        rowLayout->addWidget(time);
-
-        auto* text = new QLabel(line.text, row);
-        text->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_PRIMARY.name()));
-        rowLayout->addWidget(text, /*stretch=*/1);
-
-        auto* status = new QLabel(line.status, row);
-        status->setStyleSheet(
-            QStringLiteral("font-size:11px; font-weight:500; color:%1;").arg(line.statusColor.name()));
-        rowLayout->addWidget(status);
-
-        boxLayout->addWidget(row);
-
-        if (i < lines.size() - 1) {
-            auto* sep = new QFrame(box);
-            sep->setFixedHeight(1);
-            sep->setStyleSheet(QStringLiteral("background:%1;").arg(Tokens::BORDER.name()));
-            boxLayout->addWidget(sep);
-        }
-    }
 
     layout->addWidget(box);
     return wrap;
@@ -390,6 +357,8 @@ QWidget* EventDetailModal::buildActionGrid() {
     auto* grid = new QGridLayout();
     grid->setSpacing(6);
 
+    // 요청 사양: 스피커 통화·보호자 연락·보호자 문자 세 개만 남기고 나머지(대상자 전화,
+    // 119 모의 신고, 재확인 예약, 이벤트 취소)는 제거한다.
     speakerBtn_ =
         new QPushButton(SimpleIcons::speakerphone(Tokens::TEXT_INVERSE, 12), QStringLiteral("스피커 통화"), wrap);
     speakerBtn_->setProperty("variant", "primary");
@@ -397,50 +366,24 @@ QWidget* EventDetailModal::buildActionGrid() {
     connect(speakerBtn_, &QPushButton::clicked, this, &EventDetailModal::handleSpeakerCallClicked);
     grid->addWidget(speakerBtn_, 0, 0);
 
-    auto* callBtn =
-        new QPushButton(SimpleIcons::phone(Tokens::TEXT_PRIMARY, 12), QStringLiteral("대상자 전화"), wrap);
-    callBtn->setProperty("variant", "secondary");
-    callBtn->setProperty("size", "s");
-    connect(callBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("대상자 전화")); });
-    grid->addWidget(callBtn, 0, 1);
-
-    auto* guardianCallBtn =
-        new QPushButton(SimpleIcons::users(Tokens::TEXT_PRIMARY, 12), QStringLiteral("보호자 연락"), wrap);
-    guardianCallBtn->setProperty("variant", "secondary");
-    guardianCallBtn->setProperty("size", "s");
-    connect(guardianCallBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("보호자 연락")); });
-    grid->addWidget(guardianCallBtn, 1, 0);
+    guardianContactBtn_ =
+        new QPushButton(SimpleIcons::users(Tokens::TEXT_PRIMARY, 12), QStringLiteral("보호자 연락처"), wrap);
+    guardianContactBtn_->setProperty("variant", "secondary");
+    guardianContactBtn_->setProperty("size", "s");
+    connect(guardianContactBtn_, &QPushButton::clicked, this, &EventDetailModal::handleGuardianContactClicked);
+    grid->addWidget(guardianContactBtn_, 0, 1);
 
     auto* guardianMsgBtn =
         new QPushButton(SimpleIcons::message(Tokens::TEXT_PRIMARY, 12), QStringLiteral("보호자 문자"), wrap);
     guardianMsgBtn->setProperty("variant", "secondary");
     guardianMsgBtn->setProperty("size", "s");
-    connect(guardianMsgBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("보호자 문자")); });
-    grid->addWidget(guardianMsgBtn, 1, 1);
-
-    emergencyBtn_ = new QPushButton(SimpleIcons::phoneCall(Tokens::TEXT_INVERSE, 12),
-                                     QStringLiteral("119 모의 신고"), wrap);
-    emergencyBtn_->setProperty("variant", "danger");
-    emergencyBtn_->setProperty("size", "s");
-    connect(emergencyBtn_, &QPushButton::clicked, this, &EventDetailModal::handleEmergencyReportClicked);
-    grid->addWidget(emergencyBtn_, 2, 0, 1, 2);
-
-    auto* recheckBtn = new QPushButton(QStringLiteral("재확인 예약"), wrap);
-    recheckBtn->setProperty("variant", "secondary");
-    recheckBtn->setProperty("size", "s");
-    connect(recheckBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("재확인 예약")); });
-    grid->addWidget(recheckBtn, 3, 0);
-
-    auto* cancelBtn = new QPushButton(QStringLiteral("이벤트 취소"), wrap);
-    cancelBtn->setProperty("variant", "secondary");
-    cancelBtn->setProperty("size", "s");
-    connect(cancelBtn, &QPushButton::clicked, this,
-            [this] { showComingSoon(QStringLiteral("이벤트 취소")); });
-    grid->addWidget(cancelBtn, 3, 1);
+    connect(guardianMsgBtn, &QPushButton::clicked, this, [this] {
+        markActionTaken(QStringLiteral("(문자)"));
+        showComingSoon(QStringLiteral("보호자 문자"));
+    });
+    // 2열 그리드 유지(한 줄에 3개를 다 넣으면 버튼 폭이 좁아져 "보호자 연락"/"보호자
+    // 문자" 글자가 잘렸다) — 마지막 버튼만 2칸을 차지해 아래 한 줄 전체를 채운다.
+    grid->addWidget(guardianMsgBtn, 1, 0, 1, 2);
 
     layout->addLayout(grid);
     return wrap;
@@ -517,8 +460,8 @@ void EventDetailModal::updateResolveButtonState() {
     if (!resolveBtn_ || !resolveNoteEdit_) return;
     const bool ready = !resolveNoteEdit_->toPlainText().trimmed().isEmpty();
     resolveBtn_->setEnabled(ready);
-    resolveBtn_->setText(ready ? QStringLiteral("RESOLVED 전환")
-                                : QStringLiteral("RESOLVED 전환 (메모 입력 후 활성화)"));
+    resolveBtn_->setText(ready ? QStringLiteral("처리 완료")
+                                : QStringLiteral("처리 완료 (메모 입력 후 활성화)"));
 }
 
 void EventDetailModal::handleResolveClicked() {
@@ -543,6 +486,8 @@ void EventDetailModal::handleSpeakerCallClicked() {
                                       err.isEmpty() ? QStringLiteral("서버 연결을 확인해주세요.") : err);
             }
             resetSpeakerCallButton();
+            // 연결 시점이 아니라 "통화 종료"를 눌러 통화가 끝난 시점에 "조치"를 체크한다.
+            markActionTaken(QStringLiteral("(스피커)"));
         });
         return;
     }
@@ -566,35 +511,123 @@ void EventDetailModal::resetSpeakerCallButton() {
     speakerBtn_->setEnabled(true);
 }
 
-void EventDetailModal::handleEmergencyReportClicked() {
-    emergencyBtn_->setEnabled(false);
-
-    if (emergencyReportActive_) {
-        apiClient_->endEmergencyReport(row_.robotId, [this](bool ok, const QString& err) {
-            emergencyReportActive_ = false;
-            if (!ok) {
-                QMessageBox::warning(this, QStringLiteral("119 모의 신고 종료 실패"),
-                                      err.isEmpty() ? QStringLiteral("서버 연결을 확인해주세요.") : err);
-            }
-            resetEmergencyReportButton();
-        });
+void EventDetailModal::handleGuardianContactClicked() {
+    if (row_.recipientName.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("보호자 연락처"),
+                                  QStringLiteral("이 이벤트에는 연결된 대상자가 없습니다."));
         return;
     }
 
-    apiClient_->startEmergencyReport(row_.robotId, row_.recipientName, [this](bool ok, const QString& err) {
-        if (!ok) {
-            QMessageBox::warning(this, QStringLiteral("119 모의 신고 실패"),
-                                  err.isEmpty() ? QStringLiteral("서버 연결을 확인해주세요.") : err);
-            resetEmergencyReportButton();
+    // GET /recipients에는 이름만 있고 id가 없어(EventTableModel::EventRow가 EventInfo::
+    // recipientName만 들고 있다 — 서버 이벤트 응답 자체에 recipient_id가 안 실려 있음),
+    // 이름으로 먼저 목록에서 id를 찾은 뒤 그 id로 상세(guardians)를 받는 2단계 조회다.
+    guardianContactBtn_->setEnabled(false);
+    const QString recipientName = row_.recipientName;
+    apiClient_->fetchRecipients([this, recipientName](bool ok, const QVector<ApiClient::RecipientInfo>& items) {
+        int recipientId = 0;
+        if (ok) {
+            for (const auto& r : items) {
+                if (r.name == recipientName) {
+                    recipientId = r.id;
+                    break;
+                }
+            }
+        }
+        if (recipientId <= 0) {
+            guardianContactBtn_->setEnabled(true);
+            QMessageBox::warning(this, QStringLiteral("보호자 연락처"),
+                                  QStringLiteral("대상자 정보를 불러오지 못했습니다."));
             return;
         }
-        emergencyReportActive_ = true;
-        emergencyBtn_->setText(QStringLiteral("119 신고 종료"));
-        emergencyBtn_->setEnabled(true);
+        apiClient_->fetchRecipientDetail(
+            recipientId, [this](bool ok2, const ApiClient::RecipientDetailInfo& detail, const QString& err) {
+                guardianContactBtn_->setEnabled(true);
+                if (!ok2) {
+                    QMessageBox::warning(
+                        this, QStringLiteral("보호자 연락처"),
+                        err.isEmpty() ? QStringLiteral("보호자 정보를 불러오지 못했습니다.") : err);
+                    return;
+                }
+                showGuardianContactPopover(detail.guardians);
+            });
     });
 }
 
-void EventDetailModal::resetEmergencyReportButton() {
-    emergencyBtn_->setText(QStringLiteral("119 모의 신고"));
-    emergencyBtn_->setEnabled(true);
+void EventDetailModal::showGuardianContactPopover(const QVector<ApiClient::GuardianInfo>& guardians) {
+    // WaypointPopover(P6)와 같은 패턴 — Qt::Popup이라 바깥을 클릭하면 자동으로 닫힌다.
+    //
+    // 바깥(popup)과 안쪽(panel)을 분리해야 한다: WA_TranslucentBackground를 준 최상위
+    // 위젯에 QGraphicsDropShadowEffect까지 같이 걸면 오프스크린 합성 과정에서 스타일시트
+    // 배경(흰 카드)이 통째로 사라지는 Qt 버그가 있다(그림자+투명배경을 같은 위젯에 적용
+    // 시 발생). 바깥은 그림자 없는 순수 투명 셸로 두고, 흰 카드+그림자는 안쪽 QFrame
+    // 하나에만 몰아서 해결한다.
+    auto* popup = new QWidget(this);
+    popup->setWindowFlags(Qt::Popup | Qt::FramelessWindowHint);
+    popup->setAttribute(Qt::WA_TranslucentBackground);
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+
+    // 그림자(blur=48, dy=12)가 번질 여백을 팝업 창 자체에 남겨둬야 한다 — 마진이 0이면
+    // panel과 popup 크기가 똑같아져서 그림자가 창 경계에 그대로 잘려 특히 아래쪽 모서리에
+    // 흐릿한 회색 사각 잔상으로 남는다.
+    constexpr int kShadowMarginSide = 30;
+    constexpr int kShadowMarginTop = 30;
+    constexpr int kShadowMarginBottom = 30 + 12;  // + SHADOW_LG.dy
+    auto* outerLayout = new QVBoxLayout(popup);
+    outerLayout->setContentsMargins(kShadowMarginSide, kShadowMarginTop, kShadowMarginSide, kShadowMarginBottom);
+
+    auto* panel = new QFrame(popup);
+    panel->setObjectName(QStringLiteral("mappingStatusPanel"));  // 흰 카드 + 테두리 재사용
+    panel->setMinimumWidth(220);
+    panel->setMaximumWidth(220);
+    outerLayout->addWidget(panel);
+
+    auto* shadow = new QGraphicsDropShadowEffect(panel);
+    shadow->setBlurRadius(Tokens::SHADOW_LG.blur);
+    shadow->setOffset(0, Tokens::SHADOW_LG.dy);
+    shadow->setColor(Tokens::SHADOW_LG.color);
+    panel->setGraphicsEffect(shadow);
+
+    auto* layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(12, 10, 12, 10);
+    layout->setSpacing(8);
+
+    auto* title = new QLabel(QStringLiteral("보호자 연락처 · %1").arg(row_.recipientName), panel);
+    title->setStyleSheet(
+        QStringLiteral("font-size:11px; font-weight:500; color:%1;").arg(Tokens::TEXT_PRIMARY.name()));
+    layout->addWidget(title);
+
+    if (guardians.isEmpty()) {
+        auto* empty = new QLabel(QStringLiteral("등록된 보호자가 없습니다."), panel);
+        empty->setProperty("role", "secondary");
+        layout->addWidget(empty);
+    } else {
+        // 대상자 상세 모달(P3RecipientDetailDialog)과 같은 순위(priority) 오름차순.
+        QVector<ApiClient::GuardianInfo> sorted = guardians;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const ApiClient::GuardianInfo& a, const ApiClient::GuardianInfo& b) {
+                      return a.priority < b.priority;
+                  });
+        for (const ApiClient::GuardianInfo& g : sorted) {
+            const QString relationText = g.relation.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(g.relation);
+            const QString notifyText = g.notifyEnabled ? QString() : QStringLiteral(" · 알림 꺼짐");
+            auto* nameLabel =
+                new QLabel(QStringLiteral("%1순위 · %2%3%4").arg(g.priority).arg(g.name, relationText, notifyText),
+                           panel);
+            nameLabel->setStyleSheet(
+                QStringLiteral("font-size:12px; font-weight:500; color:%1;").arg(Tokens::TEXT_PRIMARY.name()));
+            layout->addWidget(nameLabel);
+
+            auto* phoneLabel = new QLabel(g.phone.isEmpty() ? QStringLiteral("전화번호 없음") : g.phone, panel);
+            phoneLabel->setProperty("role", "secondary");
+            phoneLabel->setStyleSheet(QStringLiteral("font-family:'%1'; margin-bottom:4px;").arg(Tokens::Font::MONO));
+            layout->addWidget(phoneLabel);
+        }
+    }
+
+    popup->adjustSize();
+    // panel은 popup 안에서 (kShadowMarginSide, kShadowMarginTop)만큼 안쪽에 있으므로,
+    // panel의 좌상단이 버튼 바로 아래에 오도록 그 마진만큼 빼서 popup 위치를 잡는다.
+    const QPoint anchor = guardianContactBtn_->mapToGlobal(QPoint(0, guardianContactBtn_->height() + 4));
+    popup->move(anchor - QPoint(kShadowMarginSide, kShadowMarginTop));
+    popup->show();
 }

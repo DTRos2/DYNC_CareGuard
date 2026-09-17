@@ -183,6 +183,11 @@ signals:
     // guardian 필터 적용 후(또는 해제 후) 대상자 이름 목록. MainWindow가 P2EventPage의
     // 이벤트 필터에도 같은 이름 목록을 넘겨, 보호자가 자신의 대상자 이벤트만 보게 한다.
     void guardianRecipientNamesChanged(const QStringList& names);
+    // 대상자 정보 저장 성공(이름·배정 로봇 변경 포함) 시 발생. MainWindow가 P2EventPage::
+    // refreshFromServer()에 연결해, 이벤트 목록의 "대상자"·"로봇" 표시가 바로 새 값으로
+    // 갱신되게 한다 — 안 그러면 사용자가 P2를 새로고침(기간 재선택 등)하기 전까진 옛 이름이
+    // 그대로 남는다.
+    void recipientsUpdated();
 
 protected:
     // 창 크기가 바뀔 때마다 카드 그리드 열 수를 다시 계산해 반응형으로 재배치한다 (P4와 동일 패턴).

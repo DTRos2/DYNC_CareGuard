@@ -5,6 +5,7 @@
 #include <QDateEdit>
 #include <QDateTime>
 #include <QEvent>
+#include <QHash>
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -241,7 +242,9 @@ QWidget* P2EventPage::buildTable() {
     tableView_->setColumnWidth(EventTableModel::ColCheck, 32);
     tableView_->setColumnWidth(EventTableModel::ColSeverity, 90);
     tableView_->setColumnWidth(EventTableModel::ColEventId, 130);
-    tableView_->setColumnWidth(EventTableModel::ColTime, 70);
+    // "MM.dd HH:mm"(항상 날짜+시각 표시, 요청 사양)이 들어가야 해서 시각만 보여주던
+    // 예전 폭(70px)보다 넓혀야 한다 — 모노스페이스 폰트라 11자 기준으로 여유있게.
+    tableView_->setColumnWidth(EventTableModel::ColTime, 108);
     tableView_->setColumnWidth(EventTableModel::ColRobot, 60);
     tableView_->setColumnWidth(EventTableModel::ColRecipient, 70);
     tableView_->setColumnWidth(EventTableModel::ColType, 100);
@@ -291,69 +294,95 @@ void P2EventPage::seedMockData() {
 
     const QDate today = QDate::currentDate();
     const QDate yesterday = today.addDays(-1);
+    // 목록 컬럼이 이제 항상 "날짜 · 시각"을 함께 보여주므로(요청 사양 — loadEventsFromServer
+    // 와 같은 "MM.dd HH:mm" 포맷) 목데이터도 실제 날짜를 반영한 문자열로 만든다.
+    const QString todayStr = today.toString(QStringLiteral("MM.dd"));
+    const QString yesterdayStr = yesterday.toString(QStringLiteral("MM.dd"));
 
     QVector<Row> rows;
-    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260826-014"), today, QStringLiteral("14:29"),
+    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260826-014"), today, todayStr + QStringLiteral(" 14:29"),
                      QStringLiteral("R-01"), QStringLiteral("김순자"), QStringLiteral("안부 무응답"),
                      QStringLiteral("안부 질문 2회 무응답 → 출동 · 음성 확인 대기"),
                      QStringLiteral("도희정"), false, 192, false});
-    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-011"), today, QStringLiteral("12:41"),
+    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-011"), today, todayStr + QStringLiteral(" 12:41"),
                      QStringLiteral("R-02"), QStringLiteral("박영호"), QStringLiteral("복약 미수령"),
                      QStringLiteral("아침 약 미수령 (대상자 미발견) · 보호자 문자 발송"), QString(),
                      false, 6667, false});
-    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-012"), today, QStringLiteral("13:58"),
+    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-012"), today, todayStr + QStringLiteral(" 13:58"),
                      QStringLiteral("R-04"), QStringLiteral("최금례"), QStringLiteral("통신 단절"),
                      QStringLiteral("관제 연결 끊김 · 30초 주기 재시도 · 로컬 기록 유지"), QString(),
                      false, 2042, false});
-    rows.append(Row{Sev::Info, QStringLiteral("EV-260826-010"), today, QStringLiteral("12:34"),
+    rows.append(Row{Sev::Info, QStringLiteral("EV-260826-010"), today, todayStr + QStringLiteral(" 12:34"),
                      QStringLiteral("R-03"), QStringLiteral("이말순"), QStringLiteral("복약 완료"),
                      QStringLiteral("점심 약 수령 확인 · event_logger 기록"), QStringLiteral("자동"),
                      true, 0, false});
-    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260825-041"), yesterday, QStringLiteral("어제"),
-                     QStringLiteral("R-03"), QStringLiteral("이말순"), QStringLiteral("음성 무응답"),
+    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260825-041"), yesterday,
+                     yesterdayStr + QStringLiteral(" 21:07"), QStringLiteral("R-03"), QStringLiteral("이말순"),
+                     QStringLiteral("음성 무응답"),
                      QStringLiteral("2회 무응답 → 보호자 통화 연결 · 정상 확인 후 종료"),
                      QStringLiteral("김예은"), true, 0, false});
 
     model_->setRows(rows);
 }
 
+void P2EventPage::refreshFromServer() {
+    loadEventsFromServer();
+}
+
 void P2EventPage::loadEventsFromServer(std::function<void()> onLoaded) {
     apiClient_->fetchEvents([this, onLoaded](bool ok, const QVector<ApiClient::EventInfo>& items) {
         if (!ok) return;  // 서버 미기동 등: seedMockData()로 채워둔 화면을 그대로 둔다
 
-        using Row = EventTableModel::EventRow;
-        using Sev = EventTableModel::Severity;
-        const QDateTime now = QDateTime::currentDateTime();
-        const QDate today = QDate::currentDate();
-
-        QVector<Row> rows;
-        rows.reserve(items.size());
-        for (const auto& info : items) {
-            Row row;
-            if (info.severity == QStringLiteral("emergency")) {
-                row.severity = Sev::Emergency;
-            } else if (info.severity == QStringLiteral("attention")) {
-                row.severity = Sev::Attention;
-            } else {
-                row.severity = Sev::Info;
+        // 미등록 인물 감지 같은 시스템 이벤트는 care_event에 recipient_id가 없어
+        // EventInfo::recipientName이 빈 문자열로 온다. 그 로봇이 순찰 담당하는 대상자를
+        // "대상자" 칸에 대신 보여줘야 하므로(요청 사양) robotCode → recipientName 매핑을
+        // 만들어 빈 칸을 채운다.
+        apiClient_->fetchRecipients([this, onLoaded, items](bool recipientsOk,
+                                                             const QVector<ApiClient::RecipientInfo>& recipients) {
+            QHash<QString, QString> recipientByRobot;
+            if (recipientsOk) {
+                for (const auto& r : recipients) {
+                    if (!r.robotCode.isEmpty()) recipientByRobot.insert(r.robotCode, r.name);
+                }
             }
-            row.eventId = info.eventUid;
-            const QDateTime occurred = info.occurredAt.toLocalTime();
-            row.date = occurred.date();
-            row.timeText = occurred.date() == today ? occurred.toString(QStringLiteral("HH:mm"))
-                                                      : occurred.toString(QStringLiteral("MM.dd HH:mm"));
-            row.robotId = info.robotCode;
-            row.recipientName = info.recipientName;
-            row.type = info.eventTypeLabel;
-            row.summary = info.summary;
-            row.assignee = QString();  // 담당자 배정 API 아직 없음(P2 "담당자 배정" 버튼도 추후 구현)
-            row.resolved = info.resolved;
-            row.elapsedSec = info.resolved ? 0 : qMax(0, static_cast<int>(occurred.secsTo(now)));
-            row.checked = false;
-            rows.append(row);
-        }
-        model_->setRows(rows);
-        if (onLoaded) onLoaded();
+
+            using Row = EventTableModel::EventRow;
+            using Sev = EventTableModel::Severity;
+            const QDateTime now = QDateTime::currentDateTime();
+
+            QVector<Row> rows;
+            rows.reserve(items.size());
+            for (const auto& info : items) {
+                Row row;
+                if (info.severity == QStringLiteral("emergency")) {
+                    row.severity = Sev::Emergency;
+                } else if (info.severity == QStringLiteral("attention")) {
+                    row.severity = Sev::Attention;
+                } else {
+                    row.severity = Sev::Info;
+                }
+                row.eventId = info.eventUid;
+                const QDateTime occurred = info.occurredAt.toLocalTime();
+                row.date = occurred.date();
+                // 날짜 필터로 여러 날짜의 이벤트가 한 목록에 섞여 보일 수 있어(요청 사양:
+                // "이벤트 발생 날짜/시각 컬럼") 오늘 이벤트도 시각만 보여주던 것을 그만두고
+                // 항상 날짜까지 함께 보여준다.
+                row.timeText = occurred.toString(QStringLiteral("MM.dd HH:mm"));
+                row.robotId = info.robotCode;
+                row.recipientName = info.recipientName.isEmpty()
+                                         ? recipientByRobot.value(info.robotCode)
+                                         : info.recipientName;
+                row.type = info.eventTypeLabel;
+                row.summary = info.summary;
+                row.assignee = QString();  // 담당자 배정 API 아직 없음(P2 "담당자 배정" 버튼도 추후 구현)
+                row.resolved = info.resolved;
+                row.elapsedSec = info.resolved ? 0 : qMax(0, static_cast<int>(occurred.secsTo(now)));
+                row.checked = false;
+                rows.append(row);
+            }
+            model_->setRows(rows);
+            if (onLoaded) onLoaded();
+        });
     });
 }
 

@@ -66,7 +66,7 @@ public:
     // 상세 모달이 행 클릭 시점의 데이터를 그대로 스냅샷으로 받아 쓴다.
     EventRow rowAt(int row) const { return rows_.value(row); }
 
-    // 상세 모달의 "RESOLVED 전환"에서 호출. eventId로 찾아 완료 처리한다.
+    // 상세 모달의 "처리 완료"에서 호출. eventId로 찾아 완료 처리한다.
     void resolveByEventId(const QString& eventId);
 
     // 미처리 행의 경과 시간을 1초 증가시킨다 (P2EventPage가 QTimer로 호출).
