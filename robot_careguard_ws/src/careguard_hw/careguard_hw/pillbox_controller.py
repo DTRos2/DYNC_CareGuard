@@ -84,10 +84,12 @@ class SerialPillboxBackend:
     불린다 — PillboxController가 여기서 "CLOSED A/B"만 걸러 토픽으로 publish한다.
     """
 
-    def __init__(self, port: str, baudrate: int = 9600, on_line=None):
+    def __init__(self, port: str, baudrate: int = 9600, on_line=None, logger=None):
         if serial is None:
             raise RuntimeError('pyserial이 설치돼 있지 않습니다 (python3-serial)')
-        self._serial = serial.Serial(port, baudrate, timeout=1.0)
+        self._logger = logger
+        self._serial = serial.Serial(port, baudrate, timeout=0.2)
+        self._serial.reset_input_buffer()
         # 대부분의 아두이노 호환 보드는 시리얼 포트가 열리는 순간(DTR 신호) 자동으로
         # 리셋된다 — 그 직후 명령을 바로 보내면 보드가 아직 setup()도 못 끝낸 상태라
         # "OPEN A"가 씹히고 ACK_TIMEOUT_SEC 뒤 hw_error로 실패한다(2026-09-16 R-07
@@ -99,34 +101,58 @@ class SerialPillboxBackend:
         self._on_line = on_line
         self._ack_events = {'A': threading.Event(), 'B': threading.Event()}
         self._running = True
+        self._buf = b''
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
 
+    def _log(self, msg: str):
+        if self._logger:
+            self._logger.info(f'[serial] {msg}')
+
     def _read_loop(self):
+        # pyserial의 readline()에 기대지 않고 바이트를 직접 모아 '\n' 단위로 자른다.
+        # 아두이노가 UTF-8 한글 디버그 줄("IR-A(9번): ...")과 순수 ASCII ack 줄("OK A")을
+        # 같은 스트림에 섞어 보내는데, 이전엔 ascii로만 decode하면서 readline()의
+        # 내부 타임아웃 처리에 전적으로 의존했다 — 여기서는 직접 버퍼를 들고 있다가
+        # 완전한 줄이 모였을 때만 잘라내므로 줄 경계가 깨질 여지가 없다.
         while self._running:
             try:
-                raw = self._serial.readline()
-            except Exception:
+                n = self._serial.in_waiting or 1
+                chunk = self._serial.read(n)
+            except Exception as exc:
+                self._log(f'읽기 오류로 리더 스레드 종료: {exc!r}')
                 break
-            if not raw:
-                continue  # readline 타임아웃(1초) — 그냥 다시 시도
-            line = raw.decode('ascii', errors='ignore').strip()
-            if not line:
-                continue
-            if line in ('OK A', 'OK B'):
-                self._ack_events[line[-1]].set()
-                continue
-            # "CLOSED A"/"CLOSED B" 등 그 외 줄(디버그 IR 상태 포함)은 그대로
-            # on_line으로 넘긴다 — 여기서 더 안 걸러도 PillboxController가
-            # "CLOSED "로 시작하는지만 보고 스스로 거른다.
-            if self._on_line:
-                self._on_line(line)
+            if not chunk:
+                continue  # read 타임아웃(0.2초) — 그냥 다시 시도
+            self._buf += chunk
+            while b'\n' in self._buf:
+                raw_line, self._buf = self._buf.split(b'\n', 1)
+                line = raw_line.decode('utf-8', errors='ignore').strip()
+                if not line:
+                    continue
+                if line in ('OK A', 'OK B'):
+                    self._log(f'ack 수신: "{line}"')
+                    self._ack_events[line[-1]].set()
+                    continue
+                # "CLOSED A"/"CLOSED B" 등 그 외 줄(디버그 IR 상태 포함)은 그대로
+                # on_line으로 넘긴다 — 여기서 더 안 걸러도 PillboxController가
+                # "CLOSED "로 시작하는지만 보고 스스로 거른다.
+                if self._on_line:
+                    self._on_line(line)
 
     def _send(self, command: str, channel: str) -> bool:
         self._ack_events[channel].clear()
+        payload = f'{command} {channel}\n'.encode('ascii')
         with self._write_lock:
-            self._serial.write(f'{command} {channel}\n'.encode('ascii'))
-        return self._ack_events[channel].wait(timeout=ACK_TIMEOUT_SEC)
+            self._serial.write(payload)
+            self._serial.flush()
+        self._log(f'명령 전송: "{command} {channel}"')
+        acked = self._ack_events[channel].wait(timeout=ACK_TIMEOUT_SEC)
+        if not acked:
+            self._log(
+                f'ack 타임아웃: "{command} {channel}" — {ACK_TIMEOUT_SEC:.0f}초 안에 '
+                f'"OK {channel}"을 못 받음(버퍼에 남은 데이터: {self._buf!r})')
+        return acked
 
     def open_slot(self, channel: str) -> bool:
         return self._send('OPEN', channel)
@@ -169,7 +195,8 @@ class PillboxController(Node):
 
         if serial_port:
             try:
-                self._backend = SerialPillboxBackend(serial_port, baudrate, on_line=self._on_serial_line)
+                self._backend = SerialPillboxBackend(
+                    serial_port, baudrate, on_line=self._on_serial_line, logger=self.get_logger())
                 self.get_logger().info(f'시리얼 백엔드 연결: {serial_port}@{baudrate}')
             except Exception as exc:  # noqa: BLE001 - 포트 연결 실패해도 노드는 뜨게
                 self.get_logger().error(f'시리얼 연결 실패({exc}) — Fake 백엔드로 대체합니다')
