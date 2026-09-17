@@ -48,6 +48,11 @@ public:
     // 여기로 연결한다 — 빈 목록이면 필터 없음(admin/operator).
     void setRecipientNameFilter(const QStringList& names);
 
+    // P3RecipientPage::recipientsUpdated를 MainWindow가 여기로 연결한다. 대상자 이름·배정
+    // 로봇이 P3에서 바뀌면 목록을 다시 받아와 "대상자"/"로봇" 칸이 바로 새 값으로 보이게
+    // 한다(안 그러면 다음 기간 재선택 전까지 옛 이름이 그대로 남는다).
+    void refreshFromServer();
+
 signals:
     // MainWindow가 TopBar 뱃지(setEmergencyCount/setAttentionCount)에 연결한다.
     void unresolvedCountsChanged(int emergencyCount, int attentionCount);

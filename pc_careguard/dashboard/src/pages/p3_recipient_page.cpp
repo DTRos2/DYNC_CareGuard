@@ -1246,6 +1246,7 @@ void P3RecipientPage::saveRecipientUpdate(const RecipientDetail& detail) {
                 break;
             }
             rebuildGrid();
+            emit recipientsUpdated();
         });
 }
 
