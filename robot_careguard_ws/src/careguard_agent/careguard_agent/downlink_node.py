@@ -96,11 +96,18 @@ PILLBOX_CONTROLLER_READY_TIMEOUT_SEC = 10.0
 # 같은 관례(환경변수로 로봇별 하드웨어 경로를 뺌). 이 값을 안 넘기면(예전 구현)
 # pillbox_controller.py의 serial_port 파라미터 기본값이 빈 문자열이라 항상
 # FakePillboxBackend로 뜬다 — 아두이노가 실제로 연결돼 있어도 자동 기동 경로에선
-# 서보가 절대 안 움직이는 조용한 버그였다(2026-09-16 발견). R-07의 이 보드는
-# CP210x USB-시리얼 브리지라 /dev/ttyACM0이 아니라 /dev/ttyUSB0으로 잡힌다
-# (lsusb로 "Silicon Labs CP210x UART Bridge" 확인, 2026-09-16) — 흔한 Arduino
-# Uno(16U2, ttyACM*)와 달리 이 보드는 CP210x라 이름이 다르다.
-PILLBOX_SERIAL_PORT = os.environ.get('CAREGUARD_PILLBOX_SERIAL_PORT', '/dev/ttyUSB0')
+# 서보가 절대 안 움직이는 조용한 버그였다(2026-09-16 발견).
+#
+# 2026-09-16에 한 번 /dev/ttyUSB0으로 고쳤었는데 이게 틀렸다 — 그 포트는 R-07에
+# 물려있는 "CP210x USB-시리얼 브리지"라는 별개 장치였고, 약통 아두이노가 아니었다.
+# 그것 때문에 하루 넘게 hw_error(ack 타임아웃)가 반복 재현됐다 — 엉뚱한 장치에
+# "OPEN A"를 계속 보내고 있었으니 응답이 올 리가 없었다. 2026-09-17,
+# `ls -la /dev/serial/by-id/`로 진짜 정체를 확인: 약통 아두이노는 USB 디스크립터에
+# "Arduino(www.arduino.cc)"라고 정확히 찍혀 있고 /dev/ttyACM0으로 잡힌다(진짜
+# Arduino 보드의 16U2/32U4 USB 컨트롤러는 cdc_acm 드라이버를 쓰므로 ttyACM* 이름이
+# 맞다 — 애초에 처음 추정이 맞았었다). /dev/ttyUSB0은 로봇의 다른 용도(어떤 건지는
+# 미확인) CP210x 장치다 — 절대 이거로 되돌리지 말 것.
+PILLBOX_SERIAL_PORT = os.environ.get('CAREGUARD_PILLBOX_SERIAL_PORT', '/dev/ttyACM0')
 
 # medication_task가 떠서 /deliver_medication 액션 서버를 advertise할 때까지
 # 기다리는 최대 시간. patrol_task와 같은 이유로 여유를 둔다.
