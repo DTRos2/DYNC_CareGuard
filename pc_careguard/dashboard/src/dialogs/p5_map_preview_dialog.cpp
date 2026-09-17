@@ -14,6 +14,9 @@
 MapPreviewDialog::MapPreviewDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle(QStringLiteral("맵 미리보기"));
     setModal(true);
+    // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 위쪽에
+    // 회색 OS 타이틀바가 그대로 남고 X도 두 개로 보인다(EventDetailModal과 동일 패턴).
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     // 좁은 480px 다이얼로그(MODAL_W_S)에 눌려 맵이 작게 보이던 문제 — 더 넓은 M 사이즈로
     // 키우고 미리보기 영역 자체도 크게 잡는다.
     setFixedWidth(Tokens::Layout::MODAL_W_M);
@@ -66,8 +69,13 @@ MapPreviewDialog::MapPreviewDialog(QWidget* parent) : QDialog(parent) {
     body->addSpacing(4);
 
     auto* infoFrame = new QFrame(this);
+    // 타입 셀렉터 없이("border:...") 스타일시트를 지정하면 QLabel도 QWidget의
+    // 서브클래스라 이 프레임 안의 라벨(맵 이름·대상자·로봇 ID 값)에도 테두리가 그대로
+    // 번져 각 텍스트마다 캡슐 테두리가 둘러지는 문제가 있었다(event_detail_modal.cpp의
+    // makeBoxFrame()과 같은 원인) — objectName + ID 셀렉터로 이 프레임 자신에게만 한정한다.
+    infoFrame->setObjectName(QStringLiteral("mapPreviewInfoFrame"));
     infoFrame->setStyleSheet(
-        QStringLiteral("border:1px solid #E3E8ED; border-radius:8px; background:#FFFFFF;"));
+        QStringLiteral("QFrame#mapPreviewInfoFrame{border:1px solid #E3E8ED; border-radius:8px; background:#FFFFFF;}"));
     auto* infoLayout = new QVBoxLayout(infoFrame);
     infoLayout->setContentsMargins(12, 10, 12, 10);
     infoLayout->setSpacing(6);

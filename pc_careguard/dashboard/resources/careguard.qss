@@ -502,6 +502,12 @@ QComboBox#robotChip {
     font-size: 11px; padding: 0 14px; min-height: 36px; max-height: 36px;
 }
 QComboBox#robotChip:hover { background: #F0F4F7; }
+/* 콤보가 닫혀있을 때 보이는 트리거 박스 글자색 — 위 기본 규칙의 color:#16202B를
+   이겨야 해서(스타일시트에선 팔레트로 못 덮어씀) 어트리뷰트 셀렉터로 더 구체적인
+   규칙을 둔다. P5MapPage::applyRobotChipColor()가 state 프로퍼티를 갱신한다.
+   색값은 theme/tokens.h의 Tokens::OK.main(#16875A)/TEXT_MUTED(#93A0AC)와 맞춘 것. */
+QComboBox#robotChip[state="online"] { color: #16875A; }
+QComboBox#robotChip[state="offline"] { color: #93A0AC; }
 
 /* ---------- 드롭다운 메뉴 (예: P6 mapMenu_) ---------- */
 QMenu {

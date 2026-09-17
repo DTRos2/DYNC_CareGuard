@@ -465,6 +465,7 @@ void P5MapPage::refreshRobotOnlineStatus() {
                 if (robots_[i].code != r.code) continue;
                 robots_[i].isOnline = r.isOnline;
                 robotCombo_->setItemText(i, formatRobotChipText(robots_[i], r.isOnline));
+                applyRobotChipColor(i, r.isOnline);
                 if (r.code == currentRobotCode_) {
                     robotOnline_ = r.isOnline;
                     robotOfflineBanner_->setVisible(!robotOnline_);
@@ -486,8 +487,10 @@ void P5MapPage::rebuildRobotMenu() {
     // GET /robots가 매 항목마다 실시간 계산한 isOnline을 그대로 초기 표시값으로 쓴다
     // — 지금 선택된 로봇은 뒤이은 switchToRobot()이 안전 기본값(오프라인)으로 한 번 더
     // 덮어쓰지만, 드롭다운을 펼쳤을 때 보이는 다른 로봇들은 이 값이 유일한 출처다.
-    for (const ApiClient::RobotInfo& r : robots_) {
+    for (int i = 0; i < robots_.size(); ++i) {
+        const ApiClient::RobotInfo& r = robots_[i];
         robotCombo_->addItem(robotIcon, formatRobotChipText(r, r.isOnline));
+        applyRobotChipColor(i, r.isOnline);
     }
 }
 
@@ -496,11 +499,30 @@ QString P5MapPage::formatRobotChipText(const ApiClient::RobotInfo& robot, bool o
     return QStringLiteral("%1 (%2) · %3").arg(robot.code, robot.name, status);
 }
 
+void P5MapPage::applyRobotChipColor(int index, bool online) {
+    // "● 온라인" 글자색 — 예전엔 콤보 기본 텍스트색 그대로라 온라인/오프라인이 글자
+    // 색으로는 구분이 안 됐다. P7 로봇 관리 탭(robotTable_ 상태 칸)과 같은 색 규칙으로
+    // 맞춘다. Qt::ForegroundRole은 팝업 목록(QAbstractItemView)에는 바로 적용되지만,
+    // 콤보가 닫혀있을 때 보이는 "트리거 박스" 자체는 careguard.qss의
+    // "QComboBox#robotChip { color: #16202B; }"가 항상 이겨서(스타일시트 color 속성은
+    // 팔레트보다 우선한다 — QPalette로 덮어써봤지만 안 먹었다) 이것만으로는 안 바뀐다.
+    // 그 규칙을 이기려면 같은 스타일시트 쪽에 더 구체적인 규칙을 둬야 해서, 동적
+    // 프로퍼티 + QSS 어트리뷰트 셀렉터(QComboBox#robotChip[state="online"])로
+    // 우회한다(다른 곳의 [state="error"]/[level="..."]과 같은 패턴).
+    robotCombo_->setItemData(index, online ? Tokens::OK.main : Tokens::TEXT_MUTED, Qt::ForegroundRole);
+    if (index == robotCombo_->currentIndex()) {
+        robotCombo_->setProperty("state", online ? "online" : "offline");
+        robotCombo_->style()->unpolish(robotCombo_);
+        robotCombo_->style()->polish(robotCombo_);
+    }
+}
+
 void P5MapPage::updateRobotChipText() {
     if (currentRobotIndex_ < 0 || currentRobotIndex_ >= robots_.size()) return;
     // 텍스트만 바꾼다 — currentIndex는 그대로라 currentIndexChanged는 안 튄다.
     robotCombo_->setItemText(currentRobotIndex_,
                               formatRobotChipText(robots_[currentRobotIndex_], robotOnline_));
+    applyRobotChipColor(currentRobotIndex_, robotOnline_);
 }
 
 void P5MapPage::switchToRobot(int index) {

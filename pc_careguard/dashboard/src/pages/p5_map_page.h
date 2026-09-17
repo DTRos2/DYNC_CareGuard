@@ -103,6 +103,9 @@ private:
     // (전체 로봇, robots_[i].isOnline 기준)와 updateRobotChipText()/handleWsMessage의
     // robot_status 처리(개별 로봇, 최신 값 기준) 양쪽에서 공유한다.
     QString formatRobotChipText(const ApiClient::RobotInfo& robot, bool online) const;
+    // robotCombo_ index번째 항목의 글자색을 온라인 여부에 따라 칠한다 — P7 로봇 관리
+    // 탭(로봇 목록 표의 상태 칸)과 같은 색 규칙(Tokens::OK.main/TEXT_MUTED)으로 맞춘다.
+    void applyRobotChipColor(int index, bool online);
     // robotCombo_에서 지금 선택된 로봇 항목의 텍스트를 robotOnline_ 기준으로 다시
     // 그린다 — switchToRobot()이 로봇 전환 직후 안전하게 "오프라인"으로 강제한 상태를
     // 반영할 때 쓴다. 다른 로봇 항목은 handleWsMessage의 robot_status 처리가 각자
