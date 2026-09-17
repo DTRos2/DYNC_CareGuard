@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QProcessEnvironment>
 #include <QPushButton>
@@ -18,6 +19,7 @@
 #include <QVBoxLayout>
 
 #include "theme/tokens.h"
+#include "widgets/careguard_combo_box.h"
 #include "widgets/pgm_image_loader.h"
 #include "widgets/simple_icons.h"
 
@@ -150,23 +152,14 @@ MapFileRegisterDialog::MapFileRegisterDialog(QWidget* parent)
     auto* robotLabel = new QLabel(QStringLiteral("로봇 매핑 — 1맵 : 1로봇"), this);
     robotLabel->setProperty("role", "secondary");
     formCol->addWidget(robotLabel);
-    auto* robotRow = new QFrame(this);
-    robotRow->setStyleSheet(
-        QStringLiteral("border:1px solid #CDD5DD; border-radius:6px; background:#FFFFFF;"));
-    auto* robotRowLayout = new QHBoxLayout(robotRow);
-    robotRowLayout->setContentsMargins(8, 4, 8, 4);
-    robotRowLayout->setSpacing(5);
-    auto* robotIcon = new QLabel(robotRow);
-    robotIcon->setPixmap(SimpleIcons::robot(Tokens::TEXT_SECONDARY, 13).pixmap(13, 13));
-    robotRowLayout->addWidget(robotIcon);
-    auto* robotIdLabel = new QLabel(QStringLiteral("R-04"), robotRow);
-    robotIdLabel->setProperty("role", "mono");
-    robotRowLayout->addWidget(robotIdLabel);
-    auto* robotOnlineLabel = new QLabel(QStringLiteral("● 온라인"), robotRow);
-    robotOnlineLabel->setStyleSheet(QStringLiteral("color:%1; font-size:11px;").arg(Tokens::OK.main.name()));
-    robotRowLayout->addWidget(robotOnlineLabel);
-    robotRowLayout->addStretch();
-    formCol->addWidget(robotRow);
+    // P5MapPage 헤더의 로봇 선택 콤보와 같은 CareGuardComboBox + objectName("robotChip")
+    // — 모양과 항목 텍스트 형식("코드 (이름) · 온라인/오프라인")을 통일한다(디자인 통일
+    // 요청, 2026-09-16). setRobots()가 exec() 전에 실제 GET /robots 결과로 채운다 —
+    // 그 전까지는 비어있다.
+    robotCombo_ = new CareGuardComboBox(this);
+    robotCombo_->setObjectName("robotChip");
+    connect(robotCombo_, &QComboBox::currentIndexChanged, this, &MapFileRegisterDialog::updateRobotSelectionUi);
+    formCol->addWidget(robotCombo_);
     previewFormRow->addLayout(formCol, 1);
 
     body->addLayout(previewFormRow);
@@ -245,7 +238,8 @@ QFrame* MapFileRegisterDialog::buildFooter() {
     layout->setContentsMargins(16, 0, 16, 0);
     layout->setSpacing(8);
 
-    footerStatus_ = new QLabel(QStringLiteral("R-04에 이미 할당된 맵 없음 · 매핑 가능"), footer);
+    // setRobots()가 실제 로봇 목록으로 채우기 전까지의 자리표시자.
+    footerStatus_ = new QLabel(QStringLiteral("로봇 목록을 불러오는 중…"), footer);
     footerStatus_->setProperty("role", "muted");
     footerStatus_->setStyleSheet(QStringLiteral("font-size:11px;"));
     layout->addWidget(footerStatus_);
@@ -419,6 +413,41 @@ void MapFileRegisterDialog::handleRegisterClicked() {
     const QString recipientName =
         (parenIdx > 0 ? recipientText.left(parenIdx).trimmed() : recipientText.trimmed());
 
-    emit mapRegistered(pgmImage_, nameEdit_->text(), QStringLiteral("R-04"), recipientName);
+    const int robotIndex = robotCombo_->currentIndex();
+    // 로봇 목록이 아직 안 왔거나 비어있으면(서버 미기동 등) 등록을 진행할 수 없다 —
+    // updateRegisterEnabled()는 .pgm/.yaml 업로드 여부만 보고 이 경우를 안 걸러낸다.
+    if (robotIndex < 0 || robotIndex >= robots_.size()) {
+        QMessageBox::warning(this, QStringLiteral("맵 등록 실패"), QStringLiteral("로봇 목록을 불러오지 못했습니다."));
+        return;
+    }
+
+    emit mapRegistered(pgmImage_, nameEdit_->text(), robots_[robotIndex].code, recipientName);
     accept();
+}
+
+QString MapFileRegisterDialog::formatRobotChipText(const ApiClient::RobotInfo& robot) const {
+    const QString status = robot.isOnline ? QStringLiteral("● 온라인") : QStringLiteral("○ 오프라인");
+    return QStringLiteral("%1 (%2) · %3").arg(robot.code, robot.name, status);
+}
+
+void MapFileRegisterDialog::setRobots(const QVector<ApiClient::RobotInfo>& robots, const QString& preselectedCode) {
+    robots_ = robots;
+    const QSignalBlocker blocker(robotCombo_);
+    robotCombo_->clear();
+    const QIcon robotIcon = SimpleIcons::robot(Tokens::TEXT_SECONDARY, 13);
+    int preselectIndex = 0;
+    for (int i = 0; i < robots_.size(); ++i) {
+        robotCombo_->addItem(robotIcon, formatRobotChipText(robots_[i]));
+        if (robots_[i].code == preselectedCode) preselectIndex = i;
+    }
+    if (!robots_.isEmpty()) {
+        robotCombo_->setCurrentIndex(preselectIndex);
+    }
+    updateRobotSelectionUi();
+}
+
+void MapFileRegisterDialog::updateRobotSelectionUi() {
+    const int index = robotCombo_->currentIndex();
+    if (index < 0 || index >= robots_.size()) return;
+    footerStatus_->setText(QStringLiteral("%1에 이미 할당된 맵 없음 · 매핑 가능").arg(robots_[index].code));
 }
