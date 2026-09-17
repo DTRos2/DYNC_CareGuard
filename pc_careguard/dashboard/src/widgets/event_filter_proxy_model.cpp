@@ -18,6 +18,12 @@ void EventFilterProxyModel::setSearchKeyword(const QString& keyword) {
     invalidateFilter();
 }
 
+void EventFilterProxyModel::setSearchEventIdOnly(bool eventIdOnly) {
+    if (searchEventIdOnly_ == eventIdOnly) return;
+    searchEventIdOnly_ = eventIdOnly;
+    invalidateFilter();
+}
+
 void EventFilterProxyModel::setDateRange(const QDate& start, const QDate& end) {
     if (dateStart_ == start && dateEnd_ == end) return;
     dateStart_ = start;
@@ -56,8 +62,10 @@ bool EventFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex& s
             return sourceModel()->data(idx, Qt::DisplayRole).toString().contains(keyword,
                                                                                   Qt::CaseInsensitive);
         };
-        if (!matches(EventTableModel::ColEventId) && !matches(EventTableModel::ColRobot) &&
-            !matches(EventTableModel::ColRecipient) && !matches(EventTableModel::ColAssignee)) {
+        if (searchEventIdOnly_) {
+            if (!matches(EventTableModel::ColEventId)) return false;
+        } else if (!matches(EventTableModel::ColEventId) && !matches(EventTableModel::ColRobot) &&
+                   !matches(EventTableModel::ColRecipient) && !matches(EventTableModel::ColAssignee)) {
             return false;
         }
     }

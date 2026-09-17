@@ -64,8 +64,8 @@ QFrame* makeBoxFrame(QWidget* parent) {
 
 }  // namespace
 
-EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, QWidget* parent)
-    : QDialog(parent), row_(row) {
+EventDetailModal::EventDetailModal(const EventTableModel::EventRow& row, bool readOnly, QWidget* parent)
+    : QDialog(parent), row_(row), readOnly_(readOnly) {
     setWindowTitle(QStringLiteral("이벤트 상세 — %1").arg(row_.eventId));
     setModal(true);
     // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 X가 두 개로 보임
@@ -390,6 +390,31 @@ QWidget* EventDetailModal::buildActionGrid() {
     auto* grid = new QGridLayout();
     grid->setSpacing(6);
 
+    // guardian(readOnly_)은 "영상 열람"만 클릭 가능해야 한다(요청) — 나머지 조치는
+    // 버튼으로 넣지 않고 같은 문구를 그냥 텍스트(QLabel)로만 보여준다. speakerBtn_/
+    // emergencyBtn_는 이 모드에선 안 만들어지므로 nullptr로 남고, 그 값을 쓰는
+    // handleSpeakerCallClicked/handleEmergencyReportClicked 등은 버튼이 없어 애초에
+    // 호출될 일이 없다(callActive_/emergencyReportActive_도 항상 false로 유지됨).
+    if (readOnly_) {
+        auto addTextCell = [&](const QString& text, int row, int col, int rowSpan = 1, int colSpan = 1) {
+            auto* label = new QLabel(text, wrap);
+            label->setAlignment(Qt::AlignCenter);
+            label->setStyleSheet(QStringLiteral("font-size:11px; color:%1; padding:6px 8px; "
+                                                 "border:0.5px solid %2; border-radius:6px;")
+                                      .arg(Tokens::TEXT_MUTED.name(), Tokens::BORDER.name()));
+            grid->addWidget(label, row, col, rowSpan, colSpan);
+        };
+        addTextCell(QStringLiteral("스피커 통화"), 0, 0);
+        addTextCell(QStringLiteral("대상자 전화"), 0, 1);
+        addTextCell(QStringLiteral("보호자 연락"), 1, 0);
+        addTextCell(QStringLiteral("보호자 문자"), 1, 1);
+        addTextCell(QStringLiteral("119 모의 신고"), 2, 0, 1, 2);
+        addTextCell(QStringLiteral("재확인 예약"), 3, 0);
+        addTextCell(QStringLiteral("이벤트 취소"), 3, 1);
+        layout->addLayout(grid);
+        return wrap;
+    }
+
     speakerBtn_ =
         new QPushButton(SimpleIcons::speakerphone(Tokens::TEXT_INVERSE, 12), QStringLiteral("스피커 통화"), wrap);
     speakerBtn_->setProperty("variant", "primary");
@@ -495,6 +520,16 @@ QWidget* EventDetailModal::buildResolveSection() {
         auto* doneLabel = new QLabel(QStringLiteral("이미 완료 처리된 이벤트입니다."), wrap);
         doneLabel->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::OK.main.name()));
         layout->addWidget(doneLabel);
+        return wrap;
+    }
+
+    // guardian(readOnly_)은 완료 처리를 할 수 없다(요청) — 메모 입력칸·전환 버튼 대신
+    // 안내 텍스트만 보여준다.
+    if (readOnly_) {
+        auto* noteLabel = new QLabel(QStringLiteral("완료 처리는 관제담당자만 할 수 있습니다."), wrap);
+        noteLabel->setStyleSheet(QStringLiteral("font-size:11px; color:%1;").arg(Tokens::TEXT_MUTED.name()));
+        noteLabel->setWordWrap(true);
+        layout->addWidget(noteLabel);
         return wrap;
     }
 

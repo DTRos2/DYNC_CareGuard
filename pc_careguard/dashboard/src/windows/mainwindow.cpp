@@ -294,6 +294,15 @@ void MainWindow::setUserRole(const QString& role, int userId) {
     // P3/P2: guardian만 자신이 연결된 대상자로 필터링. admin/operator 재로그인 시(같은
     // MainWindow를 재사용) 이전 guardian 필터가 남지 않도록 0으로 명시적으로 되돌린다.
     recipientPage_->setGuardianUserId(role == QStringLiteral("guardian") ? userId : 0);
+
+    // TopBar 배지도 guardian이면 숨긴다(요청) — admin/operator 재로그인 시 되돌아오도록
+    // 매번 다시 계산한다. 지금 카운트를 몰라도 setEmergencyCount/setAttentionCount가
+    // 다음 unresolvedCountsChanged 때 이 값을 보고 알아서 숨긴 채로 유지해준다.
+    topBarBadgesEnabled_ = role != QStringLiteral("guardian");
+    if (!topBarBadgesEnabled_) {
+        emergencyBadge_->setVisible(false);
+        attentionBadge_->setVisible(false);
+    }
 }
 
 void MainWindow::applyRoleVisibility(const QString& role) {
@@ -334,11 +343,11 @@ void MainWindow::applyRoleVisibility(const QString& role) {
 }
 
 void MainWindow::setEmergencyCount(int count) {
-    emergencyBadge_->setVisible(count > 0);
+    emergencyBadge_->setVisible(topBarBadgesEnabled_ && count > 0);
     emergencyBadge_->setText(QStringLiteral("미처리 긴급 %1").arg(count));
 }
 
 void MainWindow::setAttentionCount(int count) {
-    attentionBadge_->setVisible(count > 0);
+    attentionBadge_->setVisible(topBarBadgesEnabled_ && count > 0);
     attentionBadge_->setText(QStringLiteral("주의 %1").arg(count));
 }

@@ -25,9 +25,11 @@ class QLabel;
 class P3RecipientDetailDialog : public QDialog {
     Q_OBJECT
 public:
+    // readOnly=true면(guardian 로그인) 편집·추가·삭제·저장·비활성화 버튼을 전부 빼고 조회만
+    // 가능하게 연다 — 요청: guardian은 대상자 정보를 읽기만 할 수 있어야 한다.
     explicit P3RecipientDetailDialog(const RecipientDetail& detail, const QVector<OperatorOption>& operators,
                                       const QVector<RobotOption>& robots, const QVector<MapOption>& maps,
-                                      QWidget* parent = nullptr);
+                                      bool readOnly = false, QWidget* parent = nullptr);
 
 signals:
     void saveRequested(const RecipientDetail& detail);
@@ -73,6 +75,7 @@ private:
     bool confirmSharedAssignment(const QString& targetLabel, const QString& recipientName);
 
     RecipientDetail detail_;
+    bool readOnly_ = false;
     QVector<OperatorOption> operators_;  // "관리 담당자" 콤보 후보 — buildBasicInfoTab()에서 채운다
     QWidget* guardianTableBox_ = nullptr;
     int autoEditGuardianIndex_ = -1;  // addGuardian() 직후 이 행을 자동으로 수정 모드로 연다

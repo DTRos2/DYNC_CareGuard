@@ -120,6 +120,8 @@ public:
         QString relation;
         int priority = 1;
         bool notifyEnabled = true;
+        // guardian.user_id 그대로. 0 = 연결된 로그인 계정 없음.
+        int userId = 0;
     };
 
     // server/app/schemas.py::MedicationScheduleItem 대응.
@@ -306,6 +308,9 @@ public:
         QString relation;
         int priority = 1;
         bool notifyEnabled = true;
+        // 0이면 서버에 안 보낸다(GuardianCreate.user_id가 None) — GuardianInfo::userId를 그대로
+        // 되돌려 보내는 용도(round-trip)라 지금 UI에서 새로 값을 넣을 수단은 없다.
+        int userId = 0;
     };
     struct MedicationScheduleCreateParams {
         int slotNo = 1;

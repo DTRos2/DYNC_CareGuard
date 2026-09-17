@@ -114,6 +114,11 @@ struct GuardianContact {
     // 뭉개졌다. 아예 입력 단계부터 체크박스로 바꿔 DB 타입과 맞춘다.
     bool notifyEnabled = true;
     bool isEmergencyFixed = false;
+    // guardian.user_id 그대로 — 이 보호자 연락처가 연결된 로그인 계정(careguard_user,
+    // role=guardian) id. 0 = 연결 안 됨. 지금은 UI에서 편집할 수단이 없고, GET으로 받아온
+    // 값을 그대로 들고 있다가 저장(PUT/POST) 시 그대로 되돌려 보내 "대상자 정보를 수정할
+    // 때마다 로그인 연동이 끊긴다" 문제를 막는 용도로만 쓴다.
+    int userId = 0;
 };
 
 // medication_schedule 테이블 대응(slot_no/drug_name/dose_time/days_of_week).
@@ -224,6 +229,12 @@ private:
     WsClient* wsClient_ = nullptr;
     QVector<RecipientCard> recipients_;
     int guardianUserId_ = 0;  // 0 = 필터 없음(admin/operator)
+    // loadRecipientsFromServer()를 부를 때마다 증가시키는 요청 일련번호. 생성자의 첫
+    // 무필터 요청과, 로그인 직후 setGuardianUserId()가 곧바로 쏘는 필터 요청이 거의 동시에
+    // 나가면 응답 도착 순서가 보장되지 않는다 — 늦게 도착한 응답이 먼저 온 필터 결과를
+    // 덮어써서 guardian 로그인인데도 전체 대상자가 보이는 문제가 있었다. 콜백에서 이 값이
+    // 발사 당시의 최신 시퀀스와 다르면(=더 최근 요청이 이미 나갔으면) 응답을 버린다.
+    int loadRequestSeq_ = 0;
 
     // 현재 열려 있는 상세 모달과 그 대상자 id — 없으면 -1/nullptr(다이얼로그는
     // WA_DeleteOnClose라 닫히면 destroyed 시그널에서 이 둘을 되돌린다).
@@ -237,6 +248,12 @@ private:
     LiveSearchLineEdit* searchEdit_ = nullptr;
     QButtonGroup* sortGroup_ = nullptr;
     SortMode sortMode_ = SortMode::Risk;  // P3 기본 정렬 (§6 페이지별 구현 주의점)
+    // guardian 읽기 전용 모드에서 숨기는 위젯들 — 검색·정렬·등록은 전부 "여러 대상자를
+    // 관리"하는 기능이라, guardian은 애초에 자기 대상자 1명만 필터링돼 보이므로 필요 없다.
+    // setGuardianUserId()에서 guardianUserId_>0이면 숨긴다(buildHeaderRow()는 생성자에서
+    // guardianUserId_가 아직 0일 때 한 번만 불리므로, 그 시점엔 role을 몰라 나중에 토글한다).
+    QWidget* sortSeg_ = nullptr;
+    QPushButton* registerBtn_ = nullptr;
 
     // EMERGENCY 카드 배경 펄스 (§9 모션, Tokens::Motion::PULSE_PERIOD_MS). rebuildGrid()가
     // 매번 다시 채운다 — 그리드를 새로 만들 때마다 이전 카드는 삭제되므로.

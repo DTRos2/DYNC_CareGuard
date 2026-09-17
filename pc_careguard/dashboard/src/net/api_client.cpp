@@ -560,6 +560,7 @@ ApiClient::RecipientDetailInfo ApiClient::parseRecipientDetail(const QJsonObject
         info.relation = g.value(QStringLiteral("relation")).toString();
         info.priority = g.value(QStringLiteral("priority")).toInt();
         info.notifyEnabled = g.value(QStringLiteral("notify_enabled")).toBool(true);
+        info.userId = g.value(QStringLiteral("user_id")).toInt();
         d.guardians.append(info);
     }
     for (const QJsonValue& v : o.value(QStringLiteral("schedules")).toArray()) {
@@ -615,11 +616,17 @@ namespace {
 QJsonObject recipientBodyFromParams(const ApiClient::RecipientCreateParams& params) {
     QJsonArray guardians;
     for (const auto& g : params.guardians) {
-        guardians.append(QJsonObject{{"name", g.name},
-                                      {"phone", g.phone},
-                                      {"relation", g.relation},
-                                      {"priority", g.priority},
-                                      {"notify_enabled", g.notifyEnabled}});
+        QJsonObject gj{{"name", g.name},
+                        {"phone", g.phone},
+                        {"relation", g.relation},
+                        {"priority", g.priority},
+                        {"notify_enabled", g.notifyEnabled}};
+        // userId==0이면 안 보낸다 — GuardianCreate.user_id가 None으로 남아 "연결 없음"으로
+        // 저장된다. UI에서 새로 값을 넣을 수단은 없고, fetchRecipientDetail로 받아온 기존
+        // 값을 그대로 되돌려 보내는 round-trip 용도다(안 하면 대상자 정보를 수정할 때마다
+        // 로그인 계정 연동이 끊겼다).
+        if (g.userId > 0) gj["user_id"] = g.userId;
+        guardians.append(gj);
     }
     QJsonArray schedules;
     for (const auto& s : params.schedules) {
