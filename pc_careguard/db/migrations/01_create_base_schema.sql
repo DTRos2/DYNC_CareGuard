@@ -1,3 +1,14 @@
+-- migrations/ 재구성(2026-09-17)으로 새로 만든 파일 — 번호 붙은 alter들이 실제로
+-- 의존하는 테이블을 먼저 만들어두는 "기준 스냅샷"이다. 02_alter_waypoint_kind_emergency.sql이
+-- 추가되기 직전 커밋(64a7b3d^)의 schema/careguard_schema_v1.sql 본문을 그대로 얼렸다 —
+-- 그 시점 이후의 각 번호 파일을 이 파일 위에 순서대로 적용하면 지금의
+-- schema/careguard_schema.sql과 같은 상태가 된다.
+--
+-- migrations/ 폴더는 docker-entrypoint-initdb.d에 마운트되지 않는다(schema/ 폴더만
+-- 마운트됨) — 새 볼륨은 schema/careguard_schema.sql 하나로 바로 지금 상태로 뜨므로
+-- 이 파일을 실행할 필요가 없다. 이 파일은 "이 시점까지의 스키마를 기록해 둔 이력"
+-- 및 migrations/ 폴더만으로 처음부터 재구성해보고 싶을 때를 위한 것이다.
+
 -- =========================================================
 -- CareGuard Central Server DB Schema  v4
 -- PostgreSQL 16 (Docker, 로컬 운영)
@@ -34,13 +45,13 @@ COMMENT ON COLUMN role.id IS '역할 PK, 자동 증가';
 COMMENT ON COLUMN role.code IS '역할 코드. 애플리케이션 분기 기준, 예: admin / operator / guardian';
 COMMENT ON COLUMN role.name IS '역할 표시 이름';
 COMMENT ON COLUMN role.description IS '역할 설명 및 권한 범위';
-COMMENT ON COLUMN role.is_active IS '사용 여부. FALSE인 역할은 로그인이 거부된다(server/app/main.py의 /auth/login 참고)';
+COMMENT ON COLUMN role.is_active IS '사용 여부. guardian은 1차 구현에서 FALSE로 두어 로그인을 막는다';
 COMMENT ON COLUMN role.created_at IS '역할 등록 시간';
 
 INSERT INTO role (code, name, description, is_active) VALUES
     ('admin',    '관리자',   '전체 기능 및 계정·설정 관리', TRUE),
     ('operator', '관제 담당자', '이벤트 처리, 영상 열람, 로봇 명령', TRUE),
-    ('guardian', '보호자',   '담당 대상자 정보 열람 및 메시지 등록', TRUE);
+    ('guardian', '보호자',   '담당 대상자 정보 열람 및 메시지 등록. 1차 구현에서는 비활성', FALSE);
 
 CREATE TABLE careguard_user (
     id            INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -102,10 +113,10 @@ COMMENT ON COLUMN robot.deregistered_at IS '로봇 등록 해제 시간. NULL이
 CREATE TABLE robot_threshold (
     robot_id              INTEGER PRIMARY KEY,
     battery_attention_pct SMALLINT NOT NULL DEFAULT 30,
-    battery_return_pct    SMALLINT NOT NULL DEFAULT 28,
+    battery_return_pct    SMALLINT NOT NULL DEFAULT 20,
     voice_wait_sec        SMALLINT NOT NULL DEFAULT 8,
     reconnect_retry_sec   SMALLINT NOT NULL DEFAULT 30,
-    med_missed_wait_sec   INTEGER NOT NULL DEFAULT 600,
+    med_missed_wait_min   SMALLINT NOT NULL DEFAULT 10,
     med_reannounce_count  SMALLINT NOT NULL DEFAULT 2,
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -116,7 +127,7 @@ COMMENT ON COLUMN robot_threshold.battery_attention_pct IS '배터리 주의 알
 COMMENT ON COLUMN robot_threshold.battery_return_pct IS '배터리 자동 복귀 기준 (%)';
 COMMENT ON COLUMN robot_threshold.voice_wait_sec IS '음성 응답 대기 시간 (초)';
 COMMENT ON COLUMN robot_threshold.reconnect_retry_sec IS '재연결 재시도 주기 (초)';
-COMMENT ON COLUMN robot_threshold.med_missed_wait_sec IS '복약 미수령 판정까지 대기 시간 (초)';
+COMMENT ON COLUMN robot_threshold.med_missed_wait_min IS '복약 미수령 판정까지 대기 시간 (분)';
 COMMENT ON COLUMN robot_threshold.med_reannounce_count IS '복약 재안내 횟수';
 COMMENT ON COLUMN robot_threshold.updated_at IS '마지막 저장 시간';
 
@@ -146,7 +157,7 @@ CREATE INDEX idx_files_retention ON files (retention_until) WHERE deleted_at IS 
 
 COMMENT ON TABLE files IS '통합 파일 관리. 대상자 사진, 침입자 캡처, 이벤트·주행 녹화, 보호자 영상·음성 메시지, 맵 이미지를 모두 수용한다. 로컬 파일시스템만 사용';
 COMMENT ON COLUMN files.id IS '파일 PK, 자동 증가';
-COMMENT ON COLUMN files.entity_type IS '연결 대상 종류이자 파일 분류, 예: recipient_photo / recipient_face_sample / intruder_capture / event_clip / driving_clip / guardian_message / map_image';
+COMMENT ON COLUMN files.entity_type IS '연결 대상 종류이자 파일 분류, 예: recipient_photo / intruder_capture / event_clip / driving_clip / guardian_message / map_image';
 COMMENT ON COLUMN files.entity_id IS '연결 대상 id. 폴리모픽 연결이라 문자열 사용';
 COMMENT ON COLUMN files.storage_path IS '로컬 저장 경로. 확장자로 재생 형식을 판별한다';
 COMMENT ON COLUMN files.original_filename IS '원본 파일명';
@@ -234,7 +245,7 @@ CREATE TABLE waypoint (
     code            VARCHAR(32) NOT NULL,
     name            VARCHAR(120),
     kind            VARCHAR(16) NOT NULL DEFAULT 'patrol' CHECK (
-        kind IN ('patrol', 'charge', 'emergency')
+        kind IN ('patrol', 'charge')
     ),
     pos_x           DOUBLE PRECISION NOT NULL,
     pos_y           DOUBLE PRECISION NOT NULL,
@@ -255,7 +266,7 @@ COMMENT ON COLUMN waypoint.id IS '지점 PK, 자동 증가';
 COMMENT ON COLUMN waypoint.map_id IS '소속 맵 id';
 COMMENT ON COLUMN waypoint.code IS '지점 코드, 예: WP_01, CHARGE. 맵 안에서 유니크';
 COMMENT ON COLUMN waypoint.name IS '지점 표시 이름, 예: 거실';
-COMMENT ON COLUMN waypoint.kind IS 'patrol(순찰 지점) / charge(충전 스테이션 = 초기 위치, 경로 순서에 포함하지 않음) / emergency(긴급 버튼 위치, 맵당 여러 개 가능. patrol과 마찬가지로 경로에 포함할 수 있고, "경로 이동"으로 경로 없이 즉시 단독 이동도 가능하다)';
+COMMENT ON COLUMN waypoint.kind IS 'patrol(순찰 지점) / charge(충전 스테이션 = 초기 위치, 경로 순서에 포함하지 않음)';
 COMMENT ON COLUMN waypoint.pos_x IS '맵 기준 x 좌표';
 COMMENT ON COLUMN waypoint.pos_y IS '맵 기준 y 좌표';
 COMMENT ON COLUMN waypoint.yaw IS '도착 시 로봇이 바라볼 방향(라디안)';
@@ -282,7 +293,7 @@ COMMENT ON COLUMN patrol_route.id IS '경로 PK, 자동 증가';
 COMMENT ON COLUMN patrol_route.map_id IS '기준 맵 id';
 COMMENT ON COLUMN patrol_route.name IS '경로 이름, 예: 오전 확인 경로';
 COMMENT ON COLUMN patrol_route.description IS '경로 설명';
-COMMENT ON COLUMN patrol_route.steps IS '방문할 waypoint id를 순서대로 담은 JSONB 배열, 예: [12, 15, 9]. 배열의 인덱스 순서가 곧 방문 순서이며, 화면의 드래그 재정렬은 이 배열을 다시 저장하는 동작. charge kind인 waypoint는 넣지 않는다(자동 출발·복귀) — server/app/api/v1/patrol.py가 저장 시점에 검증한다. emergency는 patrol과 마찬가지로 넣을 수 있다';
+COMMENT ON COLUMN patrol_route.steps IS '방문할 waypoint id를 순서대로 담은 JSONB 배열, 예: [12, 15, 9]. 배열의 인덱스 순서가 곧 방문 순서이며, 화면의 드래그 재정렬은 이 배열을 다시 저장하는 동작. charge kind인 waypoint는 넣지 않는다(자동 출발·복귀)';
 COMMENT ON COLUMN patrol_route.created_by IS '등록한 계정 id';
 COMMENT ON COLUMN patrol_route.created_at IS '경로 등록 시간';
 COMMENT ON COLUMN patrol_route.deregistered_at IS '등록 해제 시간. NULL이면 사용 중';
@@ -298,10 +309,6 @@ CREATE TABLE patrol_schedule (
     medication_schedule_id  INTEGER,
     created_by              INTEGER,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    -- 생성 시 created_at과 동일하게 시작, 수정할 때마다 NOW()로 갱신(update_patrol_schedule).
-    -- scheduler.py가 "마지막 수정 이후에 이미 돌았는지"를 판정하는 기준 — 없으면 run_time을
-    -- 바꿔도 "오늘 이미 돌았다" 판정이 안 풀려 새 시각에 다시 트리거되지 않는다.
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deregistered_at         TIMESTAMPTZ
 );
 
@@ -366,7 +373,7 @@ COMMENT ON COLUMN recipient.home_lng IS '집 위치 경도 (문자 항목)';
 COMMENT ON COLUMN recipient.diseases IS '평소 지병 (문자 항목)';
 COMMENT ON COLUMN recipient.note IS '담당자 참고 메모';
 COMMENT ON COLUMN recipient.photo_file_id IS '프로필 사진 files.id';
-COMMENT ON COLUMN recipient.face_registered IS '얼굴 정보 등록 완료 여부. FALSE면 미등록 인물 대조가 동작하지 않는다. 실제 등록 사진은 files(entity_type=recipient_face_sample, entity_id=recipient.id)에 저장';
+COMMENT ON COLUMN recipient.face_registered IS '얼굴 정보 등록 완료 여부. FALSE면 미등록 인물 대조가 동작하지 않는다';
 COMMENT ON COLUMN recipient.created_at IS '대상자 등록 시간';
 COMMENT ON COLUMN recipient.deregistered_at IS '등록 해제 시간. NULL이면 사용 중';
 
@@ -479,7 +486,7 @@ CREATE TABLE patrol_run (
         trigger IN ('schedule', 'manual', 'recheck')
     ),
     status          VARCHAR(16) NOT NULL CHECK (
-        status IN ('running', 'paused', 'completed', 'aborted', 'failed')
+        status IN ('running', 'completed', 'aborted', 'failed')
     ),
     waypoints_total INTEGER NOT NULL DEFAULT 0 CHECK (waypoints_total >= 0),
     waypoints_done  INTEGER NOT NULL DEFAULT 0 CHECK (waypoints_done >= 0),
@@ -500,7 +507,7 @@ COMMENT ON COLUMN patrol_run.recipient_id IS '대상자 id. FK 제약 없음';
 COMMENT ON COLUMN patrol_run.route_id IS '사용한 순찰 경로 id (patrol_route)';
 COMMENT ON COLUMN patrol_run.schedule_id IS '이 회차를 발생시킨 예약 id (patrol_schedule). 수동 실행은 NULL';
 COMMENT ON COLUMN patrol_run.trigger IS 'schedule(예약) / manual(담당자 지시) / recheck(재확인 요청)';
-COMMENT ON COLUMN patrol_run.status IS 'running(진행 중) / paused(ESP32 긴급 호출로 일시 중단, 자동 재개 대상) / completed / aborted / failed';
+COMMENT ON COLUMN patrol_run.status IS '순찰 회차 상태';
 COMMENT ON COLUMN patrol_run.waypoints_total IS '계획된 지점 수';
 COMMENT ON COLUMN patrol_run.waypoints_done IS '실제 방문한 지점 수';
 COMMENT ON COLUMN patrol_run.started_at IS '순찰 시작 시간';

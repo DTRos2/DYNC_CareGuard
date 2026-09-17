@@ -2,7 +2,7 @@
 
 ESP32 응급 호출 버튼 -> MQTT -> care_event(SOS_BUTTON) 생성 + 로봇 자동 출동.
 
-db/schema/careguard_schema_v1.sql의 call_button 테이블 코멘트에 이미 계약이
+db/schema/careguard_schema.sql의 call_button 테이블 코멘트에 이미 계약이
 정해져 있다: "유선 전원, ESP32 + MQTT. 누르면 care_event(SOS_BUTTON)가 생성되고
 로봇이 해당 위치로 출동한다." 이 파일은 그 계약의 서버 쪽 절반이다 —
 - 토픽: cg/v1/button/{code}/press (call_button.code가 그 {code})

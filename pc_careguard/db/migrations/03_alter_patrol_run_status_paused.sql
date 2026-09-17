@@ -1,8 +1,9 @@
 -- patrol_run.status에 paused(ESP32 긴급 버튼 호출로 잠시 밀려난 순찰) 추가.
--- docker-entrypoint-initdb.d는 새 볼륨을 만들 때만 이 폴더를 실행하므로, 이미
--- 떠 있는 개발 DB에는 이 파일을 직접 psql로 실행해 반영해야 한다:
+-- migrations/ 폴더는 docker-entrypoint-initdb.d에 마운트되지 않는다(schema/ 폴더만
+-- 마운트됨) — 새 볼륨을 만들 때도 자동 실행되지 않으므로, 개발 DB에는 직접 psql로
+-- 실행해 반영해야 한다:
 --   docker exec -i careguard_postgres psql -U careguard -d careguard \
---     < pc_careguard/db/schema/02_alter_patrol_run_status_paused.sql
+--     < pc_careguard/db/migrations/03_alter_patrol_run_status_paused.sql
 --
 -- 순찰(schedule/manual) 도중 ESP32 SOS 버튼이 눌리면 그 순찰을 완전히 중단
 -- (aborted)시키는 대신 paused로 남겨 긴급 이동이 끝난 뒤 자동으로 이어서 돈다
