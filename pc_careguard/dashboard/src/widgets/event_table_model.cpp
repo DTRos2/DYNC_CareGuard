@@ -157,7 +157,7 @@ QVariant EventTableModel::headerData(int section, Qt::Orientation orientation, i
         case ColEventId:
             return QStringLiteral("event_id");
         case ColTime:
-            return QStringLiteral("시각");
+            return QStringLiteral("발생일시");
         case ColRobot:
             return QStringLiteral("로봇");
         case ColRecipient:
