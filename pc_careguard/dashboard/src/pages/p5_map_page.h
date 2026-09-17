@@ -53,6 +53,10 @@ private:
         QImage image;
         QString mapName;
         QString recipientName;
+        // 서버 map.id — "초기화" 확인 시 DELETE /maps/{id}를 부르려면 있어야 한다
+        // (2026-09-16 요청 전까진 로컬 화면만 지우고 서버 행은 그대로 뒀다). 0이면
+        // 아직 서버 응답을 못 받았다는 뜻 — 이 경우 삭제 호출은 건너뛴다.
+        int mapId = 0;
     };
 
     QWidget* buildHeaderRow();

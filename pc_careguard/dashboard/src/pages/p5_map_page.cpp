@@ -304,7 +304,7 @@ void P5MapPage::openFileRegisterDialog() {
                         params.rawYaml = rawYaml;
                         apiClient_->createMap(
                             params, [this, image, mapName, robotId, recipientName](
-                                        bool createOk, const ApiClient::MapInfo&, const QString& createErr) {
+                                        bool createOk, const ApiClient::MapInfo& createdMap, const QString& createErr) {
                                 if (!createOk) {
                                     QMessageBox::warning(this, QStringLiteral("맵 등록 실패"),
                                                           createErr.isEmpty()
@@ -314,7 +314,8 @@ void P5MapPage::openFileRegisterDialog() {
                                 }
                                 slamCard_->applyRegisteredMap(image, mapName, robotId);
                                 statusOverlay_->markMapDeployed(robotId, mapName, recipientName);
-                                registeredMaps_[robotId] = RegisteredMapInfo{image, mapName, recipientName};
+                                registeredMaps_[robotId] =
+                                    RegisteredMapInfo{image, mapName, recipientName, createdMap.id};
                                 emit mapRegistered(image, mapName, robotId, recipientName);
                             });
                     });
@@ -379,10 +380,11 @@ void P5MapPage::loadActiveMapsFromServer() {
             // 로딩되는 대로 같은 항목을 덮어써 채운다(비어있어도 이름·"초기화" 판정은
             // 이미 맞다).
             if (!registeredMaps_.contains(robotCode)) {
-                registeredMaps_[robotCode] = RegisteredMapInfo{QImage(), mapName, recipientName};
+                registeredMaps_[robotCode] = RegisteredMapInfo{QImage(), mapName, recipientName, mapId};
             } else {
                 registeredMaps_[robotCode].mapName = mapName;
                 registeredMaps_[robotCode].recipientName = recipientName;
+                registeredMaps_[robotCode].mapId = mapId;
             }
             if (robotCode == currentRobotCode_) {
                 slamCard_->applyRegisteredMap(registeredMaps_[robotCode].image, mapName, robotCode);
@@ -394,11 +396,12 @@ void P5MapPage::loadActiveMapsFromServer() {
             // 채운다 — 위에서 이미 이름·존재 여부는 반영했으니, 여기선 이미지만 마저 채운다.
             if (!m.imageUrl.isEmpty()) {
                 apiClient_->fetchBytes(
-                    m.imageUrl, [this, robotCode, mapName, recipientName](bool imgOk, const QByteArray& data) {
+                    m.imageUrl,
+                    [this, robotCode, mapName, recipientName, mapId](bool imgOk, const QByteArray& data) {
                         if (!imgOk) return;
                         const QImage image = PgmImageLoader::loadFromData(data);
                         if (image.isNull()) return;
-                        registeredMaps_[robotCode] = RegisteredMapInfo{image, mapName, recipientName};
+                        registeredMaps_[robotCode] = RegisteredMapInfo{image, mapName, recipientName, mapId};
                         // 지금 화면에 떠 있는 로봇의 맵이면 캔버스도 바로 갱신한다 — 이게
                         // 없으면 이미 배포된 맵이 있는 로봇으로 전환해도(또는 페이지를 막
                         // 열었을 때) 이 조회가 끝나기 전엔 캔버스가 빈 채로 남는다.
@@ -538,7 +541,7 @@ void P5MapPage::handleMappingToggleClicked() {
     // 중이던 매핑도 서버에 취소 요청이 나간다)이라 반드시 먼저 확인받는다.
     const auto reply = QMessageBox::warning(
         this, QStringLiteral("매핑 초기화"),
-        QStringLiteral("%1의 현재 지도가 지워지고 새로 그릴 준비 상태로 돌아갑니다. 계속할까요?")
+        QStringLiteral("%1의 현재 지도가 지워지고 새로 그릴 준비 상태로 돌아갑니다. 수정하실건가요? 되돌릴 수 없습니다.")
             .arg(currentRobotCode_),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (reply != QMessageBox::Yes) return;
@@ -546,10 +549,24 @@ void P5MapPage::handleMappingToggleClicked() {
     if (currentSlamJobId_ != 0) {
         cancelMappingOnServer();
     }
+    // 서버 쪽 map 행도 바로 지운다 — 예전엔 다음 저장(SLAM 맵 저장·배포)이 같은 이름을
+    // 덮어쓸 때까지 남아있었다(2026-09-16 요청으로 즉시 삭제). 이 맵을 참조하던
+    // waypoint·patrol_route(+schedule)도 서버가 같이 정리한다(map.py::delete_map).
+    // mapId가 아직 0(서버 응답을 못 받은 채로 로컬에만 있던 경우)이면 지울 서버
+    // 행이 없다는 뜻이라 건너뛴다.
+    const int mapIdToDelete = registeredMaps_.value(currentRobotCode_).mapId;
+    if (mapIdToDelete != 0) {
+        apiClient_->deleteMap(mapIdToDelete, [this](bool ok, const QString& err) {
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("맵 삭제 실패"),
+                                      err.isEmpty() ? QStringLiteral("서버에서 맵을 지우지 못했습니다.") : err);
+            }
+        });
+    }
     // 로컬 캐시에서도 지워야 한다 — 안 지우면 registeredMaps_에 이 로봇 항목이 계속
     // 남아있어 hasExistingMap이 다음에도 계속 true로 판정돼(진짜 등록된 맵이 없어도)
-    // "매핑 시작"으로 못 돌아간다. 서버 쪽 map 행 자체는 지우지 않는다 — 다음 저장
-    // (SLAM 맵 저장 · 배포)이 같은 이름으로 덮어쓰거나 새로 활성화하면서 정리된다.
+    // "매핑 시작"으로 못 돌아간다. 서버 응답을 기다리지 않고 바로 지운다 — 위
+    // cancelMappingOnServer와 같은 이유(화면은 즉시 "빈 상태"로 보여야 한다).
     registeredMaps_.remove(currentRobotCode_);
     // 화면에 그려진 지도·궤적·스캔점을 지우고 "이 로봇엔 아직 맵이 없다" 상태로
     // 되돌린다 — 1차 프로젝트의 handleResetMapping()이 stopMappingProcess() 직후

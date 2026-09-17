@@ -274,6 +274,9 @@ public:
         QJsonObject rawYaml;
     };
     void createMap(const MapCreateParams& params, ItemCallback<MapInfo> callback);
+    // DELETE /maps/{id} — P5 "초기화" 확인 시 호출. 서버가 이 맵의 waypoint·
+    // patrol_route(+schedule)도 같이 정리한다(map.py::delete_map 참고).
+    void deleteMap(int mapId, SimpleCallback callback);
 
     // POST /patrol-runs — 순찰 시작.
     void startPatrolRun(int robotId, int routeId, const QString& trigger, ItemCallback<PatrolRunInfo> callback);

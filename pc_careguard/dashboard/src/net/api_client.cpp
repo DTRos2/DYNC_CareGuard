@@ -455,6 +455,10 @@ void ApiClient::createMap(const MapCreateParams& params, ItemCallback<MapInfo> c
     });
 }
 
+void ApiClient::deleteMap(int mapId, SimpleCallback callback) {
+    sendDelete(QStringLiteral("/maps/%1").arg(mapId), callback);
+}
+
 ApiClient::PatrolRunInfo ApiClient::parsePatrolRun(const QJsonObject& o) {
     PatrolRunInfo run;
     run.id = o.value(QStringLiteral("id")).toInt();
