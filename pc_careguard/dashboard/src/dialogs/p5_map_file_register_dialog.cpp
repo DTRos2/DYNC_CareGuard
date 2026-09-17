@@ -27,6 +27,9 @@ MapFileRegisterDialog::MapFileRegisterDialog(QWidget* parent)
     : QDialog(parent), pgmLoaded_(false), yamlLoaded_(false) {
     setWindowTitle(QStringLiteral("파일로 맵 등록"));
     setModal(true);
+    // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 위쪽에
+    // 회색 OS 타이틀바가 그대로 남고 X도 두 개로 보인다(EventDetailModal과 동일 패턴).
+    setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     setFixedWidth(Tokens::Layout::MODAL_W_S + 80);
 
     auto* root = new QVBoxLayout(this);

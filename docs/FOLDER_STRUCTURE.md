@@ -53,7 +53,7 @@ pc_careguard/
 │   │   ├── ws/       robot_ws.py (로봇↔서버) · dashboard_ws.py (서버↔Qt)
 │   │   ├── models/   SQLAlchemy ORM
 │   │   ├── schemas/  Pydantic
-│   │   ├── services/ notifier.py (보호자 SMS/112·119) · scheduler.py
+│   │   ├── services/ notifier.py (보호자 이메일 알림) · scheduler.py
 │   │   └── core/     config.py · security.py · db.py
 │   ├── alembic/                # 마이그레이션
 │   ├── storage/                # 영상·스냅샷 파일 (DB엔 경로만, git 커밋 금지)
@@ -69,8 +69,12 @@ pc_careguard/
 │   ├── resources/    qss/ (CareGuard_DESIGN_SYSTEM 토큰) · icons/ · fonts/
 │   └── CMakeLists.txt
 └── db/
-    ├── schema/careguard_schema_v1.sql
-    └── seed/
+    ├── schema/careguard_schema.sql       # 항상 최신 상태인 전체 스키마 1개 파일.
+    │                                      # docker-entrypoint-initdb.d가 이 폴더만 마운트
+    └── migrations/                       # 번호순 이력. 자동 실행 안 됨(수동 psql 적용용)
+        ├── 00_alter_database_timezone.sql
+        ├── 01_create_base_schema.sql
+        └── 02_..N_alter_*.sql
 ```
 
 ## docs/ 및 deploy/

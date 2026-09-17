@@ -1,6 +1,7 @@
 #pragma once
 #include <QAbstractTableModel>
 #include <QDate>
+#include <QDateTime>
 #include <QVector>
 
 // P2 이벤트 관제 테이블 모델. CareGuard_DESIGN_SYSTEM.md §4-3 규약을 따른다.
@@ -33,6 +34,7 @@ public:
         ResolvedRole,
         IsEmergencyRole,
         DateRole,
+        OccurredAtRole,
     };
 
     enum class Severity { Info, Attention, Emergency };
@@ -50,6 +52,10 @@ public:
         bool resolved = false;
         int elapsedSec = 0;  // resolved면 표시 안 함
         bool checked = false;
+        // 정렬 전용 — 화면 표시는 timeText를 그대로 쓰고, 이 값은 EventFilterProxyModel::
+        // lessThan()이 같은 심각도 버킷 안에서 "발생일시 최신순"으로 정렬하는 데만 쓴다.
+        // 새 필드는 항상 끝에 추가한다(브레이스 초기화가 위치 기반인 곳이 있어서).
+        QDateTime occurredAt;
     };
 
     explicit EventTableModel(QObject* parent = nullptr);
@@ -66,7 +72,7 @@ public:
     // 상세 모달이 행 클릭 시점의 데이터를 그대로 스냅샷으로 받아 쓴다.
     EventRow rowAt(int row) const { return rows_.value(row); }
 
-    // 상세 모달의 "RESOLVED 전환"에서 호출. eventId로 찾아 완료 처리한다.
+    // 상세 모달의 "처리 완료"에서 호출. eventId로 찾아 완료 처리한다.
     void resolveByEventId(const QString& eventId);
 
     // 미처리 행의 경과 시간을 1초 증가시킨다 (P2EventPage가 QTimer로 호출).

@@ -70,6 +70,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // connectionStateChanged(true)를 못 받는 페이지(P5/P6/P7)가 생기지 않는다.
     wsClient_ = new WsClient(this);
     overviewPage->setWsClient(wsClient_);
+    eventPage_->setWsClient(wsClient_);
     recipientPage_->setWsClient(wsClient_);
     videoPage_->setWsClient(wsClient_);
     mapPage->setWsClient(wsClient_);
@@ -132,6 +133,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // 이름 목록으로 P2 이벤트도 같이 필터링한다. admin/operator는 빈 목록이 와서 필터 없음.
     connect(recipientPage_, &P3RecipientPage::guardianRecipientNamesChanged, eventPage_,
             &P2EventPage::setRecipientNameFilter);
+
+    // P3에서 대상자 이름·배정 로봇을 저장하면 P2 이벤트 목록의 "대상자"/"로봇" 칸이
+    // 옛 값으로 남아있지 않도록 바로 다시 받아온다.
+    connect(recipientPage_, &P3RecipientPage::recipientsUpdated, eventPage_,
+            &P2EventPage::refreshFromServer);
 
     rootLayout->addLayout(body, /*stretch=*/1);
 }

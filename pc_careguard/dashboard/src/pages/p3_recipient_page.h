@@ -114,6 +114,11 @@ struct GuardianContact {
     // 뭉개졌다. 아예 입력 단계부터 체크박스로 바꿔 DB 타입과 맞춘다.
     bool notifyEnabled = true;
     bool isEmergencyFixed = false;
+    // 서버 guardian.id — 저장 시 이 값을 그대로 실어 보내야 서버가 "기존 행 수정"으로
+    // 처리한다(0이면 신규). 새 필드는 항상 끝에 추가한다 — 브레이스 초기화(예: 아래
+    // 119·112 고정 행)가 위치 기반이라 중간에 끼우면 다른 필드로 밀린다.
+    int id = 0;
+    QString email;
     // guardian.user_id 그대로 — 이 보호자 연락처가 연결된 로그인 계정(careguard_user,
     // role=guardian) id. 0 = 연결 안 됨. 지금은 UI에서 편집할 수단이 없고, GET으로 받아온
     // 값을 그대로 들고 있다가 저장(PUT/POST) 시 그대로 되돌려 보내 "대상자 정보를 수정할
@@ -142,6 +147,7 @@ struct RecipientDetail {
     RecipientCard card;
     QString gender;     // "남" / "여"
     int birthYear = 0;  // 0 = 미상
+    QString phone;      // 대상자 본인 연락처. recipient.phone
     QString diseases;
     QString note;
     QVector<GuardianContact> guardians;
@@ -188,6 +194,11 @@ signals:
     // guardian 필터 적용 후(또는 해제 후) 대상자 이름 목록. MainWindow가 P2EventPage의
     // 이벤트 필터에도 같은 이름 목록을 넘겨, 보호자가 자신의 대상자 이벤트만 보게 한다.
     void guardianRecipientNamesChanged(const QStringList& names);
+    // 대상자 정보 저장 성공(이름·배정 로봇 변경 포함) 시 발생. MainWindow가 P2EventPage::
+    // refreshFromServer()에 연결해, 이벤트 목록의 "대상자"·"로봇" 표시가 바로 새 값으로
+    // 갱신되게 한다 — 안 그러면 사용자가 P2를 새로고침(기간 재선택 등)하기 전까진 옛 이름이
+    // 그대로 남는다.
+    void recipientsUpdated();
 
 protected:
     // 창 크기가 바뀔 때마다 카드 그리드 열 수를 다시 계산해 반응형으로 재배치한다 (P4와 동일 패턴).

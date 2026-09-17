@@ -196,6 +196,9 @@ class RetentionPolicyDialog : public QDialog {
 public:
     explicit RetentionPolicyDialog(QWidget* parent = nullptr) : QDialog(parent) {
         setModal(true);
+        // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 위쪽에
+        // 회색 OS 타이틀바가 그대로 남고 X도 두 개로 보인다(EventDetailModal과 동일 패턴).
+        setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
         setFixedWidth(Tokens::Layout::MODAL_W_M);
         // setWindowTitle(QStringLiteral("영상 보관 정책"));
 
@@ -224,13 +227,13 @@ private:
         layout->addWidget(title);
         layout->addStretch();
 
-        // auto* closeBtn = new QPushButton(header);
-        // closeBtn->setProperty("variant", "ghost");
-        // closeBtn->setProperty("size", "s");
-        // closeBtn->setIcon(SimpleIcons::close(Tokens::TEXT_SECONDARY, 16));
-        // closeBtn->setFixedWidth(28);
-        // connect(closeBtn, &QPushButton::clicked, this, &QDialog::reject);
-        // layout->addWidget(closeBtn);
+        auto* closeBtn = new QPushButton(header);
+        closeBtn->setProperty("variant", "ghost");
+        closeBtn->setProperty("size", "s");
+        closeBtn->setIcon(SimpleIcons::close(Tokens::TEXT_SECONDARY, 16));
+        closeBtn->setFixedWidth(28);
+        connect(closeBtn, &QPushButton::clicked, this, &QDialog::reject);
+        layout->addWidget(closeBtn);
 
         return header;
     }
@@ -455,6 +458,9 @@ public:
     VideoPlayerDialog(const VideoClip& clip, QWidget* parent = nullptr, bool hideEventLink = false)
         : QDialog(parent), clip_(clip), hideEventLink_(hideEventLink) {
         setModal(true);
+        // OS 창관리자 타이틀바를 없애 커스텀 헤더(제목·X)만 남긴다 — 안 그러면 위쪽에
+        // 회색 OS 타이틀바가 그대로 남고 X도 두 개로 보인다(EventDetailModal과 동일 패턴).
+        setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
         // 창이 M 사이즈보다 좁으면 모달도 S 사이즈까지 줄어든다.
         int modalWidth = Tokens::Layout::MODAL_W_M;
         if (parent) {
@@ -520,13 +526,13 @@ private:
 
         layout->addStretch();
 
-        // auto* closeBtn = new QPushButton(header);
-        // closeBtn->setProperty("variant", "ghost");
-        // closeBtn->setProperty("size", "s");
-        // closeBtn->setIcon(SimpleIcons::close(Tokens::TEXT_SECONDARY, 16));
-        // closeBtn->setFixedWidth(28);
-        // connect(closeBtn, &QPushButton::clicked, this, &QDialog::reject);
-        // layout->addWidget(closeBtn);
+        auto* closeBtn = new QPushButton(header);
+        closeBtn->setProperty("variant", "ghost");
+        closeBtn->setProperty("size", "s");
+        closeBtn->setIcon(SimpleIcons::close(Tokens::TEXT_SECONDARY, 16));
+        closeBtn->setFixedWidth(28);
+        connect(closeBtn, &QPushButton::clicked, this, &QDialog::reject);
+        layout->addWidget(closeBtn);
 
         return header;
     }

@@ -44,6 +44,7 @@ QVariant EventTableModel::data(const QModelIndex& index, int role) const {
     if (role == ResolvedRole) return row.resolved;
     if (role == IsEmergencyRole) return row.severity == Severity::Emergency;
     if (role == DateRole) return row.date;
+    if (role == OccurredAtRole) return row.occurredAt;
 
     if (role == Qt::CheckStateRole && index.column() == ColCheck) {
         return row.checked ? Qt::Checked : Qt::Unchecked;
@@ -157,7 +158,7 @@ QVariant EventTableModel::headerData(int section, Qt::Orientation orientation, i
         case ColEventId:
             return QStringLiteral("event_id");
         case ColTime:
-            return QStringLiteral("시각");
+            return QStringLiteral("발생일시");
         case ColRobot:
             return QStringLiteral("로봇");
         case ColRecipient:

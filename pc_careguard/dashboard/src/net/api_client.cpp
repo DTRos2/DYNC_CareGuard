@@ -531,6 +531,7 @@ ApiClient::RecipientInfo ApiClient::parseRecipient(const QJsonObject& o) {
     r.robotCode = o.value(QStringLiteral("robot_code")).toString();
     r.gender = o.value(QStringLiteral("gender")).toString();
     r.birthDate = o.value(QStringLiteral("birth_date")).toString();
+    r.phone = o.value(QStringLiteral("phone")).toString();
     r.homeAddress = o.value(QStringLiteral("home_address")).toString();
     r.diseases = o.value(QStringLiteral("diseases")).toString();
     r.note = o.value(QStringLiteral("note")).toString();
@@ -557,6 +558,7 @@ ApiClient::RecipientDetailInfo ApiClient::parseRecipientDetail(const QJsonObject
         info.id = g.value(QStringLiteral("id")).toInt();
         info.name = g.value(QStringLiteral("name")).toString();
         info.phone = g.value(QStringLiteral("phone")).toString();
+        info.email = g.value(QStringLiteral("email")).toString();
         info.relation = g.value(QStringLiteral("relation")).toString();
         info.priority = g.value(QStringLiteral("priority")).toInt();
         info.notifyEnabled = g.value(QStringLiteral("notify_enabled")).toBool(true);
@@ -618,9 +620,14 @@ QJsonObject recipientBodyFromParams(const ApiClient::RecipientCreateParams& para
     for (const auto& g : params.guardians) {
         QJsonObject gj{{"name", g.name},
                         {"phone", g.phone},
+                        {"email", g.email},
                         {"relation", g.relation},
                         {"priority", g.priority},
                         {"notify_enabled", g.notifyEnabled}};
+        // id가 있는(기존) 보호자만 실어 보낸다 — 서버는 id 없으면 신규로 INSERT한다
+        // (schemas.py::GuardianCreate.id, Optional). 신규 행에 0을 보내는 것보다
+        // 키 자체를 생략하는 쪽이 "새 보호자"라는 의미를 그대로 전달한다.
+        if (g.id > 0) gj.insert(QStringLiteral("id"), g.id);
         // userId==0이면 안 보낸다 — GuardianCreate.user_id가 None으로 남아 "연결 없음"으로
         // 저장된다. UI에서 새로 값을 넣을 수단은 없고, fetchRecipientDetail로 받아온 기존
         // 값을 그대로 되돌려 보내는 round-trip 용도다(안 하면 대상자 정보를 수정할 때마다
@@ -638,6 +645,7 @@ QJsonObject recipientBodyFromParams(const ApiClient::RecipientCreateParams& para
 
     QJsonObject body{
         {"name", params.name},
+        {"phone", params.phone},
         {"home_address", params.homeAddress},
         {"diseases", params.diseases},
         {"note", params.note},
@@ -678,6 +686,23 @@ void ApiClient::updateRecipient(int recipientId, const RecipientCreateParams& pa
 void ApiClient::deactivateRecipient(int recipientId, SimpleCallback callback) {
     postJson(QStringLiteral("/recipients/%1/deactivate").arg(recipientId), QJsonObject{},
              [callback](bool ok, const QByteArray&, const QString& err) { callback(ok, err); });
+}
+
+void ApiClient::sendGuardianMail(int recipientId, const QString& toEmail, const QString& message,
+                                  SimpleCallback callback) {
+    QJsonObject body{{"to_email", toEmail}, {"message", message}};
+    postJson(QStringLiteral("/recipients/%1/guardian-mail").arg(recipientId), body,
+             [callback](bool httpOk, const QByteArray& respBody, const QString& err) {
+                 // HTTP 200이어도 실제 발송이 실패(SMTP 오류)했을 수 있어 응답 본문의
+                 // ok/error를 봐야 한다 — startCall의 robot_connected와 같은 패턴.
+                 if (!httpOk) {
+                     callback(false, err);
+                     return;
+                 }
+                 const QJsonObject o = QJsonDocument::fromJson(respBody).object();
+                 const bool sendOk = o.value(QStringLiteral("ok")).toBool();
+                 callback(sendOk, sendOk ? QString() : o.value(QStringLiteral("error")).toString());
+             });
 }
 
 void ApiClient::fetchOperators(ListCallback<OperatorInfo> callback) {

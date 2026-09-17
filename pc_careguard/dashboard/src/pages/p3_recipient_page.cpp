@@ -955,6 +955,7 @@ RecipientDetail recipientDetailFromApi(const ApiClient::RecipientDetailInfo& inf
 
     d.gender = genderLabelFromCode(info.recipient.gender);
     d.birthYear = info.recipient.birthDate.left(4).toInt();
+    d.phone = info.recipient.phone;
     d.diseases = info.recipient.diseases;
     d.note = info.recipient.note;
 
@@ -967,6 +968,8 @@ RecipientDetail recipientDetailFromApi(const ApiClient::RecipientDetailInfo& inf
         gc.phone = g.phone;
         gc.notifyEnabled = g.notifyEnabled;
         gc.isEmergencyFixed = false;
+        gc.id = g.id;
+        gc.email = g.email;
         gc.userId = g.userId;
         d.guardians.append(gc);
     }
@@ -1135,6 +1138,7 @@ bool buildRecipientParams(const RecipientDetail& detail, ApiClient::RecipientCre
     if (detail.birthYear > 0) {
         params.birthDate = QStringLiteral("%1-01-01").arg(detail.birthYear, 4, 10, QChar('0'));
     }
+    params.phone = detail.phone;
     params.homeAddress = detail.card.address;
     params.diseases = detail.diseases;
     params.note = detail.note;
@@ -1144,8 +1148,10 @@ bool buildRecipientParams(const RecipientDetail& detail, ApiClient::RecipientCre
     for (const auto& g : detail.guardians) {
         if (g.isEmergencyFixed) continue;  // 119·112는 화면 전용 표시라 서버에 안 보낸다
         ApiClient::GuardianCreateParams gp;
+        gp.id = g.id;  // 0이면 서버가 신규로 처리 — GuardianContact::id 주석 참고
         gp.name = g.name;
         gp.phone = g.phone;
+        gp.email = g.email;
         gp.relation = g.relation;
         gp.priority = g.priority;
         gp.notifyEnabled = g.notifyEnabled;
@@ -1271,6 +1277,7 @@ void P3RecipientPage::saveRecipientUpdate(const RecipientDetail& detail) {
                 break;
             }
             rebuildGrid();
+            emit recipientsUpdated();
         });
 }
 

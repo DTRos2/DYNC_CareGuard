@@ -489,8 +489,12 @@ class MissionItem(BaseModel):
 
 
 class GuardianCreate(BaseModel):
+    # 기존 보호자를 수정할 때는 id를 그대로 실어 보낸다 — recipient.py::update_recipient()가
+    # 이 값으로 "새로 추가"와 "기존 행 수정"을 구분한다(없으면 신규 INSERT). None이면 신규.
+    id: Optional[int] = None
     name: str
     phone: str
+    email: Optional[str] = None
     relation: Optional[str] = None
     priority: int = 1
     notify_enabled: bool = True
@@ -501,10 +505,23 @@ class GuardianItem(BaseModel):
     id: int
     name: str
     phone: str
+    email: Optional[str] = None
     relation: Optional[str] = None
     priority: int
     notify_enabled: bool
     user_id: Optional[int] = None
+
+
+class GuardianMailRequest(BaseModel):
+    # P2 이벤트 상세 모달 "보호자 메일" — 수신자는 기본으로 1순위 보호자 이메일이
+    # 채워져 오지만 담당자가 다른 주소로 바꿔 보낼 수도 있어 여기서 그대로 받는다.
+    to_email: str
+    message: str
+
+
+class GuardianMailResponse(BaseModel):
+    ok: bool
+    error: str = ""
 
 
 class MedicationScheduleCreate(BaseModel):
@@ -529,6 +546,7 @@ class RecipientCreate(BaseModel):
     name: str
     gender: Optional[str] = None  # 'male' / 'female' / 'other'. recipient.gender CHECK와 동일
     birth_date: Optional[date] = None
+    phone: Optional[str] = None
     home_address: Optional[str] = None
     diseases: Optional[str] = None
     note: Optional[str] = None
@@ -558,6 +576,7 @@ class RecipientItem(BaseModel):
     robot_code: Optional[str] = None
     gender: Optional[str] = None
     birth_date: Optional[date] = None
+    phone: Optional[str] = None
     home_address: Optional[str] = None
     diseases: Optional[str] = None
     note: Optional[str] = None

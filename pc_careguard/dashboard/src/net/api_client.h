@@ -117,6 +117,7 @@ public:
         int id = 0;
         QString name;
         QString phone;
+        QString email;
         QString relation;
         int priority = 1;
         bool notifyEnabled = true;
@@ -155,6 +156,7 @@ public:
         QString robotCode;    // 미배정이면 빈 문자열
         QString gender;       // "male" / "female" / "other". 미상이면 빈 문자열
         QString birthDate;    // "YYYY-MM-DD". 미상이면 빈 문자열
+        QString phone;        // 대상자 본인 연락처. 미상이면 빈 문자열
         QString homeAddress;
         QString diseases;
         QString note;
@@ -303,8 +305,12 @@ public:
 
     // POST /recipients — "대상자 등록" 모달. server/app/schemas.py::RecipientCreate 대응.
     struct GuardianCreateParams {
+        // 기존 보호자 수정이면 서버 guardian.id를 그대로 실어 보낸다. 0(신규)이면
+        // 서버가 새 행으로 INSERT한다 — schemas.py::GuardianCreate.id 대응.
+        int id = 0;
         QString name;
         QString phone;
+        QString email;
         QString relation;
         int priority = 1;
         bool notifyEnabled = true;
@@ -322,6 +328,7 @@ public:
         QString name;
         QString gender;  // "male" / "female" / "other" / 빈 문자열(미상)
         QString birthDate;  // "YYYY-MM-DD". 비어 있으면 서버에 안 보낸다
+        QString phone;  // 대상자 본인 연락처
         QString homeAddress;
         QString diseases;
         QString note;
@@ -338,6 +345,10 @@ public:
     // POST /recipients/{id}/deactivate — P3 상세 모달의 "대상자 비활성화". 하드 삭제가 아니라
     // recipient.deregistered_at을 찍어 목록·조회에서만 제외한다(서버 쪽 주석 참고).
     void deactivateRecipient(int recipientId, SimpleCallback callback);
+    // POST /recipients/{id}/guardian-mail — P2 이벤트 상세 모달 "보호자 메일" 발송. 서버가
+    // NOTIFY_MODE=mock이면 실제 SMTP 연결 없이 notification_log만 남긴다(notifier.py와 동일).
+    void sendGuardianMail(int recipientId, const QString& toEmail, const QString& message,
+                          SimpleCallback callback);
 
     // GET /accounts — 대상자 등록/상세 모달의 "관리 담당자" 콤보 후보. role_code=="operator"
     // 이면서 활성 계정인 것만 추려서 넘긴다(비활성 계정에 새로 배정하는 건 막는다).
@@ -346,7 +357,7 @@ public:
     // GET /events — P2 이벤트 관제 큐. 기간·검색·미처리 필터는 대시보드가 이미 로컬로
     // 하고 있어(EventFilterProxyModel) 서버는 취소되지 않은 전체를 내려준다.
     void fetchEvents(ListCallback<EventInfo> callback);
-    // POST /events/{event_uid}/resolve — 상세 모달 "RESOLVED 전환"·일괄 완료 처리가 공유하는
+    // POST /events/{event_uid}/resolve — 상세 모달 "처리 완료"·일괄 완료 처리가 공유하는
     // 진입점(둘 다 이벤트 하나씩 이 호출을 쓴다).
     void resolveEvent(const QString& eventUid, ItemCallback<EventInfo> callback);
 

@@ -8,6 +8,7 @@ from ..core import db
 from ..api.v1.event import EVENT_TYPE_LABELS
 from ..api.v1.patrol import start_patrol_run
 from ..ws import dashboard_ws
+from . import notifier
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -151,6 +152,7 @@ async def _medication_tick() -> None:
         # 실패했을 때 있지도 않은 이벤트를 대시보드가 먼저 알게 되므로, 커밋 뒤에
         # 한꺼번에 보낸다.
         created_events = []
+        notify_targets = []  # 커밋 뒤 notifier.notify_guardian_for_med_missed()에 넘길 인자 모음
 
         for s in due:
             cur.execute(
@@ -197,7 +199,7 @@ async def _medication_tick() -> None:
                 INSERT INTO care_event (event_uid, recipient_id, robot_id, trigger_path, event_type,
                     severity, summary, evidence, occurred_at)
                 VALUES (%s, %s, %s, 'SYS', 'MED_MISSED', 'attention', %s, %s, NOW())
-                RETURNING occurred_at
+                RETURNING id, occurred_at
                 """,
                 (
                     event_uid, s["recipient_id"], s["robot_id"], summary,
@@ -209,7 +211,8 @@ async def _medication_tick() -> None:
                     }),
                 ),
             )
-            occurred_at = cur.fetchone()["occurred_at"]
+            care_event_row = cur.fetchone()
+            occurred_at = care_event_row["occurred_at"]
             created_events.append({
                 "type": "event_created",
                 "event_uid": event_uid,
@@ -222,10 +225,23 @@ async def _medication_tick() -> None:
                 "robot_code": s["robot_code"],
                 "recipient_name": s["recipient_name"],
             })
+            notify_targets.append({
+                "recipient_id": s["recipient_id"],
+                "care_event_id": care_event_row["id"],
+                "recipient_name": s["recipient_name"],
+                "drug_name": s["drug_name"],
+                "missed_count": missed_count,
+                "reannounce_count": s["reannounce_count"],
+            })
         conn.commit()
 
     for event in created_events:
         await dashboard_ws.broadcast(event)
+
+    # 보호자 메일 발송 — 커밋된 뒤에 한다(SMTP 네트워크 I/O를 DB 트랜잭션 안에 넣지
+    # 않기 위해 notifier가 자체 연결을 쓴다. 위 broadcast와 같은 "커밋 후에만" 원칙).
+    for target in notify_targets:
+        notifier.notify_guardian_for_med_missed(**target)
 
 
 def _med_is_due(dose_time: time_cls, now_time: time_cls, wait_sec: int) -> bool:

@@ -5,8 +5,10 @@
 #include <QDateEdit>
 #include <QDateTime>
 #include <QEvent>
+#include <QHash>
 #include <QHeaderView>
 #include <QHBoxLayout>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -19,6 +21,7 @@
 
 #include "dialogs/event_detail_modal.h"
 #include "net/api_client.h"
+#include "net/ws_client.h"
 #include "theme/calendar_style.h"
 #include "theme/tokens.h"
 #include "widgets/careguard_date_edit.h"
@@ -78,6 +81,14 @@ P2EventPage::P2EventPage(QWidget* parent) : QWidget(parent) {
     layout->addWidget(bulkBar_);
     layout->addWidget(buildTable(), /*stretch=*/1);
     layout->addWidget(buildPagination());
+
+    // 필터·검색·정렬·모델 갱신 어느 경로로 proxy_ 행 구성이 바뀌든 페이지 수·숨김
+    // 상태를 다시 계산해야 한다 — 트리거마다 일일이 updatePagination()을 부르는 대신
+    // proxy_ 자체의 변경 시그널에 붙여 한 곳에서 처리한다.
+    connect(proxy_, &QAbstractItemModel::modelReset, this, &P2EventPage::updatePagination);
+    connect(proxy_, &QAbstractItemModel::layoutChanged, this, &P2EventPage::updatePagination);
+    connect(proxy_, &QAbstractItemModel::rowsInserted, this, &P2EventPage::updatePagination);
+    connect(proxy_, &QAbstractItemModel::rowsRemoved, this, &P2EventPage::updatePagination);
 
     // GET /events가 비동기로 도착하기 전까지는 화면이 비어 보이므로, 응답 오기 전 첫 화면은
     // mock으로 그려두고 loadEventsFromServer()가 도착하는 대로 덮어쓴다(P3 대상자 페이지와
@@ -241,7 +252,9 @@ QWidget* P2EventPage::buildTable() {
     tableView_->setColumnWidth(EventTableModel::ColCheck, 32);
     tableView_->setColumnWidth(EventTableModel::ColSeverity, 90);
     tableView_->setColumnWidth(EventTableModel::ColEventId, 130);
-    tableView_->setColumnWidth(EventTableModel::ColTime, 70);
+    // "MM.dd HH:mm"(항상 날짜+시각 표시, 요청 사양)이 들어가야 해서 시각만 보여주던
+    // 예전 폭(70px)보다 넓혀야 한다 — 모노스페이스 폰트라 11자 기준으로 여유있게.
+    tableView_->setColumnWidth(EventTableModel::ColTime, 108);
     tableView_->setColumnWidth(EventTableModel::ColRobot, 60);
     tableView_->setColumnWidth(EventTableModel::ColRecipient, 70);
     tableView_->setColumnWidth(EventTableModel::ColType, 100);
@@ -265,24 +278,90 @@ QWidget* P2EventPage::buildPagination() {
     layout->setSpacing(8);
     layout->addStretch();
 
-    auto* prev = new QPushButton(SimpleIcons::chevronLeft(Tokens::TEXT_SECONDARY, 11), QString(), row);
-    prev->setObjectName("segBtn");
-    prev->setProperty("pos", "first");
-    layout->addWidget(prev);
+    paginationPrevBtn_ = new QPushButton(SimpleIcons::chevronLeft(Tokens::TEXT_SECONDARY, 11), QString(), row);
+    paginationPrevBtn_->setObjectName("segBtn");
+    paginationPrevBtn_->setProperty("pos", "first");
+    connect(paginationPrevBtn_, &QPushButton::clicked, this, [this] {
+        if (currentPage_ > 0) --currentPage_;
+        updatePagination();
+    });
+    layout->addWidget(paginationPrevBtn_);
 
-    auto* page1 = new QPushButton(QStringLiteral("1"), row);
-    page1->setObjectName("segBtn");
-    page1->setCheckable(true);
-    page1->setChecked(true);
-    layout->addWidget(page1);
+    // 페이지 번호 버튼들은 총 페이지 수가 바뀔 때마다 updatePagination()이 이 컨테이너
+    // 안을 통째로 비우고 다시 채운다 — 미리 개수를 알 수 없어서(필터·검색에 따라
+    // 달라짐) 고정 버튼을 못 둔다.
+    paginationPagesContainer_ = new QWidget(row);
+    auto* pagesLayout = new QHBoxLayout(paginationPagesContainer_);
+    pagesLayout->setContentsMargins(0, 0, 0, 0);
+    pagesLayout->setSpacing(4);
+    layout->addWidget(paginationPagesContainer_);
 
-    auto* next = new QPushButton(SimpleIcons::chevronRight(Tokens::TEXT_SECONDARY, 11), QString(), row);
-    next->setObjectName("segBtn");
-    next->setProperty("pos", "last");
-    layout->addWidget(next);
+    paginationNextBtn_ = new QPushButton(SimpleIcons::chevronRight(Tokens::TEXT_SECONDARY, 11), QString(), row);
+    paginationNextBtn_->setObjectName("segBtn");
+    paginationNextBtn_->setProperty("pos", "last");
+    connect(paginationNextBtn_, &QPushButton::clicked, this, [this] {
+        ++currentPage_;
+        updatePagination();
+    });
+    layout->addWidget(paginationNextBtn_);
 
     layout->addStretch();
     return row;
+}
+
+void P2EventPage::updatePagination() {
+    const int total = proxy_->rowCount();
+    const int pageCount = qMax(1, (total + kEventsPerPage - 1) / kEventsPerPage);
+    currentPage_ = qBound(0, currentPage_, pageCount - 1);
+
+    const int pageStart = currentPage_ * kEventsPerPage;
+    const int pageEnd = qMin(total, pageStart + kEventsPerPage);
+    for (int r = 0; r < total; ++r) {
+        tableView_->setRowHidden(r, r < pageStart || r >= pageEnd);
+    }
+
+    paginationPrevBtn_->setEnabled(currentPage_ > 0);
+    paginationNextBtn_->setEnabled(currentPage_ < pageCount - 1);
+
+    // 페이지 번호 줄을 통째로 새로 그린다 — QLayout은 자식 위젯까지 자동으로 안 지워서
+    // takeAt()으로 꺼낸 뒤 위젯을 직접 delete해야 한다(레이아웃만 지우면 버튼이 숨은
+    // 채로 계속 쌓인다).
+    QLayout* pagesLayout = paginationPagesContainer_->layout();
+    QLayoutItem* item;
+    while ((item = pagesLayout->takeAt(0)) != nullptr) {
+        delete item->widget();
+        delete item;
+    }
+
+    auto addPageButton = [this, pagesLayout](int pageIndex) {
+        auto* btn = new QPushButton(QString::number(pageIndex + 1), paginationPagesContainer_);
+        btn->setObjectName("segBtn");
+        btn->setCheckable(true);
+        btn->setChecked(pageIndex == currentPage_);
+        connect(btn, &QPushButton::clicked, this, [this, pageIndex] {
+            currentPage_ = pageIndex;
+            updatePagination();
+        });
+        pagesLayout->addWidget(btn);
+    };
+    auto addEllipsis = [this, pagesLayout] {
+        auto* label = new QLabel(QStringLiteral("…"), paginationPagesContainer_);
+        label->setProperty("role", "muted");
+        pagesLayout->addWidget(label);
+    };
+
+    // 첫/끝 페이지는 항상 보여주고, 현재 페이지 좌우 1칸씩만 더 보여준다 — 페이지가
+    // 많아져도 번호 버튼이 한 줄을 넘어가지 않게(예: 1 … 4 5 6 … 42).
+    constexpr int kNeighbors = 1;
+    int lastShown = -1;
+    for (int p = 0; p < pageCount; ++p) {
+        const bool isEdge = (p == 0 || p == pageCount - 1);
+        const bool isNear = qAbs(p - currentPage_) <= kNeighbors;
+        if (!isEdge && !isNear) continue;
+        if (lastShown != -1 && p - lastShown > 1) addEllipsis();
+        addPageButton(p);
+        lastShown = p;
+    }
 }
 
 void P2EventPage::seedMockData() {
@@ -291,69 +370,112 @@ void P2EventPage::seedMockData() {
 
     const QDate today = QDate::currentDate();
     const QDate yesterday = today.addDays(-1);
+    // 목록 컬럼이 이제 항상 "날짜 · 시각"을 함께 보여주므로(요청 사양 — loadEventsFromServer
+    // 와 같은 "MM.dd HH:mm" 포맷) 목데이터도 실제 날짜를 반영한 문자열로 만든다.
+    const QString todayStr = today.toString(QStringLiteral("MM.dd"));
+    const QString yesterdayStr = yesterday.toString(QStringLiteral("MM.dd"));
 
     QVector<Row> rows;
-    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260826-014"), today, QStringLiteral("14:29"),
+    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260826-014"), today, todayStr + QStringLiteral(" 14:29"),
                      QStringLiteral("R-01"), QStringLiteral("김순자"), QStringLiteral("안부 무응답"),
                      QStringLiteral("안부 질문 2회 무응답 → 출동 · 음성 확인 대기"),
                      QStringLiteral("도희정"), false, 192, false});
-    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-011"), today, QStringLiteral("12:41"),
+    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-011"), today, todayStr + QStringLiteral(" 12:41"),
                      QStringLiteral("R-02"), QStringLiteral("박영호"), QStringLiteral("복약 미수령"),
                      QStringLiteral("아침 약 미수령 (대상자 미발견) · 보호자 문자 발송"), QString(),
                      false, 6667, false});
-    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-012"), today, QStringLiteral("13:58"),
+    rows.append(Row{Sev::Attention, QStringLiteral("EV-260826-012"), today, todayStr + QStringLiteral(" 13:58"),
                      QStringLiteral("R-04"), QStringLiteral("최금례"), QStringLiteral("통신 단절"),
                      QStringLiteral("관제 연결 끊김 · 30초 주기 재시도 · 로컬 기록 유지"), QString(),
                      false, 2042, false});
-    rows.append(Row{Sev::Info, QStringLiteral("EV-260826-010"), today, QStringLiteral("12:34"),
+    rows.append(Row{Sev::Info, QStringLiteral("EV-260826-010"), today, todayStr + QStringLiteral(" 12:34"),
                      QStringLiteral("R-03"), QStringLiteral("이말순"), QStringLiteral("복약 완료"),
                      QStringLiteral("점심 약 수령 확인 · event_logger 기록"), QStringLiteral("자동"),
                      true, 0, false});
-    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260825-041"), yesterday, QStringLiteral("어제"),
-                     QStringLiteral("R-03"), QStringLiteral("이말순"), QStringLiteral("음성 무응답"),
+    rows.append(Row{Sev::Emergency, QStringLiteral("EV-260825-041"), yesterday,
+                     yesterdayStr + QStringLiteral(" 21:07"), QStringLiteral("R-03"), QStringLiteral("이말순"),
+                     QStringLiteral("음성 무응답"),
                      QStringLiteral("2회 무응답 → 보호자 통화 연결 · 정상 확인 후 종료"),
                      QStringLiteral("김예은"), true, 0, false});
 
     model_->setRows(rows);
 }
 
+void P2EventPage::refreshFromServer() {
+    loadEventsFromServer();
+}
+
+void P2EventPage::setWsClient(WsClient* client) {
+    wsClient_ = client;
+    connect(wsClient_, &WsClient::messageReceived, this, &P2EventPage::handleWsMessage);
+}
+
+void P2EventPage::handleWsMessage(const QJsonObject& message) {
+    const QString type = message.value(QStringLiteral("type")).toString();
+    // scheduler.py::_medication_tick()·robot_ws.py 등이 care_event를 새로 커밋할 때 보내는
+    // 알림 — 페이로드를 직접 파싱해 끼워넣는 대신(P1OverviewPage 방식) 전체를 다시 받아온다.
+    // 이러면 recipientByRobot 매핑(로봇 매칭 대상자 표시)과 정렬이 항상 GET /events와
+    // 같은 경로로 일관되게 계산된다.
+    if (type == QStringLiteral("event_created")) {
+        loadEventsFromServer();
+    }
+}
+
 void P2EventPage::loadEventsFromServer(std::function<void()> onLoaded) {
     apiClient_->fetchEvents([this, onLoaded](bool ok, const QVector<ApiClient::EventInfo>& items) {
         if (!ok) return;  // 서버 미기동 등: seedMockData()로 채워둔 화면을 그대로 둔다
 
-        using Row = EventTableModel::EventRow;
-        using Sev = EventTableModel::Severity;
-        const QDateTime now = QDateTime::currentDateTime();
-        const QDate today = QDate::currentDate();
-
-        QVector<Row> rows;
-        rows.reserve(items.size());
-        for (const auto& info : items) {
-            Row row;
-            if (info.severity == QStringLiteral("emergency")) {
-                row.severity = Sev::Emergency;
-            } else if (info.severity == QStringLiteral("attention")) {
-                row.severity = Sev::Attention;
-            } else {
-                row.severity = Sev::Info;
+        // 미등록 인물 감지 같은 시스템 이벤트는 care_event에 recipient_id가 없어
+        // EventInfo::recipientName이 빈 문자열로 온다. 그 로봇이 순찰 담당하는 대상자를
+        // "대상자" 칸에 대신 보여줘야 하므로(요청 사양) robotCode → recipientName 매핑을
+        // 만들어 빈 칸을 채운다.
+        apiClient_->fetchRecipients([this, onLoaded, items](bool recipientsOk,
+                                                             const QVector<ApiClient::RecipientInfo>& recipients) {
+            QHash<QString, QString> recipientByRobot;
+            if (recipientsOk) {
+                for (const auto& r : recipients) {
+                    if (!r.robotCode.isEmpty()) recipientByRobot.insert(r.robotCode, r.name);
+                }
             }
-            row.eventId = info.eventUid;
-            const QDateTime occurred = info.occurredAt.toLocalTime();
-            row.date = occurred.date();
-            row.timeText = occurred.date() == today ? occurred.toString(QStringLiteral("HH:mm"))
-                                                      : occurred.toString(QStringLiteral("MM.dd HH:mm"));
-            row.robotId = info.robotCode;
-            row.recipientName = info.recipientName;
-            row.type = info.eventTypeLabel;
-            row.summary = info.summary;
-            row.assignee = QString();  // 담당자 배정 API 아직 없음(P2 "담당자 배정" 버튼도 추후 구현)
-            row.resolved = info.resolved;
-            row.elapsedSec = info.resolved ? 0 : qMax(0, static_cast<int>(occurred.secsTo(now)));
-            row.checked = false;
-            rows.append(row);
-        }
-        model_->setRows(rows);
-        if (onLoaded) onLoaded();
+
+            using Row = EventTableModel::EventRow;
+            using Sev = EventTableModel::Severity;
+            const QDateTime now = QDateTime::currentDateTime();
+
+            QVector<Row> rows;
+            rows.reserve(items.size());
+            for (const auto& info : items) {
+                Row row;
+                if (info.severity == QStringLiteral("emergency")) {
+                    row.severity = Sev::Emergency;
+                } else if (info.severity == QStringLiteral("attention")) {
+                    row.severity = Sev::Attention;
+                } else {
+                    row.severity = Sev::Info;
+                }
+                row.eventId = info.eventUid;
+                const QDateTime occurred = info.occurredAt.toLocalTime();
+                row.date = occurred.date();
+                // 날짜 필터로 여러 날짜의 이벤트가 한 목록에 섞여 보일 수 있어(요청 사양:
+                // "이벤트 발생 날짜/시각 컬럼") 오늘 이벤트도 시각만 보여주던 것을 그만두고
+                // 항상 날짜까지 함께 보여준다.
+                row.timeText = occurred.toString(QStringLiteral("MM.dd HH:mm"));
+                row.occurredAt = occurred;  // EventFilterProxyModel::lessThan 정렬용
+                row.robotId = info.robotCode;
+                row.recipientName = info.recipientName.isEmpty()
+                                         ? recipientByRobot.value(info.robotCode)
+                                         : info.recipientName;
+                row.type = info.eventTypeLabel;
+                row.summary = info.summary;
+                row.assignee = QString();  // 담당자 배정 API 아직 없음(P2 "담당자 배정" 버튼도 추후 구현)
+                row.resolved = info.resolved;
+                row.elapsedSec = info.resolved ? 0 : qMax(0, static_cast<int>(occurred.secsTo(now)));
+                row.checked = false;
+                rows.append(row);
+            }
+            model_->setRows(rows);
+            if (onLoaded) onLoaded();
+        });
     });
 }
 

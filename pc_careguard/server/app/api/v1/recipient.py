@@ -7,18 +7,21 @@ from fastapi import APIRouter, HTTPException
 from ...core import db
 from ...schemas import (
     GuardianItem,
+    GuardianMailRequest,
+    GuardianMailResponse,
     MedicationScheduleItem,
     RecipientCreate,
     RecipientDetailItem,
     RecipientItem,
 )
+from ...services import notifier
 from ...ws import dashboard_ws
 
 router = APIRouter(prefix="/recipients", tags=["recipient"])
 
 _RECIPIENT_SELECT = """
     SELECT rc.id, rc.code, rc.name, rc.robot_id, r.code AS robot_code,
-           rc.gender, rc.birth_date, rc.home_address, rc.diseases, rc.note,
+           rc.gender, rc.birth_date, rc.phone, rc.home_address, rc.diseases, rc.note,
            rc.operator_id, op.display_name AS operator_name, rc.created_at
     FROM recipient rc
     LEFT JOIN robot r ON r.id = rc.robot_id
@@ -221,7 +224,7 @@ def get_recipient(recipient_id: int):
 
         cur.execute(
             """
-            SELECT id, name, phone, relation, priority, notify_enabled, user_id
+            SELECT id, name, phone, email, relation, priority, notify_enabled, user_id
             FROM guardian
             WHERE recipient_id = %s AND deregistered_at IS NULL
             ORDER BY priority
@@ -284,8 +287,8 @@ def create_recipient(payload: RecipientCreate):
 
         cur.execute(
             """
-            INSERT INTO recipient (code, robot_id, name, gender, birth_date, home_address, diseases, note, operator_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO recipient (code, robot_id, name, gender, birth_date, phone, home_address, diseases, note, operator_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -294,6 +297,7 @@ def create_recipient(payload: RecipientCreate):
                 payload.name,
                 payload.gender,
                 payload.birth_date,
+                payload.phone,
                 payload.home_address,
                 payload.diseases,
                 payload.note,
@@ -306,10 +310,10 @@ def create_recipient(payload: RecipientCreate):
             guardian_user_id = _resolve_guardian_user_id(cur, g.user_id)
             cur.execute(
                 """
-                INSERT INTO guardian (recipient_id, name, phone, relation, priority, notify_enabled, user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO guardian (recipient_id, name, phone, email, relation, priority, notify_enabled, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled, guardian_user_id),
+                (recipient_id, g.name, g.phone, g.email, g.relation, g.priority, g.notify_enabled, guardian_user_id),
             )
 
         for s in payload.schedules:
@@ -363,7 +367,7 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
         cur.execute(
             """
             UPDATE recipient
-            SET robot_id = %s, name = %s, gender = %s, birth_date = %s,
+            SET robot_id = %s, name = %s, gender = %s, birth_date = %s, phone = %s,
                 home_address = %s, diseases = %s, note = %s, operator_id = %s
             WHERE id = %s
             """,
@@ -372,6 +376,7 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
                 payload.name,
                 payload.gender,
                 payload.birth_date,
+                payload.phone,
                 payload.home_address,
                 payload.diseases,
                 payload.note,
@@ -380,18 +385,44 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
             ),
         )
 
+        # id 기준으로 있는 건 그 자리에서 갱신하고 없는 건 새로 심는다(medication_schedule과
+        # 같은 slot_no 매칭 패턴을 guardian.id로 적용) — 예전엔 매번 전체 소프트삭제 후
+        # 재삽입해서, 이름 하나만 고쳐도 모든 보호자가 새 id를 받아 guardian.email 같은
+        # 컬럼이 안전하게 남아있을 근거가 없었다(2026-09-16 확인된 dedup 버그).
         cur.execute(
-            "UPDATE guardian SET deregistered_at = NOW() WHERE recipient_id = %s AND deregistered_at IS NULL",
+            "SELECT id FROM guardian WHERE recipient_id = %s AND deregistered_at IS NULL",
             (recipient_id,),
         )
+        existing_guardian_ids = {row["id"] for row in cur.fetchall()}
+        incoming_guardian_ids = {g.id for g in payload.guardians if g.id is not None}
+
         for g in payload.guardians:
             guardian_user_id = _resolve_guardian_user_id(cur, g.user_id)
+            if g.id is not None and g.id in existing_guardian_ids:
+                cur.execute(
+                    """
+                    UPDATE guardian
+                    SET name = %s, phone = %s, email = %s, relation = %s, priority = %s,
+                        notify_enabled = %s, user_id = %s
+                    WHERE id = %s AND recipient_id = %s
+                    """,
+                    (g.name, g.phone, g.email, g.relation, g.priority, g.notify_enabled,
+                     guardian_user_id, g.id, recipient_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO guardian (recipient_id, name, phone, email, relation, priority, notify_enabled, user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (recipient_id, g.name, g.phone, g.email, g.relation, g.priority, g.notify_enabled, guardian_user_id),
+                )
+
+        removed_guardian_ids = existing_guardian_ids - incoming_guardian_ids
+        if removed_guardian_ids:
             cur.execute(
-                """
-                INSERT INTO guardian (recipient_id, name, phone, relation, priority, notify_enabled, user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (recipient_id, g.name, g.phone, g.relation, g.priority, g.notify_enabled, guardian_user_id),
+                "UPDATE guardian SET deregistered_at = NOW() WHERE id = ANY(%s)",
+                (list(removed_guardian_ids),),
             )
 
         # 슬롯 번호(slot_no) 기준으로 있는 건 그 자리에서 갱신하고, 새 슬롯만 새로 심는다
@@ -471,6 +502,40 @@ def update_recipient(recipient_id: int, payload: RecipientCreate):
     anyio.from_thread.run(dashboard_ws.broadcast, {"type": "recipient_changed", "recipient_id": recipient_id})
 
     return get_recipient(recipient_id)
+
+
+@router.post("/{recipient_id}/guardian-mail", response_model=GuardianMailResponse)
+def send_guardian_mail(recipient_id: int, payload: GuardianMailRequest):
+    """P2 이벤트 상세 모달 "보호자 메일" — 담당자가 직접 쓴 메시지를 즉시 발송한다.
+    scheduler.py의 자동 MED_MISSED 발송과 같은 notifier.send_email()을 쓰지만, 그쪽과
+    달리 담당자가 수신자를 자유롭게 바꿔 보낼 수 있어 guardian_id는 "참고용"으로만
+    조회한다(못 찾아도 발송 자체는 막지 않는다 — 예: 이메일을 직접 고쳐 보낸 경우).
+    """
+    with db.get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT name FROM recipient WHERE id = %s AND deregistered_at IS NULL", (recipient_id,))
+        recipient = cur.fetchone()
+        if recipient is None:
+            raise HTTPException(status_code=404, detail="대상자를 찾을 수 없습니다")
+
+        cur.execute(
+            "SELECT id FROM guardian WHERE recipient_id = %s AND email = %s AND deregistered_at IS NULL LIMIT 1",
+            (recipient_id, payload.to_email),
+        )
+        guardian = cur.fetchone()
+
+        subject = f"[CareGuard] {recipient['name']}님 관련 안내"
+        ok, err = notifier.send_email(payload.to_email, subject, payload.message)
+
+        cur.execute(
+            """
+            INSERT INTO notification_log (recipient_id, guardian_id, channel, template_code, body, status, sent_at)
+            VALUES (%s, %s, 'mail', 'MANUAL', %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END)
+            """,
+            (recipient_id, guardian["id"] if guardian else None, payload.message, "sent" if ok else "failed", ok),
+        )
+        conn.commit()
+
+    return GuardianMailResponse(ok=ok, error="" if ok else err)
 
 
 @router.post("/{recipient_id}/deactivate", status_code=204)

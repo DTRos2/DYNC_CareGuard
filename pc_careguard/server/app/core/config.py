@@ -16,6 +16,16 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "careguard")
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
+# 보호자 알림 메일 발송(Gmail SMTP). NOTIFY_MODE 기본값은 반드시 "mock"으로 둔다 —
+# 테스트·CI가 이 값에 기대어 실제 메일을 보내지 않는다(notifier.py 참고).
+NOTIFY_MODE = os.getenv("NOTIFY_MODE", "mock")
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_SECURE = os.getenv("SMTP_SECURE", "false").lower() == "true"
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "")
+
 # 업로드된 영상/이미지 파일을 저장할 루트 경로. 기본값은 server/storage.
 # 이 파일이 server/app/core/config.py라서 server/ 루트까지 올라가려면 parent가
 # 3번 필요하다(core -> app -> server) — 2026-09-09 리팩터로 config.py가 app/
