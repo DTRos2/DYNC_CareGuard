@@ -23,8 +23,6 @@ def generate_launch_description():
     resolution = LaunchConfiguration('resolution', default='0.05')
     publish_period_sec = LaunchConfiguration('publish_period_sec', default='1.0')
 
-    rviz_config_dir = os.path.join(bringup_share_dir, 'rviz', 'cartographer.rviz')
-
     return LaunchDescription([
         DeclareLaunchArgument(
             'cartographer_config_dir',
@@ -59,12 +57,12 @@ def generate_launch_description():
                               'publish_period_sec': publish_period_sec}.items(),
         ),
 
-        Node(
-            package='rviz2',
-            executable='rviz2',
-            name='rviz2',
-            arguments=['-d', rviz_config_dir],
-            output='screen'),
+        # rviz2는 여기서 안 띄운다 — 이 로봇(헤드리스 Jetson)엔 디스플레이가 없어
+        # rviz2가 뜨자마자 SIGABRT로 죽고(2026-09-18 R-07 실기 확인), 비정상 종료된
+        # 프로세스가 남긴 상태 때문에 같은 도메인의 다른 노드(/scan, 카메라 등)까지
+        # discovery/데이터 수신이 막히는 문제로 이어졌다. rviz2는 시각화 전용이라
+        # cartographer_node의 실제 매핑 기능에는 필요 없다(navigation_diff_launch.py와
+        # 같은 이유·같은 조치).
 
         # 대시보드 P5 매핑 카드의 "경과·탐색면적" 표시용 — cartographer_node와 같은
         # 프로세스 그룹으로 떠서, downlink_node._stop_slam()이 그룹 전체를 죽일 때

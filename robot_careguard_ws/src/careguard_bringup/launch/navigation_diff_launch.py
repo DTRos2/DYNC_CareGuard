@@ -21,10 +21,6 @@ from nav2_common.launch import RewrittenYaml
 def generate_launch_description():
     bringup_share_dir = get_package_share_directory('careguard_bringup')
 
-    # setting for rviz configuration path
-    rviz_file_name = 'navigation.rviz'
-    rviz_config_path = os.path.join(bringup_share_dir, 'rviz', rviz_file_name)
-
     # set the parameters
     parameter_file_name = 'diff_navigation_params.yaml'
     parameter_file_path = os.path.join(bringup_share_dir, 'params', parameter_file_name)
@@ -84,19 +80,15 @@ def generate_launch_description():
         }.items()
     )
 
-    # setting for rviz
-    rviz_config_node = Node(
-            package='rviz2',
-            executable='rviz2',
-            name='rviz2',
-            output='screen',
-            arguments=['-d', rviz_config_path],
-        )
-
+    # rviz2는 여기서 안 띄운다 — 이 로봇(헤드리스 Jetson)엔 디스플레이가 없어
+    # rviz2가 뜨자마자 SIGABRT로 죽었고(2026-09-18 R-07 실기 확인), 비정상 종료된
+    # 프로세스가 남긴 상태 때문에 같은 도메인의 다른 노드들(/scan, 카메라 등)까지
+    # discovery/데이터 수신이 막히는 문제로 이어졌다. rviz2는 시각화 전용(구독만
+    # 하고 아무것도 publish 안 함)이라 AMCL/costmap/planner 등 실제 내비게이션
+    # 기능에는 원래 필요 없다.
     return LaunchDescription([
         map_arg,
         nav2_container,
         localization_launch,
         navigation_launch,
-        rviz_config_node,
     ])
